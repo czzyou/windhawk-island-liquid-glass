@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.4.1
+// @version         1.4.3
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -5345,6 +5345,26 @@ bool GetCaptionDockTarget(HWND island, const RECT& work, float compactWidth,
     return search.found;
 }
 
+std::atomic<bool> g_islandDragging{false};
+std::atomic<bool> g_islandManuallyPlaced{false};
+std::atomic<int> g_islandDragX{0}, g_islandDragY{0};
+POINT g_islandDragStart{}, g_islandDragOrigin{};
+
+constexpr POINT DraggedIslandOffset(POINT origin, POINT start, POINT cursor) {
+    return {origin.x + cursor.x - start.x, origin.y + cursor.y - start.y};
+}
+static_assert(DraggedIslandOffset({10, -20}, {100, 100}, {90, 130}).x == 0);
+static_assert(DraggedIslandOffset({10, -20}, {100, 100}, {90, 130}).y == 10);
+static_assert(DraggedIslandOffset({-500, 40}, {-300, 200}, {-300, 200}).x == -500);
+
+void FinishIslandDrag() {
+    if (!g_islandDragging.exchange(false)) return;
+    Wh_SetIntValue(L"IslandDragX", g_islandDragX.load());
+    Wh_SetIntValue(L"IslandDragY", g_islandDragY.load());
+    Wh_SetIntValue(L"IslandManuallyPlaced", 1);
+    g_layoutDirty = true;
+}
+
 int YasbDockY(int screenTop) {
     // Compact mode keeps the normal pill's center; dashboard expansion stays top-anchored.
     return screenTop + 8 + static_cast<int>(std::lround(g_compactInsetY.load())) - static_cast<int>(kRenderPadY);
@@ -5405,6 +5425,8 @@ void PositionOverlayWindow(HWND hwnd, int width, int height) {
             x = (std::max)(x, static_cast<int>(work.left + 12 - kRenderPadX));
         }
     }
+    x += g_islandDragX.load();
+    y += g_islandDragY.load();
     SetWindowPos(hwnd, zOrder, x, y, width, height,
                  SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
 
@@ -5615,6 +5637,8 @@ RECT GetIslandDockRect() {
         }
     }
 
+    x += g_islandDragX.load();
+    y += g_islandDragY.load();
     RECT r;
     r.left = x;
     r.right = x + dockWidth;
@@ -9772,6 +9796,32 @@ void ShowNbaSetup(HWND owner, bool firstRun = false) {
     if (result == -1) MessageBoxW(owner, L"无法打开主队设置，请从右键菜单重试。", L"NBA 主队", MB_OK | MB_ICONERROR);
 }
 
+void CheckIslandUpdates(HWND hwnd) {
+    wchar_t programFiles[MAX_PATH]{};
+    DWORD count = GetEnvironmentVariableW(L"ProgramW6432", programFiles, ARRAYSIZE(programFiles));
+    if (!count) count = GetEnvironmentVariableW(L"ProgramFiles", programFiles, ARRAYSIZE(programFiles));
+    if (!count || count >= ARRAYSIZE(programFiles)) {
+        MessageBoxW(hwnd, L"无法找到更新工具目录。", L"检查更新", MB_OK | MB_ICONERROR);
+        return;
+    }
+    const std::wstring script = std::wstring(programFiles) + L"\\Windhawk-Island-Updater\\check.ps1";
+    if (GetFileAttributesW(script.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        MessageBoxW(hwnd, L"尚未安装更新工具，请先运行安装包中的 install.cmd。", L"检查更新", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    wchar_t windows[MAX_PATH]{};
+    count = GetWindowsDirectoryW(windows, ARRAYSIZE(windows));
+    if (!count || count >= ARRAYSIZE(windows)) return;
+    BOOL wow64 = FALSE;
+    IsWow64Process(GetCurrentProcess(), &wow64);
+    const std::wstring executable = std::wstring(windows) + (wow64
+        ? L"\\Sysnative\\WindowsPowerShell\\v1.0\\powershell.exe"
+        : L"\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    const std::wstring arguments = L"-NoProfile -WindowStyle Hidden -File \"" + script + L"\" -Mode Manual";
+    if (reinterpret_cast<INT_PTR>(ShellExecuteW(hwnd, L"open", executable.c_str(), arguments.c_str(), nullptr, SW_HIDE)) <= 32)
+        MessageBoxW(hwnd, L"无法启动更新检查，请稍后重试。", L"检查更新", MB_OK | MB_ICONERROR);
+}
+
 void ShowContextMenu(HWND hwnd, POINT screenPoint) {
     if (Wh_GetIntValue(L"UpdateRequested", 0)) return;
     bool timerActive = false;
@@ -9868,6 +9918,7 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
                 kThemeMenuIdBase + static_cast<UINT>(kCustomThemeIndex), L"Custom Colors");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(themeMenu), L"Theme");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 49, L"检查更新…");
     AppendMenuW(menu, MF_STRING, 9, L"Open Windhawk settings");
 
     SetForegroundWindow(hwnd);
@@ -9891,6 +9942,7 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
             g_layoutDirty = true;
             TriggerNudge();
             break;
+        case 49: CheckIslandUpdates(hwnd); break;
         case 48: ShowNbaSetup(hwnd); break;
         case 46: ShowImportantDays(hwnd); break;
         case 45: {
@@ -10245,9 +10297,9 @@ class Renderer {
                 const float shift = CaptionDockShift(g_captionDockAnchor.load(),
                     g_captionDockBlend.load());
                 const float screenLeft = (std::max)(static_cast<float>(work.left + 12),
-                    (work.left + work.right - width) * 0.5f + settings.offsetX + shift);
+                    (work.left + work.right - width) * 0.5f + settings.offsetX + shift) + g_islandDragX.load();
                 left = screenLeft - window.left;
-                top = monitor.rcMonitor.top + 8 + g_compactInsetY.load() - window.top + nudge;
+                top = monitor.rcMonitor.top + 8 + g_compactInsetY.load() - window.top + nudge + g_islandDragY.load();
             }
         }
 
@@ -15654,6 +15706,9 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
             break;
         case WM_CREATE:
+            g_islandManuallyPlaced = Wh_GetIntValue(L"IslandManuallyPlaced", 0) != 0;
+            g_islandDragX = g_islandManuallyPlaced ? Wh_GetIntValue(L"IslandDragX", 0) : 0;
+            g_islandDragY = g_islandManuallyPlaced ? Wh_GetIntValue(L"IslandDragY", 0) : 0;
             SetTimer(hwnd, 0x449, 45000, nullptr);
             AddClipboardFormatListener(hwnd);
             if (g_shellHookMessage == 0) g_shellHookMessage = RegisterWindowMessageW(L"SHELLHOOK");
@@ -15738,7 +15793,14 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         }
 
+        case WM_CANCELMODE:
+            if (g_islandDragging.load()) {
+                FinishIslandDrag();
+                ReleaseCapture();
+            }
+            return 0;
         case WM_DESTROY:
+            FinishIslandDrag();
             RemoveClipboardFormatListener(hwnd);
             DeregisterShellHookWindow(hwnd);
             return 0;
@@ -15912,6 +15974,18 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         case WM_LBUTTONDOWN:
             {
+                if ((GetAsyncKeyState(VK_MENU) & 0x8000) && !Wh_GetIntValue(L"UpdateRequested", 0)) {
+                    if (!GetCursorPos(&g_islandDragStart)) return 0;
+                    const int dockShift = static_cast<int>(std::lround(CaptionDockShift(
+                        g_captionDockAnchor.load(), g_captionDockBlend.load())));
+                    g_islandDragOrigin = {g_islandDragX.load() + dockShift, g_islandDragY.load()};
+                    g_islandDragX = g_islandDragOrigin.x;
+                    g_islandManuallyPlaced = true;
+                    g_islandDragging = true;
+                    SetCapture(hwnd);
+                    g_layoutDirty = true;
+                    return 0;
+                }
                 int xPos = GET_X_LPARAM(lParam);
                 int yPos = GET_Y_LPARAM(lParam);
 
@@ -16003,6 +16077,16 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             break;
 
         case WM_MOUSEMOVE: {
+            if (g_islandDragging.load()) {
+                POINT cursor{};
+                if (GetCursorPos(&cursor)) {
+                    const auto offset = DraggedIslandOffset(g_islandDragOrigin, g_islandDragStart, cursor);
+                    g_islandDragX = offset.x;
+                    g_islandDragY = offset.y;
+                    g_layoutDirty = true;
+                }
+                return 0;
+            }
             TRACKMOUSEEVENT tme = {};
             tme.cbSize = sizeof(TRACKMOUSEEVENT);
             tme.dwFlags = TME_LEAVE;
@@ -16123,6 +16207,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
 
         case WM_CAPTURECHANGED:
+            FinishIslandDrag();
             g_volumeDragging=false;
             if (reinterpret_cast<HWND>(lParam) != hwnd) {
                 if (g_scrubbing.exchange(false)) {
@@ -16139,6 +16224,11 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         case WM_LBUTTONUP:
             {
+                if (g_islandDragging.load()) {
+                    FinishIslandDrag();
+                    ReleaseCapture();
+                    return 0;
+                }
                 if (g_volumeDragging.exchange(false)) {
                     SetIslandVolume(VolumePercentAt(VolumePointFromClient(GET_X_LPARAM(lParam),GET_Y_LPARAM(lParam))));
                     ReleaseCapture();
@@ -16789,7 +16879,7 @@ DWORD WINAPI RenderThreadProc(void*) {
 
         if (now >= nextUpdaterPoll) {
             nextUpdaterPoll = now + 1.0;
-            const bool busy = snapshot.timer.active || g_importantDaysOpen.load();
+            const bool busy = snapshot.timer.active || g_importantDaysOpen.load() || g_islandDragging.load();
             Wh_SetStringValue(L"UpdateVersion", WH_MOD_VERSION);
             Wh_SetIntValue(L"UpdatePid", GetCurrentProcessId());
             Wh_SetIntValue(L"UpdateHeartbeat", GetTickCount64() / 1000);
@@ -17206,13 +17296,19 @@ DWORD WINAPI RenderThreadProc(void*) {
         // transparent and click-through in ANY state, so clicks pass through
         // to windows underneath. Releasing Ctrl or moving away restores it.
         const bool ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-        const bool ctrlHoverCT = hover && ctrlHeld;
+        const bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+        const bool ctrlHoverCT = hover && ctrlHeld && !altHeld && !g_islandDragging.load();
 
-        SetClickThrough(hwnd, (primary.kind == IslandKind::Idle && !draggingOrHover && !pinned) || ctrlHoverCT);
+        SetClickThrough(hwnd, !g_islandDragging.load() && !altHeld && ((primary.kind == IslandKind::Idle && !draggingOrHover && !pinned) || ctrlHoverCT));
 
+        if (g_islandManuallyPlaced.load()) {
+            // Manual placement owns the position; automatic title-bar docking must not pull it back.
+            dockAnchor = {};
+            dockBlend = {};
+        }
         GUITHREADINFO dockGui{sizeof(GUITHREADINFO)};
         // Custom title bars may bypass the system move loop, so also pause while pressed.
-        const bool dockPaused = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) ||
+        const bool dockPaused = g_islandManuallyPlaced.load() || (GetAsyncKeyState(VK_LBUTTON) & 0x8000) ||
             (GetGUIThreadInfo(0, &dockGui) && (dockGui.flags & GUI_INMOVESIZE));
         if (dockPaused) {
             nextCaptionScan = now + 0.12;

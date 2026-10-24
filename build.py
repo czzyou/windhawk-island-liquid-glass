@@ -361,10 +361,12 @@ build_version = '1.3.1-local.60'
 if '--release' in sys.argv:
     from release_patch import apply_release
     from updater_patch import apply_updater
+    from island_drag_patch import apply_island_drag
     release = json.loads((root/'release.json').read_text(encoding='utf-8-sig'))
     assert re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', release['version'])
     assert re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,38}', release['author'])
     src = apply_updater(apply_release(src, release['version'], release['author']))
+    src = apply_island_drag(src)
     build_id = 'dynamic-island-liquid-glass'
     build_version = release['version']
 settings_yaml = src.split('// ==WindhawkModSettings==', 1)[1].split('/*', 1)[1].split('*/', 1)[0]
@@ -374,6 +376,8 @@ out = root/(build_id + '.wh.cpp')
 assert 'renderSettings.sizeScale *= compactDrawScale' not in src
 assert 'Scale(contentScale, contentScale, pillCenter)' in src
 out.write_text(src, encoding='utf-8')
+if '--source-only' in sys.argv:
+    sys.exit(0)
 compiler=Path(r'C:\Program Files\Windhawk\Compiler')
 clang=compiler/'bin/clang++.exe'
 

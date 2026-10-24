@@ -12,7 +12,9 @@
 
 每次开机首次登录后延迟 60 秒自动检查一次；不会每隔几分钟轮询，也不会在同次开机重新登录或休眠唤醒后重复检查。
 
-开始菜单 **Windhawk Island → Check for updates** 可随时手动检测。检测到新版本就自动下载、校验签名、编译并切换，保留天气城市、NBA 主队、日程和外观设置。忙碌或断网时保持旧版，下次开机或手动检查再试。
+按住 **Alt＋鼠标左键** 可拖动灵动岛，松开左键后记住位置。手动放置后暂停自动标题栏避让，避免被拉回。
+
+右键灵动岛 → **检查更新…** 可随时手动检测。检测到新版本就自动下载、校验签名、编译并切换，保留天气城市、NBA 主队、日程和外观设置。忙碌或断网时保持旧版，下次开机或手动检查再试。
 
 **Roll back previous version** 回退上一版；**Uninstall updater** 只移除更新机制，保留插件与个人数据。
 
@@ -20,14 +22,14 @@
 
 ## 修改与发布
 
-维护者修改 `release.json` 中的正式版本后运行：
+固定操作见 [发布流程](发布流程.md)：修改与本机试用之后，用户确认发布，再提交源码并发布正式 Release。只 push 代码不会让使用者收到更新。
+
+日常发布使用现有签名密钥，不需要重新初始化。更新版本和说明后，先准备附件并提交、推送源码，再运行发布命令：
 
 ```powershell
-python -m pip install -r requirements.txt
-# 首次生成私钥，存于当前用户的 LOCALAPPDATA，绝不上传
-powershell -NoProfile -File updater/publish.ps1 -InitializeKey
 # 生成并检查附件，不发布
 powershell -NoProfile -File updater/publish.ps1 -PrepareOnly
+# 按发布流程提交并推送源码
 # 上传草稿，附件齐全后发布为 Latest 正式版
 powershell -NoProfile -File updater/publish.ps1 -NotesFile RELEASE_NOTES.md
 ```

@@ -7,6 +7,38 @@ def apply_updater(src):
         assert src.count(old) == 1, (old[:90], src.count(old))
         src = src.replace(old, new, 1)
 
+    change('void ShowContextMenu(HWND hwnd, POINT screenPoint) {', r'''void CheckIslandUpdates(HWND hwnd) {
+    wchar_t programFiles[MAX_PATH]{};
+    DWORD count = GetEnvironmentVariableW(L"ProgramW6432", programFiles, ARRAYSIZE(programFiles));
+    if (!count) count = GetEnvironmentVariableW(L"ProgramFiles", programFiles, ARRAYSIZE(programFiles));
+    if (!count || count >= ARRAYSIZE(programFiles)) {
+        MessageBoxW(hwnd, L"无法找到更新工具目录。", L"检查更新", MB_OK | MB_ICONERROR);
+        return;
+    }
+    const std::wstring script = std::wstring(programFiles) + L"\\Windhawk-Island-Updater\\check.ps1";
+    if (GetFileAttributesW(script.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        MessageBoxW(hwnd, L"尚未安装更新工具，请先运行安装包中的 install.cmd。", L"检查更新", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    wchar_t windows[MAX_PATH]{};
+    count = GetWindowsDirectoryW(windows, ARRAYSIZE(windows));
+    if (!count || count >= ARRAYSIZE(windows)) return;
+    BOOL wow64 = FALSE;
+    IsWow64Process(GetCurrentProcess(), &wow64);
+    const std::wstring executable = std::wstring(windows) + (wow64
+        ? L"\\Sysnative\\WindowsPowerShell\\v1.0\\powershell.exe"
+        : L"\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    const std::wstring arguments = L"-NoProfile -WindowStyle Hidden -File \"" + script + L"\" -Mode Manual";
+    if (reinterpret_cast<INT_PTR>(ShellExecuteW(hwnd, L"open", executable.c_str(), arguments.c_str(), nullptr, SW_HIDE)) <= 32)
+        MessageBoxW(hwnd, L"无法启动更新检查，请稍后重试。", L"检查更新", MB_OK | MB_ICONERROR);
+}
+
+void ShowContextMenu(HWND hwnd, POINT screenPoint) {''')
+    change('    AppendMenuW(menu, MF_STRING, 9, L"Open Windhawk settings");',
+           '    AppendMenuW(menu, MF_STRING, 49, L"检查更新…");\n    AppendMenuW(menu, MF_STRING, 9, L"Open Windhawk settings");')
+    change('        case 48: ShowNbaSetup(hwnd); break;',
+           '        case 49: CheckIslandUpdates(hwnd); break;\n        case 48: ShowNbaSetup(hwnd); break;')
+
     for marker in ('void StartFocusTimer(int minutes, bool isBreak) {',
                    'void ShowContextMenu(HWND hwnd, POINT screenPoint) {',
                    'void ShowNbaSetup(HWND owner, bool firstRun = false) {',

@@ -58,13 +58,13 @@ foreach ($mode in @('Auto','Manual','Rollback')) {
 $shell = New-Object -ComObject WScript.Shell
 $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'Windhawk Island'
 New-Item -ItemType Directory -Path $menu -Force | Out-Null
-foreach ($pair in @(@('Check for updates','Manual'),@('Roll back previous version','Rollback'))) {
-    $link = $shell.CreateShortcut((Join-Path $menu ($pair[0]+'.lnk')))
-    $link.TargetPath=$powershell
-    $link.Arguments='-NoProfile -WindowStyle Hidden -File "'+(Join-Path $installRoot 'check.ps1')+'" -Mode '+$pair[1]
-    $link.WindowStyle=7
-    $link.Save()
-}
+$legacyShortcut=Join-Path $menu 'Check for updates.lnk'
+if (Test-Path -LiteralPath $legacyShortcut) { Remove-Item -LiteralPath $legacyShortcut -Force }
+$link = $shell.CreateShortcut((Join-Path $menu 'Roll back previous version.lnk'))
+$link.TargetPath=$powershell
+$link.Arguments='-NoProfile -WindowStyle Hidden -File "'+(Join-Path $installRoot 'check.ps1')+'" -Mode Rollback'
+$link.WindowStyle=7
+$link.Save()
 $remove = $shell.CreateShortcut((Join-Path $menu 'Uninstall updater.lnk'))
 $remove.TargetPath=$powershell
 $remove.Arguments='-NoProfile -File "'+(Join-Path $installRoot 'uninstall.ps1')+'"'
