@@ -1,0 +1,1 @@
+var dataSK={"nameen":"shenyang","cityname":"沈阳","city":"101070101","temp":"16.1","tempf":"61","WD":"北风","wde":"N","WS":"2级","wse":"6km\/h","SD":"39%","sd":"39%","qy":"1020","njd":"30km","time":"11:25","rain":"0","rain24h":"0","aqi":"57","aqi_pm25":"57","weather":"晴","weathere":"Sunny","weathercode":"d00","limitnumber":"","date":"10月16日(星期五)"}

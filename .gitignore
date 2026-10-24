@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+/*.dll
+/*.exe
+/*-checks.cpp
+/32/
+/release-output/
+*.reg
+*.log
+*.dpapi
+*.zip
+updater/.test-*/
+updater/*.tmp.json

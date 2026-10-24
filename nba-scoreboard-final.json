@@ -1,0 +1,67 @@
+{
+  "events": [
+    {
+      "id": "401900001",
+      "name": "Boston Celtics at Detroit Pistons",
+      "shortName": "BOS @ DET",
+      "links": [
+        {
+          "href": "https://www.espn.com/nba/game/_/gameId/401900001"
+        }
+      ],
+      "status": {
+        "clock": 0.0,
+        "displayClock": "0:00",
+        "period": 4,
+        "type": {
+          "state": "post",
+          "completed": true,
+          "shortDetail": "Final"
+        }
+      },
+      "competitions": [
+        {
+          "status": {
+            "clock": 0.0,
+            "displayClock": "0:00",
+            "period": 4,
+            "type": {
+              "state": "post",
+              "completed": true,
+              "shortDetail": "Final"
+            }
+          },
+          "competitors": [
+            {
+              "homeAway": "home",
+              "score": "111",
+              "team": {
+                "abbreviation": "DET",
+                "shortDisplayName": "Pistons"
+              },
+              "records": [
+                {
+                  "summary": "2-1"
+                }
+              ]
+            },
+            {
+              "homeAway": "away",
+              "score": "108",
+              "team": {
+                "abbreviation": "BOS",
+                "shortDisplayName": "Celtics"
+              },
+              "records": [
+                {
+                  "summary": "3-1"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "date": "2026-10-20T19:00Z"
+    }
+  ]
+}
