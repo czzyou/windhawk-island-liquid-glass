@@ -949,9 +949,29 @@ ui_test += '''int main() {
 subprocess.run([str(clang),'-std=c++23','-static',str(root/'timer-ui-checks.cpp'),'-o',str(root/'timer-ui-checks.exe')],cwd=compiler,check=True)
 subprocess.run([str(root/'timer-ui-checks.exe')],check=True)
 print('Timer panel checks passed: centered two-button geometry, hit rejection and companion target',flush=True)
-glass_test = '#include <windows.h>\n#include <d2d1.h>\n#include <array>\n#include <cassert>\n'
+glass_test = '#include <windows.h>\n#include <d2d1.h>\n#include <d3dcompiler.h>\n#include <algorithm>\n#include <cstdio>\n#include <array>\n#include <cassert>\n'
 glass_test += (root/'liquid-glass-rim.h').read_text(encoding='utf-8')
+glass_renderer = (root/'native-glass/src/renderer.cc').read_text(encoding='utf-8')
+glass_test += glass_renderer[glass_renderer.index('const char kShaderSource[]'):glass_renderer.index('\nstruct ShaderParams {')]
+glass_profile = glass_renderer[glass_renderer.index('    float u = saturate('):glass_renderer.index('    disp = nrm')]
+glass_test += 'float saturate(float x) { return std::clamp(x, 0.0f, 1.0f); }\nfloat GlassRimProfile(float t) { float bump = 0;\n' + glass_profile + '\nreturn bump; }\n'
 glass_test += '''int main() {
+ for(const char* entry : {"VSMain", "PSBlur", "PSLens"}) {
+   ID3DBlob *code=nullptr, *errors=nullptr;
+   const HRESULT hr=D3DCompile(kShaderSource, sizeof(kShaderSource)-1, nullptr, nullptr, nullptr,
+       entry, entry[0]=='V' ? "vs_5_0" : "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
+   if(errors) { std::fputs(static_cast<const char*>(errors->GetBufferPointer()), stderr); errors->Release(); }
+   assert(SUCCEEDED(hr));
+   code->Release();
+ }
+ assert(GlassRimProfile(0)==0 && GlassRimProfile(1)==0);
+ assert(GlassRimProfile(0.42f)>0.99999f && GlassRimProfile(0.42f)<1.00001f);
+ for(int i=1;i<=1000;i++) {
+   const float t=i/1000.0f, value=GlassRimProfile(t);
+   assert(value>=-0.00001f && value<=1.00001f);
+   const float slope=(value-GlassRimProfile(t-0.001f))/0.001f;
+   assert(slope*0.13f<0.6f);
+ }
  const auto stops=LiquidGlassRimStops();
  assert(stops.front().position==0 && stops.back().position==1);
  for(size_t i=0;i<stops.size();i++) {
@@ -963,9 +983,9 @@ glass_test += '''int main() {
  assert(stops[0].color.a==105/255.0f && stops[6].color.a==101/255.0f);
 }'''
 (root/'glass-checks.cpp').write_text(glass_test,encoding='utf-8')
-subprocess.run([str(clang),'-std=c++23','-static',str(root/'glass-checks.cpp'),'-o',str(root/'glass-checks.exe')],cwd=compiler,check=True)
+subprocess.run([str(clang),'-std=c++23','-static',str(root/'glass-checks.cpp'),'-ld3dcompiler','-o',str(root/'glass-checks.exe')],cwd=compiler,check=True)
 subprocess.run([str(root/'glass-checks.exe')],check=True)
-print('Glass-rim checks passed: LiquidGlass2 color stops, alpha and gradient ordering',flush=True)
+print('Glass-rim checks passed: shader compilation, smooth refraction profile, RGB slope bound and gradient stops',flush=True)
 brief_test = (root/'weather-checks.cpp').read_text(encoding='utf-8').split('bool ParseChinaWeather(')[0]
 brief_test += (root/'tomorrow-brief-checks.inc').read_text(encoding='utf-8')
 (root/'tomorrow-brief-checks.cpp').write_text(brief_test,encoding='utf-8')

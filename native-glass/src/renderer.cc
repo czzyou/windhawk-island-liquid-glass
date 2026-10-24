@@ -21,7 +21,13 @@ cbuffer P : register(b0) {
 };
 
 Texture2D tex : register(t0);
+Texture2D sharpTex : register(t1);
 SamplerState smp : register(s0);
+
+float3 scRGBToDisplay(float3 color) {
+  float3 v = saturate(color * whiteScale);
+  return lerp(12.92 * v, 1.055 * pow(v, 1.0 / 2.4) - 0.055, step(0.0031308, v));
+}
 
 // Fullscreen triangle
 float4 VSMain(uint id : SV_VertexID) : SV_Position {
@@ -38,8 +44,7 @@ float4 PSBlur(float4 pos : SV_Position) : SV_Target {
     + (tex.Sample(smp, uv + dir * 2.0) + tex.Sample(smp, uv - dir * 2.0)) * 0.0545;
   if (hdrSource > 0.5) {
     // scRGB is linear with SDR white boosted by the monitor's Windows white level.
-    float3 v = saturate(c.rgb * whiteScale);
-    c.rgb = lerp(12.92 * v, 1.055 * pow(v, 1.0 / 2.4) - 0.055, step(0.0031308, v));
+    c.rgb = scRGBToDisplay(c.rgb);
     c.a = 1.0;
   }
   return c;
@@ -72,14 +77,7 @@ float4 PSLens(float4 pos : SV_Position) : SV_Target {
   float coverage = saturate(0.5 - sd);
   if (coverage <= 0.0) return float4(0, 0, 0, 0);
 
-  // Liquid meniscus rim (iOS edge treatment): the band redistributes its OWN
-  // content — swell (stretch) near the boundary, catch-up compression toward
-  // the center. Sampling map s(d) = -d + bump(t)·bend is continuous at BOTH
-  // ends (bump(0)=bump(1)=0): content connects seamlessly across the glass
-  // edge (no cut line) and into the clear center. Injectivity: the rise slope
-  // is capped via maxBend ≤ 0.7/1.5·tp·bezel, so |stretch| ≤ ~3.3× and the
-  // mirrored "tongue" fold is structurally impossible; the fall side only
-  // compresses (slope < -1), which is always injective.
+  // C2 meniscus profile joins both the boundary and clear center without a crease.
   float depth = -sd;
   float2 disp = float2(0, 0);
   float2 nrm = float2(0, 0);
@@ -93,20 +91,17 @@ float4 PSLens(float4 pos : SV_Position) : SV_Target {
     nrm = (qs / max(length(qs), 1e-4)) * sign(p + float2(1e-6, 1e-6));
     float t = depth / bezel;
     edgeW = (1.0 - t) * (1.0 - t);
-    // C¹ bump: smoothstep rise to the peak at t = 0.62, smoothstep fall to 0
-    float u = saturate(t < 0.62 ? t / 0.62 : (1.0 - t) / 0.38);
-    bump = u * u * (3.0 - 2.0 * u);
+    float u = saturate(t < 0.42 ? t / 0.42 : (1.0 - t) / 0.58);
+    bump = u * u * u * (u * (u * 6.0 - 15.0) + 10.0);
     disp = nrm * (bump * maxBend * min(dispFactor, 1.0));
   }
 
-  // 5-tap footprint integration inside the compression band (radial spread +
-  // tangential streaking): the rim maps content at 2-3× minification, so point
-  // sampling would alias/moiré. The radial spread widens adaptively with
-  // compression strength for anti-aliasing while keeping the compressed
-  // content recognizable (the "flowing light band" feel of Apple's rims).
+  // Integrate the compressed footprint; offsets vanish with the bump so the
+  // five taps converge to the clear-center sample without a threshold jump.
   float3 c;
   float dispLen2 = dot(disp, disp);
-  if (dispLen2 > 0.25) {
+  float2 chroma = nrm * (bump * aberration);
+  if (bump > 0.0) {
     float2 tangent = float2(nrm.y, -nrm.x) * sqrt(dispLen2);
     float rs = 0.05 + 0.10 * bump;
     float radial[5] = { 1.0 - 2.0 * rs, 1.0 - rs, 1.0, 1.0 + rs, 1.0 + 2.0 * rs };
@@ -116,13 +111,21 @@ float4 PSLens(float4 pos : SV_Position) : SV_Target {
     [unroll] for (int i = 0; i < 5; ++i) {
       float2 d = disp * radial[i] + tangent * lateral[i];
       c += wts[i] * float3(
-          tex.Sample(smp, toBlurUV(css + d)).r,
-          tex.Sample(smp, toBlurUV(css + d * (1.0 - aberration * 0.05))).g,
-          tex.Sample(smp, toBlurUV(css + d * (1.0 - aberration * 0.1))).b);
+          tex.Sample(smp, toBlurUV(css + d + chroma)).r,
+          tex.Sample(smp, toBlurUV(css + d)).g,
+          tex.Sample(smp, toBlurUV(css + d - chroma)).b);
     }
   } else {
     c = tex.Sample(smp, toBlurUV(css + disp)).rgb;
   }
+  // Clear glass keeps full-resolution detail throughout, with a little interior softness.
+  float3 sharp = float3(
+      sharpTex.Sample(smp, toBlurUV(css + disp + chroma)).r,
+      sharpTex.Sample(smp, toBlurUV(css + disp)).g,
+      sharpTex.Sample(smp, toBlurUV(css + disp - chroma)).b);
+  if (hdrSource > 0.5) sharp = scRGBToDisplay(sharp);
+  float sharpMix = 0.85 + 0.15 * (1.0 - smoothstep(0.0, 1.0, saturate(depth / bezel)));
+  c = lerp(c, sharp, sharpMix);
   float lum = dot(c, float3(0.213, 0.715, 0.072));
   c = lerp(lum.xxx, c, saturation);
 
@@ -396,17 +399,11 @@ void GlassRenderer::RunPasses(ID3D11DeviceContext* ctx, GlassPanel& panel, float
     const float panelH = static_cast<float>(pb.bottom - pb.top);
     const float margin = kBlurMarginCss * dpr;
 
-    // Lens geometry matching the WebGL implementation (physical pixels).
-    // iOS-style wide wet rim: the band takes up to 75% of the half-min
-    // dimension (small pills are almost all lens, larger surfaces keep a clear
-    // center). maxBend = peak of the meniscus bump, slope-limited so the
-    // sampling map stays injective: rise slope = 1.5/tp·maxBend/bezel ≤ 0.7
-    // (max ~3.3× local stretch, tp = 0.62) ⇒ maxBend = 0.7/1.5·0.62·bezel.
-    // Well inside the blur margin (≈0.29·bezel ≪ kBlurMarginCss·dpr), so
-    // footprint taps never sample outside the region.
+    // Keep a broad transition, with RGB center-sample slope capped below 0.6:
+    // smootherstep's peak derivative is 1.875, so 1.875/0.42 * (0.04+0.09) < 0.6.
     const float halfMin = std::min(panelW, panelH) / 2.0f;
     const float bezel = std::min(34.0f * dpr, halfMin * 0.75f);
-    const float maxBend = 0.289f * bezel;
+    const float maxBend = 0.04f * bezel;
 
     ShaderParams params{};
     params.glassSize[0] = panelW;
@@ -415,7 +412,7 @@ void GlassRenderer::RunPasses(ID3D11DeviceContext* ctx, GlassPanel& panel, float
     params.bezel = bezel;
     params.maxBend = maxBend;
     params.dispFactor = gp.displacementScale / 70.0f;
-    params.aberration = gp.aberrationIntensity;
+    params.aberration = std::min(gp.aberrationIntensity * 4.0f * dpr, bezel * 0.09f);
     params.saturation = gp.saturation;
     params.margin = margin;
     params.alpha = panel.opacity() * gp.opacity;
@@ -474,13 +471,16 @@ void GlassRenderer::RunPasses(ID3D11DeviceContext* ctx, GlassPanel& panel, float
     if (!backBuffer) return;
     params.outSize[0] = panelW;
     params.outSize[1] = panelH;
+    params.hdrSource = regionFormat_ == DXGI_FORMAT_R16G16B16A16_FLOAT ? 1.0f : 0.0f;
     ctx->UpdateSubresource(cb_.Get(), 0, nullptr, &params, 0, 0);
     ctx->OMSetRenderTargets(1, &backBuffer, nullptr);
     setViewport(panelW, panelH);
     ctx->PSSetShader(lensPs_.Get(), nullptr, 0);
-    ctx->PSSetShaderResources(0, 1, blurSrvB_.GetAddressOf());
+    ID3D11ShaderResourceView* lensSources[] = { blurSrvB_.Get(), regionSrv_.Get() };
+    ctx->PSSetShaderResources(0, 2, lensSources);
     ctx->Draw(3, 0);
-    ctx->PSSetShaderResources(0, 1, &nullSrv);
+    lensSources[0] = lensSources[1] = nullptr;
+    ctx->PSSetShaderResources(0, 2, lensSources);
     ID3D11RenderTargetView* nullRtv = nullptr;
     ctx->OMSetRenderTargets(1, &nullRtv, nullptr);
 
