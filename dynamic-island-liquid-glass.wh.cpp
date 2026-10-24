@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.4.3
+// @version         1.4.4
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -9849,9 +9849,7 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         }
     }
-    AppendMenuW(menu, MF_STRING, 40, g_manuallyHidden.load() ? L"Show Island" : L"Hide Island");
     AppendMenuW(menu, MF_STRING, 1, L"Dismiss");
-    AppendMenuW(menu, MF_STRING, 45, L"Edit notification app mappings");
     AppendMenuW(menu, MF_STRING, 46, L"重要日子…");
     AppendMenuW(menu, MF_STRING, 48, L"NBA 主队设置…");
 
@@ -9881,42 +9879,10 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
     }
     AppendMenuW(menu, MF_STRING, 2, L"Pin expanded");
     AppendMenuW(menu, MF_STRING, 3, Wh_GetIntValue(L"GameOverlayPinned", 0) ? L"Hide game overlay" : L"Show game overlay");
-    std::wstring shapeStr = GetStringSettingCopy(L"Appearance.ShapeStyle");
-    const int activeW11 = Wh_GetIntValue(L"W11StyleOverride", -1) >= 0
-                          ? Wh_GetIntValue(L"W11StyleOverride", 0)
-                          : EqualsNoCase(shapeStr, L"w11");
-    AppendMenuW(menu, MF_STRING, 10, activeW11 ? L"Use iPhone Pill Style" : L"Use Windows 11 Flyout Style");
-    const int activeNotch = Wh_GetIntValue(L"NotchStyleOverride", -1) >= 0
-                          ? Wh_GetIntValue(L"NotchStyleOverride", 0)
-                          : EqualsNoCase(shapeStr, L"notch");
-    if (IsBottomPosition(g_settings.position)) {
-        AppendMenuW(menu, MF_STRING | MF_GRAYED | MF_DISABLED, 12, L"macOS Notch (Unavailable at Bottom)");
-    } else {
-        AppendMenuW(menu, MF_STRING, 12, activeNotch ? L"Disable macOS Notch Style" : L"Use macOS Notch Style");
-    }
     const int activeExpandOnHover = Wh_GetIntValue(L"ExpandOnHoverOverride", -1) >= 0
                           ? Wh_GetIntValue(L"ExpandOnHoverOverride", 0)
                           : (Wh_GetIntSetting(L"Behavior.ExpandOnHover") != 0);
     AppendMenuW(menu, MF_STRING, 11, activeExpandOnHover ? L"Expand on Click" : L"Expand on Hover");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, 4, L"Transparency 100%");
-    AppendMenuW(menu, MF_STRING, 5, L"Transparency 85%");
-    AppendMenuW(menu, MF_STRING, 6, L"Transparency 70%");
-    AppendMenuW(menu, MF_STRING, 7, L"Transparency 55%");
-    AppendMenuW(menu, MF_STRING, 8, L"Reset transparency");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    // Color theme presets. Built from kThemePalettes and nested in a submenu:
-    // nine palettes listed flat would dominate the root menu.
-    const int activeTheme = Wh_GetIntValue(kThemeValueName, static_cast<int>(g_settings.themePreset));
-    HMENU themeMenu = CreatePopupMenu();
-    for (int i = 0; i < kCustomThemeIndex; ++i) {
-        AppendMenuW(themeMenu, MF_STRING | (activeTheme == i ? MF_CHECKED : 0),
-                    kThemeMenuIdBase + static_cast<UINT>(i), kThemePalettes[i].label);
-    }
-    AppendMenuW(themeMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(themeMenu, MF_STRING | (activeTheme >= kCustomThemeIndex ? MF_CHECKED : 0),
-                kThemeMenuIdBase + static_cast<UINT>(kCustomThemeIndex), L"Custom Colors");
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(themeMenu), L"Theme");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 49, L"检查更新…");
     AppendMenuW(menu, MF_STRING, 9, L"Open Windhawk settings");
@@ -9925,15 +9891,6 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
     const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
                                    screenPoint.x, screenPoint.y, 0, hwnd, nullptr);
     DestroyMenu(menu);
-
-    // Theme ids are a contiguous range rather than individual cases, so adding a
-    // palette to kThemePalettes needs no change here.
-    if (cmd >= kThemeMenuIdBase &&
-        cmd <= kThemeMenuIdBase + static_cast<UINT>(kCustomThemeIndex)) {
-        Wh_SetIntValue(kThemeValueName, static_cast<int>(cmd - kThemeMenuIdBase));
-        LoadSettings();
-        return;
-    }
 
     switch (cmd) {
         case 47:
@@ -9945,12 +9902,6 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
         case 49: CheckIslandUpdates(hwnd); break;
         case 48: ShowNbaSetup(hwnd); break;
         case 46: ShowImportantDays(hwnd); break;
-        case 45: {
-            const auto path = NotificationMappingsPath();
-            const auto arguments = L"\"" + path + L"\"";
-            ShellExecuteW(hwnd, L"open", L"notepad.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL);
-            break;
-        }
         case 1:
             DismissTransientState();
             g_clickExpanded = false;
@@ -9962,26 +9913,6 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
             break;
         case 3:
             Wh_SetIntValue(L"GameOverlayPinned", Wh_GetIntValue(L"GameOverlayPinned", 0) ? 0 : 1);
-            break;
-        case 4:
-            Wh_SetIntValue(L"PillOpacityOverride", 100);
-            LoadSettings();
-            break;
-        case 5:
-            Wh_SetIntValue(L"PillOpacityOverride", 85);
-            LoadSettings();
-            break;
-        case 6:
-            Wh_SetIntValue(L"PillOpacityOverride", 70);
-            LoadSettings();
-            break;
-        case 7:
-            Wh_SetIntValue(L"PillOpacityOverride", 55);
-            LoadSettings();
-            break;
-        case 8:
-            Wh_SetIntValue(L"PillOpacityOverride", -1);
-            LoadSettings();
             break;
         case 9: {
             // Launch the Windhawk UI, resolved relative to our own module rather
@@ -10023,32 +9954,6 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
             }
             break;
         }
-        case 10: {
-            std::wstring shapeStr = GetStringSettingCopy(L"Appearance.ShapeStyle");
-            const int activeW11Val = Wh_GetIntValue(L"W11StyleOverride", -1) >= 0
-                                  ? Wh_GetIntValue(L"W11StyleOverride", 0)
-                                  : EqualsNoCase(shapeStr, L"w11");
-            Wh_SetIntValue(L"W11StyleOverride", activeW11Val ? 0 : 1);
-            if (!activeW11Val) Wh_SetIntValue(L"NotchStyleOverride", 0);
-            LoadSettings();
-            g_layoutDirty = true;
-            break;
-        }
-        case 12: {
-            if (IsBottomPosition(g_settings.position)) {
-                break;
-            }
-            std::wstring shapeStr = GetStringSettingCopy(L"Appearance.ShapeStyle");
-            const int activeNotchVal = Wh_GetIntValue(L"NotchStyleOverride", -1) >= 0
-                                    ? Wh_GetIntValue(L"NotchStyleOverride", 0)
-                                    : EqualsNoCase(shapeStr, L"notch");
-            Wh_SetIntValue(L"NotchStyleOverride", activeNotchVal ? 0 : 1);
-            if (!activeNotchVal) Wh_SetIntValue(L"W11StyleOverride", 0);
-            LoadSettings();
-            g_layoutDirty = true;
-            TriggerNudge();
-            break;
-        }
         case 11: {
             const int activeExpandOnHover = Wh_GetIntValue(L"ExpandOnHoverOverride", -1) >= 0
                                   ? Wh_GetIntValue(L"ExpandOnHoverOverride", 0)
@@ -10073,19 +9978,6 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
         case 34:
             StopFocusTimer();
             break;
-        case 40: {
-            // Only reachable while visible (a hidden window can't be
-            // right-clicked), so in practice this toggles hidden -> the
-            // hotkey is the only way back. That's intentional; see readme.
-            const bool nowHidden = !g_manuallyHidden.load();
-            g_manuallyHidden = nowHidden;
-            Wh_SetIntValue(L"ManuallyHidden", nowHidden ? 1 : 0);
-            if (nowHidden) {
-                g_hotkeyUnhideUntil.store(0.0);
-            }
-            g_layoutDirty = true;
-            break;
-        }
         case 41: {
             // Clear the File Tray. Only the island's references are dropped --
             // nothing on disk is touched.

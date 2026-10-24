@@ -356,6 +356,37 @@ from tomorrow_brief_patch import apply_tomorrow_brief
 src = apply_tomorrow_brief(src)
 from calendar_markers_patch import apply_calendar_markers
 src = apply_calendar_markers(src)
+
+# Trim inherited menu commands after feature patches have used their insertion anchors.
+menu_start = src.index('void ShowContextMenu(HWND hwnd, POINT screenPoint) {')
+menu_end = src.index('\n}\n', menu_start) + 3
+old_menu = src[menu_start:menu_end]
+menu = old_menu
+for line in (
+    '    AppendMenuW(menu, MF_STRING, 40, g_manuallyHidden.load() ? L"Show Island" : L"Hide Island");\n',
+    '    AppendMenuW(menu, MF_STRING, 45, L"Edit notification app mappings");\n',
+):
+    assert menu.count(line) == 1
+    menu = menu.replace(line, '', 1)
+for begin, end in (
+    ('    std::wstring shapeStr = GetStringSettingCopy(L"Appearance.ShapeStyle");',
+     '    const int activeExpandOnHover ='),
+    ('    AppendMenuW(menu, MF_STRING, 4, L"Transparency 100%");',
+     '    AppendMenuW(menu, MF_STRING, 9, L"Open Windhawk settings");'),
+    ('    // Theme ids are a contiguous range', '    switch (cmd) {'),
+    ('        case 45: {', '        case 1:'),
+    ('        case 4:', '        case 9: {'),
+    ('        case 10: {', '        case 11: {'),
+    ('        case 40: {', '        case 41: {'),
+):
+    begin_at = menu.index(begin)
+    end_at = menu.index(end, begin_at)
+    menu = menu[:begin_at] + menu[end_at:]
+assert 'L"Show game overlay"' in menu and 'case 3:' in menu
+assert 'L"Expand on Click"' in menu and 'case 11:' in menu
+assert not re.search(r'case (?:4|5|6|7|8|10|12|40|45):', menu)
+replace(old_menu, menu)
+
 build_id = 'dynamic-island-for-windows-yasb'
 build_version = '1.3.1-local.60'
 if '--release' in sys.argv:
