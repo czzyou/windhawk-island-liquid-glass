@@ -2,6 +2,11 @@
 param()
 . (Join-Path $PSScriptRoot 'core.ps1')
 Assert-Administrator
+$setupMutex=New-Object Threading.Mutex($false,'Global\Windhawk-Island-Updater')
+$setupLocked=$false
+try {
+try { $setupLocked=$setupMutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $setupLocked=$true }
+if (-not $setupLocked) { throw 'An update is running; wait for it to finish before installing.' }
 $hostEnv = Get-WindhawkEnvironment
 $config = Read-JsonFile (Join-Path $PSScriptRoot 'config.json')
 Assert-Repository $config.repository
@@ -64,6 +69,7 @@ $remove = $shell.CreateShortcut((Join-Path $menu 'Uninstall updater.lnk'))
 $remove.TargetPath=$powershell
 $remove.Arguments='-NoProfile -File "'+(Join-Path $installRoot 'uninstall.ps1')+'"'
 $remove.Save()
+} finally { if ($setupLocked) { $setupMutex.ReleaseMutex() }; $setupMutex.Dispose() }
 & $powershell -NoProfile -File (Join-Path $installRoot 'update.ps1') -Mode Install
 if ($LASTEXITCODE -ne 0) { throw 'Initial installation failed. Check ProgramData\Windhawk-Island-Updater\update.log. Registered shortcuts can retry.' }
 Write-Host 'Installed. Updates are checked once per boot after logon, or through the Start menu shortcut.'

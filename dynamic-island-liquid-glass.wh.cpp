@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.4.0
+// @version         1.4.1
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -9149,7 +9149,6 @@ bool OpenNotificationSource(const std::wstring& appId, const std::wstring& appNa
     launch.lpFile = L"ms-actioncenter:";
     return ShellExecuteExW(&launch) != FALSE;
 }
-
 void HandleStatusClickAtPoint(HWND hwnd, LPARAM lParam) {
     return;
 }

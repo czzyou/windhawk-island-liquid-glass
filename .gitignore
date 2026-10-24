@@ -3,6 +3,7 @@ __pycache__/
 /*.dll
 /*.exe
 /*-checks.cpp
+/checks.cpp
 /32/
 /release-output/
 *.reg

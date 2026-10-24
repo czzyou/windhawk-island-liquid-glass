@@ -2,7 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:ModId = 'local@dynamic-island-liquid-glass'
 $script:PublicId = 'dynamic-island-liquid-glass'
-$script:UpdaterVersion = [version]'1.0.0'
+$script:UpdaterVersion = [version]'1.0.1'
 $script:Utf8 = New-Object System.Text.UTF8Encoding($false, $true)
 
 function Read-JsonFile([string]$Path) {
@@ -323,6 +323,14 @@ function Get-UpdaterState([string]$Root) {
     [pscustomobject]@{ version='0.0.0'; sourceSha256=''; failedVersion=''; boot='' }
 }
 
+function Get-BootIdentity {
+    # Fast Startup preserves LastBootUpTime; count actual cold/hybrid boots, excluding hibernate resumes.
+    $xpath="*[System[Provider[@Name='Microsoft-Windows-Kernel-Boot'] and EventID=27]] and *[EventData[Data[@Name='BootType']='0' or Data[@Name='BootType']='1']]"
+    $event=Get-WinEvent -LogName System -FilterXPath $xpath -MaxEvents 1
+    if (-not $event) { throw 'Cannot identify the current boot. Use the manual check shortcut.' }
+    $event.RecordId.ToString()+':'+$event.TimeCreated.ToUniversalTime().ToString('o')
+}
+
 function Clear-OldStages([string]$Root, [string[]]$Keep) {
     $prefix=[IO.Path]::GetFullPath($Root)+[IO.Path]::DirectorySeparatorChar
     foreach ($dir in Get-ChildItem -LiteralPath $Root -Directory) {
@@ -355,7 +363,7 @@ function Invoke-IslandUpdate($HostEnv, [string]$StateRoot, $Config, [string]$Pub
     Clear-OldStages $StateRoot $keep
     Set-UpdateRequest $HostEnv 0
     if ($Mode -eq 'Auto') {
-        $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')
+        $boot = Get-BootIdentity
         if ($state.boot -ceq $boot) { return 'Already checked this boot.' }
         $state.boot=$boot
         Write-JsonFile (Join-Path $StateRoot 'state.json') $state
