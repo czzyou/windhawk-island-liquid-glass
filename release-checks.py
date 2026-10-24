@@ -13,7 +13,7 @@ assert re.search(r'^// @id\s+dynamic-island-liquid-glass$', source, re.M)
 assert 'Wh_SetIntValue(L"UpdateHeartbeat"' in source
 assert 'Wh_SetIntValue(L"UpdateReady"' in source
 assert 'SetTimer(hwnd, 0x449, 45000, nullptr)' in source
-assert 'AppendMenuW(menu, MF_STRING, 49, L"检查更新…")' in source
+assert 'AppendMenuW(menu, MF_STRING, 49, g_updateAvailable.load() ? L"安装可用更新…" : L"检查更新…")' in source
 assert 'case 49: CheckIslandUpdates(hwnd); break;' in source
 assert not re.search(r'#include\s+"', source), 'Release must be self contained'
 assert '-lcomctl32' in source.split('// ==/WindhawkMod==')[0]

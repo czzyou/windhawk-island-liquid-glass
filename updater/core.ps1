@@ -2,7 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:ModId = 'local@dynamic-island-liquid-glass'
 $script:PublicId = 'dynamic-island-liquid-glass'
-$script:UpdaterVersion = [version]'1.0.1'
+$script:UpdaterVersion = [version]'1.0.2'
 $script:Utf8 = New-Object System.Text.UTF8Encoding($false, $true)
 
 function Read-JsonFile([string]$Path) {
@@ -151,6 +151,11 @@ function Wait-ModStopped {
 function Set-UpdateRequest($HostEnv, [int]$Value) {
     if (-not (Test-Path -LiteralPath $HostEnv.Storage)) { New-Item -Path $HostEnv.Storage -Force | Out-Null }
     New-ItemProperty -LiteralPath $HostEnv.Storage -Name UpdateRequested -PropertyType DWord -Value $Value -Force | Out-Null
+}
+
+function Set-UpdateAvailable($HostEnv, [int]$Value) {
+    if (-not (Test-Path -LiteralPath $HostEnv.Storage)) { New-Item -Path $HostEnv.Storage -Force | Out-Null }
+    New-ItemProperty -LiteralPath $HostEnv.Storage -Name UpdateAvailable -PropertyType DWord -Value $Value -Force | Out-Null
 }
 
 function Get-ModStorage($HostEnv) {
@@ -302,6 +307,7 @@ function Invoke-IslandInstall($HostEnv, [string]$StateRoot, $Manifest, [string]$
         $State.version=$Manifest.version
         $State.sourceSha256=$Manifest.sourceSha256
         $State.failedVersion=''
+        Set-UpdateAvailable $HostEnv 0
         Write-JsonFile (Join-Path $StateRoot 'state.json') $State
         Write-JsonFile (Join-Path $StateRoot 'previous.json') $journal
         Remove-Item -LiteralPath $journalPath -Force
@@ -320,15 +326,7 @@ function Invoke-IslandInstall($HostEnv, [string]$StateRoot, $Manifest, [string]$
 function Get-UpdaterState([string]$Root) {
     $path = Join-Path $Root 'state.json'
     if (Test-Path -LiteralPath $path) { return Read-JsonFile $path }
-    [pscustomobject]@{ version='0.0.0'; sourceSha256=''; failedVersion=''; boot='' }
-}
-
-function Get-BootIdentity {
-    # Fast Startup preserves LastBootUpTime; count actual cold/hybrid boots, excluding hibernate resumes.
-    $xpath="*[System[Provider[@Name='Microsoft-Windows-Kernel-Boot'] and EventID=27]] and *[EventData[Data[@Name='BootType']='0' or Data[@Name='BootType']='1']]"
-    $event=Get-WinEvent -LogName System -FilterXPath $xpath -MaxEvents 1
-    if (-not $event) { throw 'Cannot identify the current boot. Use the manual check shortcut.' }
-    $event.RecordId.ToString()+':'+$event.TimeCreated.ToUniversalTime().ToString('o')
+    [pscustomobject]@{ version='0.0.0'; sourceSha256=''; failedVersion=''; lastAutoCheck=0 }
 }
 
 function Clear-OldStages([string]$Root, [string[]]$Keep) {
@@ -347,32 +345,42 @@ function Invoke-IslandUpdate($HostEnv, [string]$StateRoot, $Config, [string]$Pub
     Assert-Repository $Config.repository
     $state = Get-UpdaterState $StateRoot
     $journalPath = Join-Path $StateRoot 'transaction.json'
-    if (Test-Path -LiteralPath $journalPath) {
-        $journal = Read-JsonFile $journalPath
-        Restore-Transaction $HostEnv $StateRoot $journal
-        $state = $journal.oldState
-        $state.failedVersion=$journal.version
-        Write-JsonFile (Join-Path $StateRoot 'state.json') $state
-        Remove-Item -LiteralPath $journalPath -Force
-    }
-    $keep=@()
-    $previousPath=Join-Path $StateRoot 'previous.json'
-    if (Test-Path -LiteralPath $previousPath) { $keep+= (Read-JsonFile $previousPath).stage }
-    $latestStage=@(Get-ChildItem -LiteralPath $StateRoot -Directory | Where-Object { $_.Name -cmatch '^[a-f0-9]{32}$' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
-    if ($latestStage.Count) { $keep+=$latestStage[0].Name }
-    Clear-OldStages $StateRoot $keep
-    Set-UpdateRequest $HostEnv 0
     if ($Mode -eq 'Auto') {
-        $boot = Get-BootIdentity
-        if ($state.boot -ceq $boot) { return 'Already checked this boot.' }
-        $state.boot=$boot
+        if (Test-Path -LiteralPath $journalPath) { return 'Interrupted update pending; use the manual update command to recover.' }
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $last = 0L
+        if ($state.PSObject.Properties['lastAutoCheck'] -and
+            [long]::TryParse([string]$state.lastAutoCheck, [ref]$last) -and
+            $now -ge $last -and $now - $last -lt 10800) { return 'Already checked within three hours.' }
+        $state | Add-Member -NotePropertyName lastAutoCheck -NotePropertyValue $now -Force
         Write-JsonFile (Join-Path $StateRoot 'state.json') $state
+    } else {
+        if (Test-Path -LiteralPath $journalPath) {
+            $journal = Read-JsonFile $journalPath
+            Restore-Transaction $HostEnv $StateRoot $journal
+            $state = $journal.oldState
+            $state.failedVersion=$journal.version
+            Write-JsonFile (Join-Path $StateRoot 'state.json') $state
+            Remove-Item -LiteralPath $journalPath -Force
+        }
+        $keep=@()
+        $previousPath=Join-Path $StateRoot 'previous.json'
+        if (Test-Path -LiteralPath $previousPath) { $keep+= (Read-JsonFile $previousPath).stage }
+        $latestStage=@(Get-ChildItem -LiteralPath $StateRoot -Directory | Where-Object { $_.Name -cmatch '^[a-f0-9]{32}$' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+        if ($latestStage.Count) { $keep+=$latestStage[0].Name }
+        Clear-OldStages $StateRoot $keep
+        Set-UpdateRequest $HostEnv 0
     }
     $base = 'https://github.com/' + $Config.repository + '/releases/'
     $bytes = Get-RemoteBytes ($base + 'latest/download/update.json') 262144
     $signature = Get-RemoteBytes ($base + 'latest/download/update.sig') 1024
     $manifest = Get-VerifiedManifest $bytes $signature $PublicKey
-    if ((Get-ReleaseVersion $manifest.version) -le (Get-ReleaseVersion $state.version)) { return 'Already current.' }
+    if ((Get-ReleaseVersion $manifest.version) -le (Get-ReleaseVersion $state.version)) {
+        Set-UpdateAvailable $HostEnv 0
+        return 'Already current.'
+    }
+    Set-UpdateAvailable $HostEnv 1
+    if ($Mode -eq 'Auto') { return 'Update available: ' + $manifest.version }
     if ($state.failedVersion -ceq $manifest.version) { throw 'This version previously failed. Waiting for a newer release.' }
     $source = Get-RemoteBytes ($base + 'download/' + $manifest.tag + '/' + $manifest.sourceAsset) 8388608
     $download = Join-Path $StateRoot 'download.wh.cpp'

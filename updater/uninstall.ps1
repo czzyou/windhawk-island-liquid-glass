@@ -15,6 +15,8 @@ $locked=$false
 try {
     try { $locked=$mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $locked=$true }
     if (-not $locked) { throw 'An update is running; wait for it to finish before uninstalling.' }
+    $hostEnv=Get-WindhawkEnvironment
+    if(Test-Path -LiteralPath $hostEnv.Storage){Set-UpdateAvailable $hostEnv 0}
     $baseName='Windhawk-Island-'+$config.userSid
     foreach ($mode in @('Auto','Manual','Rollback')) { Unregister-ScheduledTask -TaskName ($baseName+'-'+$mode) -Confirm:$false -ErrorAction SilentlyContinue }
     $menu=Join-Path ([Environment]::GetFolderPath('Programs')) 'Windhawk Island'

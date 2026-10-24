@@ -357,6 +357,28 @@ src = apply_tomorrow_brief(src)
 from calendar_markers_patch import apply_calendar_markers
 src = apply_calendar_markers(src)
 
+replace('#include <dwrite.h>', '#include <dwrite_2.h>')
+replace('class Renderer {', (root/'chinese-font.h').read_text(encoding='utf-8') + '\nclass Renderer {')
+replace('    ComPtr<IDWriteFactory> dwriteFactory_;', '''    ComPtr<IDWriteFactory> dwriteFactory_;
+    ComPtr<IDWriteFontFallback> chineseFontFallback_;''')
+replace('''        const Settings initialSettings = GetSettingsCopy();''', '''        chineseFontFallback_ = CreateIslandChineseFontFallback(dwriteFactory_.Get());
+        const Settings initialSettings = GetSettingsCopy();''')
+replace('        dwriteFactory_.Reset();', '        chineseFontFallback_.Reset();\n        dwriteFactory_.Reset();')
+replace('''        };
+
+        createFormat(mainFamily, defaultDisplay,''', '''            ComPtr<IDWriteTextFormat1> format1;
+            if (out && chineseFontFallback_ && SUCCEEDED(out.As(&format1)))
+                format1->SetFontFallback(chineseFontFallback_.Get());
+        };
+
+        createFormat(mainFamily, defaultDisplay,''')
+replace('''            if (weatherDescFormat_) {
+                weatherDescFormat_->SetWordWrapping''', '''            if (weatherDescFormat_) {
+                ComPtr<IDWriteTextFormat1> format1;
+                if (chineseFontFallback_ && SUCCEEDED(weatherDescFormat_.As(&format1)))
+                    format1->SetFontFallback(chineseFontFallback_.Get());
+                weatherDescFormat_->SetWordWrapping''')
+
 # Trim inherited menu commands after feature patches have used their insertion anchors.
 menu_start = src.index('void ShowContextMenu(HWND hwnd, POINT screenPoint) {')
 menu_end = src.index('\n}\n', menu_start) + 3
@@ -413,12 +435,22 @@ compiler=Path(r'C:\Program Files\Windhawk\Compiler')
 clang=compiler/'bin/clang++.exe'
 
 # Test the real tab arithmetic for every optional-module combination.
-tab_test = '#include <algorithm>\n#include <atomic>\n#include <cassert>\n'
+tab_test = '#include <windows.h>\n#include <d2d1.h>\n#include <algorithm>\n#include <atomic>\n#include <cassert>\n'
+tab_test += (root/'update-badge.h').read_text(encoding='utf-8')
 tab_test += 'struct Settings { bool weather=false, hardwareMonitorModule=false, fileTrayModule=false; };\nstd::atomic<int> g_idleTab{0};\n'
 tabs_start = src.index('int ActiveTabCount(')
 tab_test += src[tabs_start:src.index('// ── Localization', tabs_start)]
 tab_test += r'''
 int main() {
+    for (float scale : {0.7f, 1.0f, 1.6f, 3.0f}) {
+        for (float width : {96.0f, 320.0f, 540.0f}) {
+            const auto badge = UpdateBadgeBounds(28.0f, 22.0f, width, 36.0f, scale);
+            assert(badge.point.x - badge.radiusX > 28.0f + width);
+            assert(badge.point.x + badge.radiusX < 28.0f + width + 28.0f);
+            assert(badge.point.y - badge.radiusY >= 0.0f);
+            assert(badge.point.y + badge.radiusY < 22.0f + 36.0f + 22.0f);
+        }
+    }
     for (int mask=0; mask<8; ++mask) {
         Settings s{bool(mask&1),bool(mask&2),bool(mask&4)};
         const int expected=3+s.weather+s.hardwareMonitorModule+s.fileTrayModule;
@@ -435,7 +467,7 @@ int main() {
 (root/'card-tabs-checks.cpp').write_text(tab_test,encoding='utf-8')
 subprocess.run([str(clang),'-std=c++23','-static',str(root/'card-tabs-checks.cpp'),'-o',str(root/'card-tabs-checks.exe')],cwd=compiler,check=True)
 subprocess.run([str(root/'card-tabs-checks.exe')],check=True)
-print('Card tab checks passed: five-card layout, optional modules, file tray and normalization',flush=True)
+print('Card tab and update-badge checks passed: module layout, badge outside content and inside render padding',flush=True)
 
 # Exercise the real selection function with only platform/state plumbing stubbed.
 timer_test = r"""#include <string>

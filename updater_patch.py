@@ -1,4 +1,6 @@
-"""Release-only health reporting and safe handoff to the external updater."""
+"""Release-only update badge, health reporting and manual updater handoff."""
+
+from pathlib import Path
 
 
 def apply_updater(src):
@@ -7,7 +9,9 @@ def apply_updater(src):
         assert src.count(old) == 1, (old[:90], src.count(old))
         src = src.replace(old, new, 1)
 
-    change('void ShowContextMenu(HWND hwnd, POINT screenPoint) {', r'''void CheckIslandUpdates(HWND hwnd) {
+    change('void ShowContextMenu(HWND hwnd, POINT screenPoint) {', r'''std::atomic<bool> g_updateAvailable{false};
+
+void CheckIslandUpdates(HWND hwnd) {
     wchar_t programFiles[MAX_PATH]{};
     DWORD count = GetEnvironmentVariableW(L"ProgramW6432", programFiles, ARRAYSIZE(programFiles));
     if (!count) count = GetEnvironmentVariableW(L"ProgramFiles", programFiles, ARRAYSIZE(programFiles));
@@ -35,7 +39,7 @@ def apply_updater(src):
 
 void ShowContextMenu(HWND hwnd, POINT screenPoint) {''')
     change('    AppendMenuW(menu, MF_STRING, 9, L"Open Windhawk settings");',
-           '    AppendMenuW(menu, MF_STRING, 49, L"检查更新…");\n    AppendMenuW(menu, MF_STRING, 9, L"Open Windhawk settings");')
+           '    AppendMenuW(menu, MF_STRING, 49, g_updateAvailable.load() ? L"安装可用更新…" : L"检查更新…");\n    AppendMenuW(menu, MF_STRING, 9, L"Open Windhawk settings");')
     change('        case 48: ShowNbaSetup(hwnd); break;',
            '        case 49: CheckIslandUpdates(hwnd); break;\n        case 48: ShowNbaSetup(hwnd); break;')
 
@@ -58,11 +62,35 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {''')
             }
             break;
         case WM_CREATE:''')
+    badge = (Path(__file__).parent / 'update-badge.h').read_text(encoding='utf-8')
+    change('class Renderer {', badge + '\nclass Renderer {')
+    change('    ComPtr<ID2D1SolidColorBrush> scratchColorBrush_;',
+           '    ComPtr<ID2D1SolidColorBrush> scratchColorBrush_;\n    ComPtr<ID2D1SolidColorBrush> updateBadgeBrush_;')
+    change('        scratchColorBrush_.Reset();', '        scratchColorBrush_.Reset();\n        updateBadgeBrush_.Reset();')
+    change('        nativeGlass_.EndFrame();', '''        if (g_updateAvailable.load() && width >= 20.0f && height >= 16.0f) {
+            if (!updateBadgeBrush_)
+                target_->CreateSolidColorBrush(D2D1::ColorF(0xFFD60A), &updateBadgeBrush_);
+            if (updateBadgeBrush_) {
+                const auto badge = UpdateBadgeBounds(left, top, width, height, settings.sizeScale);
+                const float unit = badge.radiusX / 6.0f;
+                updateBadgeBrush_->SetColor(D2D1::ColorF(0xFFD60A));
+                target_->FillEllipse(badge, updateBadgeBrush_.Get());
+                updateBadgeBrush_->SetColor(D2D1::ColorF(0x171717));
+                target_->DrawLine(D2D1::Point2F(badge.point.x, badge.point.y - 3.0f * unit),
+                    D2D1::Point2F(badge.point.x, badge.point.y + 0.7f * unit), updateBadgeBrush_.Get(), 1.6f * unit);
+                target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(badge.point.x, badge.point.y + 3.0f * unit),
+                    0.85f * unit, 0.85f * unit), updateBadgeBrush_.Get());
+            }
+        }
+        nativeGlass_.EndFrame();''')
+
     # The render thread also owns the modal dialogs: stale heartbeats defer updates.
     change('    double nextProgressPoll = 0.0;', '    double nextProgressPoll = 0.0;\n    double nextUpdaterPoll = 0.0;')
     marker = '        const std::vector<IslandKind> kinds = ChooseActivities(snapshot, g_settings, now);'
     change(marker, '''        if (now >= nextUpdaterPoll) {
             nextUpdaterPoll = now + 1.0;
+            const bool available = Wh_GetIntValue(L"UpdateAvailable", 0) != 0;
+            if (g_updateAvailable.exchange(available) != available) g_layoutDirty = true;
             const bool busy = snapshot.timer.active || g_importantDaysOpen.load();
             Wh_SetStringValue(L"UpdateVersion", WH_MOD_VERSION);
             Wh_SetIntValue(L"UpdatePid", GetCurrentProcessId());

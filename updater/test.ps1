@@ -101,19 +101,55 @@ try {
     Write-JsonFile (Join-Path $testRoot 'transaction.json') $journal
     $script:requests=0
     function Get-RemoteBytes($Url,$Limit) { $script:requests++; throw 'Simulated offline' }
-    Must-Fail { Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Auto' } 'Offline after interrupted-transaction recovery'
-    Assert ((Get-ModSnapshot $fixture).Version -eq $version -and (Get-FileDigest $fixture.Source) -eq $oldHash) 'Interrupted transaction recovered'
-    Assert ($script:requests -eq 1) 'One network attempt on startup'
     $result=Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Auto'
-    Assert ($result -eq 'Already checked this boot.' -and $script:requests -eq 1) 'Same boot does not check again'
-    Must-Fail { Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Manual' } 'Manual check bypasses boot marker'
-    Assert ($script:requests -eq 2) 'Manual check requests latest release'
+    Assert ($result -like 'Interrupted update pending*' -and $script:requests -eq 0 -and (Test-Path -LiteralPath (Join-Path $testRoot 'transaction.json'))) 'Automatic check does not restart an interrupted update'
+    Must-Fail { Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Manual' } 'Manual check recovers interrupted transaction before an offline failure'
+    Assert ((Get-ModSnapshot $fixture).Version -eq $version -and (Get-FileDigest $fixture.Source) -eq $oldHash) 'Interrupted transaction recovered'
+    Assert ($script:requests -eq 1) 'One network attempt during manual recovery'
+    Must-Fail { Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Auto' } 'Automatic offline check fails without retry'
+    $result=Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Auto'
+    Assert ($result -eq 'Already checked within three hours.' -and $script:requests -eq 2) 'Automatic failures also respect the three-hour interval'
+    Must-Fail { Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Manual' } 'Manual check bypasses automatic interval'
+    Assert ($script:requests -eq 3) 'Manual check requests latest release'
     $script:downloadIndex=0
     function Get-RemoteBytes($Url,$Limit) { $script:downloadIndex++; if ($Url.EndsWith('update.json')) { ,$bytes } elseif ($Url.EndsWith('update.sig')) { ,$sig } else { throw 'Unexpected download' } }
     $result=Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Manual'
     Assert ($result -eq 'Already current.' -and $script:downloadIndex -eq 2) 'Current signed release skips source download'
+    Assert ((Get-Item -LiteralPath $fixture.Storage).GetValue('UpdateAvailable',-1) -eq 0) 'No update clears the badge'
+
+    $newManifest=$manifest.PSObject.Copy(); $newManifest.version='1.4.6'; $newManifest.tag='v1.4.6'
+    $newBytes=$script:Utf8.GetBytes(($newManifest | ConvertTo-Json -Depth 10))
+    $newSignature=$rsa.SignData($newBytes,'SHA256')
+    $script:downloadIndex=0
+    function Get-RemoteBytes($Url,$Limit) { $script:downloadIndex++; if ($Url.EndsWith('update.json')) { ,$newBytes } elseif ($Url.EndsWith('update.sig')) { ,$newSignature } else { throw 'Automatic check must not download source' } }
+    $saved=Get-UpdaterState $testRoot
+    $saved | Add-Member -NotePropertyName lastAutoCheck -NotePropertyValue ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-10800) -Force
+    Write-JsonFile (Join-Path $testRoot 'state.json') $saved
+    Set-UpdateRequest $fixture 1
+    $script:compileFails=$true
+    $result=Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Auto'
+    Assert ($result -eq 'Update available: 1.4.6' -and $script:downloadIndex -eq 2) 'Three-hour check downloads only signed metadata'
+    Assert ((Get-Item -LiteralPath $fixture.Storage).GetValue('UpdateAvailable',0) -eq 1) 'New signed version sets the badge'
+    Assert ((Get-ModSnapshot $fixture).Version -eq $version -and (Get-FileDigest $fixture.Source) -ceq $oldHash) 'Background availability check preserves running code'
+    Assert ((Get-Item -LiteralPath $fixture.Storage).GetValue('UpdateRequested',0) -eq 1) 'Background availability check does not alter active handoff'
+    $result=Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Auto'
+    Assert ($result -eq 'Already checked within three hours.' -and $script:downloadIndex -eq 2) 'Successful checks also respect the three-hour interval'
+    $newSignature[0]=$newSignature[0] -bxor 1
+    Set-UpdateAvailable $fixture 0
+    Must-Fail { Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Manual' } 'Invalid signatures cannot advertise updates'
+    Assert ((Get-Item -LiteralPath $fixture.Storage).GetValue('UpdateAvailable',-1) -eq 0) 'Unsigned update leaves no badge'
+    $script:compileFails=$false
+    function Get-RemoteBytes($Url,$Limit) { if ($Url.EndsWith('update.json')) { ,$bytes } elseif ($Url.EndsWith('update.sig')) { ,$sig } else { throw 'Unexpected download' } }
     $saved=Get-UpdaterState $testRoot; $saved.version='0.0.0'; $saved.failedVersion=$version; Write-JsonFile (Join-Path $testRoot 'state.json') $saved
     Must-Fail { Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Manual' } 'Failed release not installed repeatedly'
+    & {
+        $account=[Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $setup=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'setup.ps1'))
+        $start=$setup.IndexOf('$trigger = New-ScheduledTaskTrigger')
+        $end=$setup.IndexOf("foreach (`$mode in",$start)
+        Invoke-Expression $setup.Substring($start,$end-$start)
+        Assert ($trigger.Repetition.Interval -ceq 'PT3H' -and -not $trigger.Repetition.Duration) 'Time trigger repeats every three hours without an expiration'
+    }
     Write-Host ("PASS: $script:checks checks; isolated registry/files; no live mod or task changes.")
 } finally {
     $rsa.Dispose()

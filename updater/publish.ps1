@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$InitializeKey, [switch]$PrepareOnly, [string]$NotesFile)
+param([switch]$InitializeKey, [switch]$PrepareOnly, [switch]$PublishPrepared, [string]$NotesFile)
 . (Join-Path $PSScriptRoot 'core.ps1')
 $sourceRoot=Split-Path $PSScriptRoot -Parent
 $release=Read-JsonFile (Join-Path $sourceRoot 'release.json')
@@ -31,6 +31,14 @@ if ($InitializeKey) {
     exit
 }
 if (-not (Test-Path -LiteralPath $privatePath)) { throw 'Run publish.ps1 -InitializeKey once first.' }
+$tag='v'+$release.version
+$output=Join-Path $sourceRoot ('release-output\'+$tag)
+$source=Join-Path $sourceRoot 'dynamic-island-liquid-glass.wh.cpp'
+$asset=Join-Path $output 'dynamic-island-liquid-glass.wh.cpp'
+$zip=Join-Path $output 'island-setup.zip'
+$manifestPath=Join-Path $output 'update.json'
+if ($PublishPrepared -and $PrepareOnly) { throw 'Choose preparation or publication, not both.' }
+if (-not $PublishPrepared) {
 Push-Location $sourceRoot
 try {
     & python build.py --release
@@ -38,11 +46,7 @@ try {
     & python release-checks.py
     if ($LASTEXITCODE -ne 0) { throw 'Release checks failed.' }
 } finally { Pop-Location }
-$tag='v'+$release.version
-$output=Join-Path $sourceRoot ('release-output\'+$tag)
 New-Item -ItemType Directory -Path $output -Force | Out-Null
-$source=Join-Path $sourceRoot 'dynamic-island-liquid-glass.wh.cpp'
-$asset=Join-Path $output 'dynamic-island-liquid-glass.wh.cpp'
 Copy-Item -LiteralPath $source -Destination $asset -Force
 $defaultsPath=Join-Path $output 'settings.json'
 & python (Join-Path $PSScriptRoot 'package_release.py') $source $defaultsPath
@@ -76,7 +80,30 @@ Write-JsonFile (Join-Path $setupRoot 'config.json') ([ordered]@{repository=$rele
 $zip=Join-Path $output 'island-setup.zip'
 Compress-Archive -LiteralPath $setupRoot -DestinationPath $zip -Force
 Remove-Item -LiteralPath $defaultsPath -Force
+} else {
+    foreach ($path in @($asset,$manifestPath,(Join-Path $output 'update.sig'),$zip)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Prepared release is incomplete. Run -PrepareOnly first.' }
+    }
+    $publicKey=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'public-key.xml'))
+    $verified=Get-VerifiedManifest ([IO.File]::ReadAllBytes($manifestPath)) ([IO.File]::ReadAllBytes((Join-Path $output 'update.sig'))) $publicKey
+    if ($verified.version -cne $release.version) { throw 'Prepared version mismatch. Run -PrepareOnly again.' }
+    Assert-Source $asset $verified
+    Assert-Source $source $verified
+}
 if ($PrepareOnly) { Write-Host ('Ready for review: '+$output); exit }
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$archive=[IO.Compression.ZipFile]::OpenRead($zip)
+try {
+    if (@($archive.Entries | Where-Object { $_.FullName -match '\.(ttf|otf|ttc)$' }).Count) { throw 'Font binaries must not be published in the setup package.' }
+    foreach ($file in @('core.ps1','update.ps1','check.ps1','setup.ps1','uninstall.ps1','install.cmd','public-key.xml','README.md')) {
+        $entry=@($archive.Entries | Where-Object { $_.FullName.Replace('\','/') -ceq ('island-setup/'+$file) })
+        if ($entry.Count -ne 1) { throw ('Prepared setup file missing: '+$file) }
+        $stream=$entry[0].Open(); $sha=[Security.Cryptography.SHA256]::Create()
+        try { $digest=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','').ToLowerInvariant() }
+        finally { $stream.Dispose(); $sha.Dispose() }
+        if ($digest -cne (Get-FileDigest (Join-Path $PSScriptRoot $file))) { throw 'Installer inputs changed. Run -PrepareOnly again.' }
+    }
+} finally { $archive.Dispose() }
 if (-not $NotesFile -or -not (Test-Path -LiteralPath $NotesFile)) { throw 'Provide -NotesFile with the release notes, or use -PrepareOnly.' }
 $assets=@($asset,$manifestPath,(Join-Path $output 'update.sig'),$zip)
 & gh release create $tag @assets --repo $release.repository --draft --title ('Island '+$release.version) --notes-file $NotesFile

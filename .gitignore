@@ -12,3 +12,5 @@ __pycache__/
 *.zip
 updater/.test-*/
 updater/*.tmp.json
+/fonts/*.otf
+/fonts/*.ttf

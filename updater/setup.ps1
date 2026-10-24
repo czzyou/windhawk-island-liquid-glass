@@ -43,8 +43,7 @@ Protect-UpdaterDirectory $installRoot
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $account
-$trigger.Delay='PT60S'
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Hours 3)
 foreach ($mode in @('Auto','Manual','Rollback')) {
     $action = New-ScheduledTaskAction -Execute $powershell -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -File "' + (Join-Path $installRoot 'update.ps1') + '" -Mode ' + $mode)
     $taskArgs = @{ TaskName=($baseName+'-'+$mode); Action=$action; Principal=$principal; Settings=$settings; Force=$true }
@@ -72,4 +71,4 @@ $remove.Save()
 } finally { if ($setupLocked) { $setupMutex.ReleaseMutex() }; $setupMutex.Dispose() }
 & $powershell -NoProfile -File (Join-Path $installRoot 'update.ps1') -Mode Install
 if ($LASTEXITCODE -ne 0) { throw 'Initial installation failed. Check ProgramData\Windhawk-Island-Updater\update.log. Registered shortcuts can retry.' }
-Write-Host 'Installed. Updates are checked once per boot after logon, or through the Start menu shortcut.'
+Write-Host 'Installed. Silent update checks run every three hours; use the island menu to install available updates.'

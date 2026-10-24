@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.4.4
+// @version         1.4.5
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -24,7 +24,7 @@
   比分来自 ESPN，无直播时回到普通时钟。
 - 重要日子：右键添加自己的生日、考试等日程；新安装没有预置个人日程。
 - 吃饭提醒：默认关闭，可在设置中开启并修改午饭、晚饭时间。
-- 液态玻璃默认参数已内置。没有 SF Pro Text 字体时使用系统字体回退，无需另装字体。
+- 液态玻璃默认参数已内置。英文、数字默认使用 SF Pro Text，中文优先使用苹方；字体由用户手动安装，公开安装包不包含字体文件，缺少字体时使用系统回退。
 
 安装：在 Windhawk 中新建模组，用此文件的完整内容替换模板，点击编译并启用。
 使用本模组前请关闭其他灵动岛模组，避免两个浮窗重叠。
@@ -429,7 +429,7 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
 #include <devpropdef.h>
 #include <dbt.h>
 #include <d2d1.h>
-#include <dwrite.h>
+#include <dwrite_2.h>
 #include <wincodec.h>
 #include <shcore.h>
 #include <windowsx.h>
@@ -9796,6 +9796,8 @@ void ShowNbaSetup(HWND owner, bool firstRun = false) {
     if (result == -1) MessageBoxW(owner, L"无法打开主队设置，请从右键菜单重试。", L"NBA 主队", MB_OK | MB_ICONERROR);
 }
 
+std::atomic<bool> g_updateAvailable{false};
+
 void CheckIslandUpdates(HWND hwnd) {
     wchar_t programFiles[MAX_PATH]{};
     DWORD count = GetEnvironmentVariableW(L"ProgramW6432", programFiles, ARRAYSIZE(programFiles));
@@ -9884,7 +9886,7 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
                           : (Wh_GetIntSetting(L"Behavior.ExpandOnHover") != 0);
     AppendMenuW(menu, MF_STRING, 11, activeExpandOnHover ? L"Expand on Click" : L"Expand on Hover");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, 49, L"检查更新…");
+    AppendMenuW(menu, MF_STRING, 49, g_updateAvailable.load() ? L"安装可用更新…" : L"检查更新…");
     AppendMenuW(menu, MF_STRING, 9, L"Open Windhawk settings");
 
     SetForegroundWindow(hwnd);
@@ -10088,6 +10090,34 @@ std::array<D2D1_GRADIENT_STOP, 7> LiquidGlassRimStops() {
     }};
 }
 
+inline Microsoft::WRL::ComPtr<IDWriteFontFallback> CreateIslandChineseFontFallback(IDWriteFactory* factory) {
+    Microsoft::WRL::ComPtr<IDWriteFactory2> factory2;
+    Microsoft::WRL::ComPtr<IDWriteFontFallbackBuilder> builder;
+    Microsoft::WRL::ComPtr<IDWriteFontFallback> systemFallback, fallback;
+    if (FAILED(factory->QueryInterface(IID_PPV_ARGS(&factory2))) ||
+        FAILED(factory2->CreateFontFallbackBuilder(&builder))) return {};
+    // Keep Latin text in the configured family; prioritize PingFang for CJK only.
+    constexpr DWRITE_UNICODE_RANGE ranges[] = {
+        {0x2E80, 0x303F}, {0x3100, 0x312F}, {0x31A0, 0x31BF},
+        {0x3400, 0x9FFF}, {0xF900, 0xFAFF}, {0xFE10, 0xFE1F},
+        {0xFE30, 0xFE4F}, {0xFF00, 0xFFEF}, {0x20000, 0x323AF},
+    };
+    const wchar_t* families[] = {L"PingFang SC", L"苹方_常规"};
+    if (FAILED(builder->AddMapping(ranges, ARRAYSIZE(ranges), families, ARRAYSIZE(families),
+                                  nullptr, nullptr, nullptr, 1.0f)) ||
+        FAILED(factory2->GetSystemFontFallback(&systemFallback)) ||
+        FAILED(builder->AddMappings(systemFallback.Get())) ||
+        FAILED(builder->CreateFontFallback(&fallback))) return {};
+    return fallback;
+}
+
+inline D2D1_ELLIPSE UpdateBadgeBounds(float left, float top, float width, float height, float scale) {
+    scale = (std::max)(0.7f, (std::min)(scale, 1.6f));
+    const float radius = 6.0f * scale;
+    return D2D1::Ellipse(D2D1::Point2F(left + width + radius + 1.0f,
+        top + (std::min)(10.0f * scale, height * 0.5f)), radius, radius);
+}
+
 class Renderer {
    public:
     static bool UsesNativeGlass(const Settings& settings) {
@@ -10136,6 +10166,7 @@ class Renderer {
             return false;
         }
 
+        chineseFontFallback_ = CreateIslandChineseFontFallback(dwriteFactory_.Get());
         const Settings initialSettings = GetSettingsCopy();
         EnsureTextFormats(initialSettings.sizeScale, initialSettings.fontFamily,
                           initialSettings.textScale);
@@ -10252,6 +10283,21 @@ class Renderer {
             }
         }
 
+        if (g_updateAvailable.load() && width >= 20.0f && height >= 16.0f) {
+            if (!updateBadgeBrush_)
+                target_->CreateSolidColorBrush(D2D1::ColorF(0xFFD60A), &updateBadgeBrush_);
+            if (updateBadgeBrush_) {
+                const auto badge = UpdateBadgeBounds(left, top, width, height, settings.sizeScale);
+                const float unit = badge.radiusX / 6.0f;
+                updateBadgeBrush_->SetColor(D2D1::ColorF(0xFFD60A));
+                target_->FillEllipse(badge, updateBadgeBrush_.Get());
+                updateBadgeBrush_->SetColor(D2D1::ColorF(0x171717));
+                target_->DrawLine(D2D1::Point2F(badge.point.x, badge.point.y - 3.0f * unit),
+                    D2D1::Point2F(badge.point.x, badge.point.y + 0.7f * unit), updateBadgeBrush_.Get(), 1.6f * unit);
+                target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(badge.point.x, badge.point.y + 3.0f * unit),
+                    0.85f * unit, 0.85f * unit), updateBadgeBrush_.Get());
+            }
+        }
         nativeGlass_.EndFrame();
         hr = target_->EndDraw();
         if (FAILED(hr)) {
@@ -10283,6 +10329,7 @@ class Renderer {
         marqueeClipboardCache_.layout.Reset();
         marqueeNotificationCache_.layout.Reset();
         scratchColorBrush_.Reset();
+        updateBadgeBrush_.Reset();
 
         calendarExamRing_.Reset(); calendarCakeBrush_.Reset(); calendarHintLayout_.Reset();
         for (auto& bitmap : briefLogoBitmaps_) bitmap.Reset();
@@ -10322,6 +10369,7 @@ class Renderer {
         idleTextFormat_.Reset();
         calDayLargeFormat_.Reset();
         calGridFormat_.Reset();
+        chineseFontFallback_.Reset();
         dwriteFactory_.Reset();
         d2dFactory_.Reset();
 
@@ -10541,6 +10589,9 @@ class Renderer {
                         L"Segoe UI", nullptr, weight, style, stretch, size, L"", &out);
                 }
             }
+            ComPtr<IDWriteTextFormat1> format1;
+            if (out && chineseFontFallback_ && SUCCEEDED(out.As(&format1)))
+                format1->SetFontFallback(chineseFontFallback_.Get());
         };
 
         createFormat(mainFamily, defaultDisplay,
@@ -11433,7 +11484,6 @@ class Renderer {
             calendarHintLayout_.Reset();
             if (FAILED(dwriteFactory_->CreateTextLayout(body.c_str(),static_cast<UINT32>(body.size()),
                     smallTextFormat_.Get(),width,2000,&calendarHintLayout_))) return;
-            calendarHintLayout_->SetFontFamilyName(L"Microsoft YaHei UI",DWRITE_TEXT_RANGE{0,static_cast<UINT32>(body.size())});
             calendarHintLayout_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             calendarHintLayout_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             calendarHintLayout_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
@@ -12078,6 +12128,9 @@ class Renderer {
                 }
             }
             if (weatherDescFormat_) {
+                ComPtr<IDWriteTextFormat1> format1;
+                if (chineseFontFallback_ && SUCCEEDED(weatherDescFormat_.As(&format1)))
+                    format1->SetFontFallback(chineseFontFallback_.Get());
                 weatherDescFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
                 // Left aligned to share the hero column's margin with the city
                 // and temperature.
@@ -15160,6 +15213,7 @@ class Renderer {
     ComPtr<ID2D1Factory> d2dFactory_;
     ComPtr<ID2D1DCRenderTarget> target_;
     ComPtr<IDWriteFactory> dwriteFactory_;
+    ComPtr<IDWriteFontFallback> chineseFontFallback_;
     ComPtr<IDWriteTextFormat> textFormat_;
     ComPtr<IDWriteTextFormat> smallTextFormat_;
     ComPtr<IDWriteTextFormat> boldTextFormat_;
@@ -15194,6 +15248,7 @@ class Renderer {
     ComPtr<ID2D1SolidColorBrush> camDotBrush_;
     ComPtr<ID2D1SolidColorBrush> camGlowBrush_;
     ComPtr<ID2D1SolidColorBrush> scratchColorBrush_;
+    ComPtr<ID2D1SolidColorBrush> updateBadgeBrush_;
     MarqueeLayoutCache marqueeTitleCache_;
     MarqueeLayoutCache marqueeArtistCache_;
     MarqueeLayoutCache marqueeAlbumCache_;
@@ -16771,6 +16826,8 @@ DWORD WINAPI RenderThreadProc(void*) {
 
         if (now >= nextUpdaterPoll) {
             nextUpdaterPoll = now + 1.0;
+            const bool available = Wh_GetIntValue(L"UpdateAvailable", 0) != 0;
+            if (g_updateAvailable.exchange(available) != available) g_layoutDirty = true;
             const bool busy = snapshot.timer.active || g_importantDaysOpen.load() || g_islandDragging.load();
             Wh_SetStringValue(L"UpdateVersion", WH_MOD_VERSION);
             Wh_SetIntValue(L"UpdatePid", GetCurrentProcessId());

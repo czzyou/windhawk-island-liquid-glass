@@ -60,7 +60,6 @@
             calendarHintLayout_.Reset();
             if (FAILED(dwriteFactory_->CreateTextLayout(body.c_str(),static_cast<UINT32>(body.size()),
                     smallTextFormat_.Get(),width,2000,&calendarHintLayout_))) return;
-            calendarHintLayout_->SetFontFamilyName(L"Microsoft YaHei UI",DWRITE_TEXT_RANGE{0,static_cast<UINT32>(body.size())});
             calendarHintLayout_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             calendarHintLayout_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             calendarHintLayout_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
