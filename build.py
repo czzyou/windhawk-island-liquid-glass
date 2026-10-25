@@ -356,6 +356,8 @@ from tomorrow_brief_patch import apply_tomorrow_brief
 src = apply_tomorrow_brief(src)
 from calendar_markers_patch import apply_calendar_markers
 src = apply_calendar_markers(src)
+from media_features_patch import apply_media_features
+src = apply_media_features(src)
 
 replace('#include <dwrite.h>', '#include <dwrite_2.h>')
 replace('class Renderer {', (root/'chinese-font.h').read_text(encoding='utf-8') + '\nclass Renderer {')
@@ -422,6 +424,8 @@ if '--release' in sys.argv:
     src = apply_island_drag(src)
     build_id = 'dynamic-island-liquid-glass'
     build_version = release['version']
+from file_tray_patch import apply_file_tray
+src = apply_file_tray(src)
 settings_yaml = src.split('// ==WindhawkModSettings==', 1)[1].split('/*', 1)[1].split('*/', 1)[0]
 assert isinstance(yaml.safe_load(settings_yaml), list)
 print('Windhawk settings YAML parsed successfully', flush=True)
@@ -434,11 +438,110 @@ if '--source-only' in sys.argv:
 compiler=Path(r'C:\Program Files\Windhawk\Compiler')
 clang=compiler/'bin/clang++.exe'
 
+# Exercise the ported parsers, cache I/O, selection and lookup with network replies stubbed.
+feature_test = r'''#include <windows.h>
+#include <uiautomation.h>
+#include <appmodel.h>
+#include <d2d1.h>
+#include <dwrite_2.h>
+#include <wrl/client.h>
+#include <winhttp.h>
+#include <algorithm>
+#include <atomic>
+#include <cassert>
+#include <cmath>
+#include <cwctype>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include <limits>
+#include <cstdio>
+#include <cstring>
+#define WH_MOD_VERSION L"checks"
+#define Wh_Log(...) ((void)0)
+size_t Wh_GetModStoragePath(wchar_t*,size_t) { return 0; }
+double NowSeconds() { return 100; }
+int ClampInt(int value,int lo,int hi) { return std::clamp(value,lo,hi); }
+std::wstring ToLowerCopy(std::wstring value) { for(auto& c:value) c=towlower(c); return value; }
+const wchar_t* Loc(const wchar_t* text) { return text; }
+HANDLE g_stopEvent=nullptr, g_lookupJobEvent=nullptr;
+std::atomic<bool> g_running{true}, g_layoutDirty{false};
+struct BitmapPixels {};
+struct MediaContentPoint { bool valid=false; float x=0,y=0,width=0,height=0; };
+'''
+http = (root/'media-http.h').read_text(encoding='utf-8')
+feature_test += http[http.index('struct HttpResult {'):http.index('std::atomic<int> g_mediaHttpActive')]
+feature_test += r'''
+std::vector<HttpResult> replies;
+std::vector<std::wstring> hosts, requestPaths;
+size_t replyIndex=0;
+HttpResult HttpGetEx(const wchar_t* host,const wchar_t* path,bool,const wchar_t*) {
+    hosts.emplace_back(host); requestPaths.emplace_back(path);
+    return replyIndex<replies.size() ? replies[replyIndex++] : HttpResult{};
+}
+'''
+media_start = src.index('struct MediaSnapshot {')
+feature_test += src[media_start:src.index('\n};', media_start)+3]
+feature_test += (root/'media-timeline.h').read_text(encoding='utf-8')
+feature_test += (root/'apple-music-seek.h').read_text(encoding='utf-8')
+feature_test += (root/'media-features-types.h').read_text(encoding='utf-8')
+feature_test += (root/'lyrics-policy.h').read_text(encoding='utf-8')
+feature_test += (root/'lyrics-layout.h').read_text(encoding='utf-8')
+feature_test += (root/'media-web-data.h').read_text(encoding='utf-8')
+lyrics = (root/'lyrics.h').read_text(encoding='utf-8')
+feature_test += lyrics[:lyrics.index('DWORD WINAPI LyricsThreadProc(')]
+feature_test += r'''
+struct SharedState { LookupSnapshot lookup; std::vector<LookupRecent> lookupRecent; };
+SharedState g_state;
+std::mutex g_stateMutex, g_lookupJobMutex, g_mediaSourceMutex;
+struct LookupJob { uint64_t id=0; std::wstring query,key; };
+LookupJob g_lookupJob;
+std::wstring g_dockOverrideAumid;
+std::atomic<unsigned> g_dockOverrideRev{0};
+'''
+sources = (root/'media-sources.h').read_text(encoding='utf-8')
+feature_test += sources[sources.index('struct MediaSourceTracker {'):sources.index('bool CollectMediaSources(')]
+feature_test += sources[sources.index('std::wstring ChooseMediaSourceAumid('):]
+globals_ = (root/'media-features-globals.h').read_text(encoding='utf-8')
+feature_test += globals_[globals_.index('int MediaSourceDockHit('):globals_.index('void UpdateLyricsOutputDevice(')]
+lookup = (root/'quick-lookup.h').read_text(encoding='utf-8')
+feature_test += lookup[:lookup.index('uint64_t PublishNewLookup(')]
+feature_test += (root/'lookup-worker.h').read_text(encoding='utf-8')
+feature_test += '\n#include <shlobj.h>\n' + (root/'file-tray-drag.h').read_text(encoding='utf-8')
+feature_test += r'''
+std::vector<BYTE> fileTrayDeleteStorage;
+bool fileTrayDeleteWriteFails=false;
+size_t Wh_GetBinaryValue(const wchar_t*,void* buffer,size_t capacity) {
+    if (fileTrayDeleteStorage.size()>capacity) return 0;
+    if (!fileTrayDeleteStorage.empty()) memcpy(buffer,fileTrayDeleteStorage.data(),fileTrayDeleteStorage.size());
+    return fileTrayDeleteStorage.size();
+}
+BOOL Wh_SetBinaryValue(const wchar_t*,const void* buffer,size_t size) {
+    if (fileTrayDeleteWriteFails) return FALSE;
+    const auto* first=static_cast<const BYTE*>(buffer);
+    fileTrayDeleteStorage.assign(first,first+size);
+    return TRUE;
+}
+'''
+feature_test += (root/'file-tray-delete.h').read_text(encoding='utf-8')
+feature_test += (root/'file-tray-delete-checks.inc').read_text(encoding='utf-8')
+for marker, ending in [('namespace MediaLayout {', '\n}'),
+                       ('int MediaTransportHitTest(', '\n}')]:
+    start = src.index(marker)
+    feature_test += '\n' + src[start:src.index(ending, start) + len(ending)] + '\n'
+feature_test += (root/'media-feature-checks.inc').read_text(encoding='utf-8')
+(root/'media-feature-checks.cpp').write_text(feature_test,encoding='utf-8')
+subprocess.run([str(clang),'-std=c++23','-static',str(root/'media-feature-checks.cpp'),'-ldwrite','-lole32','-loleaut32','-lshell32','-o',str(root/'media-feature-checks.exe')],cwd=compiler,check=True)
+subprocess.run([str(root/'media-feature-checks.exe')],check=True)
+print('Media feature checks passed: LRC precision, cache atomicity, source selection, lookup fallbacks, stale results and worker shutdown',flush=True)
+
 # Test the real tab arithmetic for every optional-module combination.
-tab_test = '#include <windows.h>\n#include <d2d1.h>\n#include <algorithm>\n#include <atomic>\n#include <cassert>\n'
+tab_test = '#include <windows.h>\n#include <d2d1.h>\n#include <algorithm>\n#include <atomic>\n#include <cassert>\n#include <vector>\n'
 tab_test += (root/'update-badge.h').read_text(encoding='utf-8')
-tab_test += 'struct Settings { bool weather=false, hardwareMonitorModule=false, fileTrayModule=false; };\nstd::atomic<int> g_idleTab{0};\n'
-tabs_start = src.index('int ActiveTabCount(')
+tab_test += 'struct Settings { bool weather=false, hardwareMonitorModule=false, fileTrayModule=false, lyrics=false, lyricsPinnedFirst=false, media=true; };\nstd::atomic<int> g_idleTab{0};\nstd::atomic<bool> g_lyricsTabAvailable{false}, g_layoutDirty{false};\n'
+tabs_start = src.index('std::vector<int> DashboardTabs(')
 tab_test += src[tabs_start:src.index('// ── Localization', tabs_start)]
 tab_test += r'''
 int main() {
@@ -462,6 +565,23 @@ int main() {
         g_idleTab=-1; assert(NormalizedTabIndex(s)==expected-1);
     }
     Settings normal{true,true,false}; assert(ActiveTabCount(normal)==5 && ClockTabIndex(normal)==4);
+    for (int mask=0; mask<32; ++mask) {
+        Settings s{bool(mask&1),bool(mask&2),bool(mask&4),true,bool(mask&8)};
+        g_lyricsTabAvailable=bool(mask&16);
+        const auto tabs=DashboardTabs(s);
+        assert(tabs.size()==3+s.weather+s.hardwareMonitorModule+s.fileTrayModule+bool(mask&16));
+        for (int i=0;i<static_cast<int>(tabs.size());++i) {
+            g_idleTab=i; assert(CurrentDashboardTab(s)==tabs[i]); assert(DashboardTabIndex(s,tabs[i])==i);
+        }
+        assert(tabs[CalendarTabIndex(s)]==1 && tabs[ClockTabIndex(s)]==5);
+        g_idleTab=-1; assert(CurrentDashboardTab(s)==tabs.back());
+    }
+    Settings changing; changing.lyrics=true; changing.lyricsPinnedFirst=true;
+    g_idleTab=0; RefreshDashboardTabs(changing,true);
+    g_idleTab=CalendarTabIndex(changing); RefreshDashboardTabs(changing,false);
+    assert(CurrentDashboardTab(changing)==1);
+    RefreshDashboardTabs(changing,true); g_idleTab=DashboardTabIndex(changing,6);
+    RefreshDashboardTabs(changing,false); assert(CurrentDashboardTab(changing)==0);
 }
 '''
 (root/'card-tabs-checks.cpp').write_text(tab_test,encoding='utf-8')
@@ -474,17 +594,21 @@ timer_test = r"""#include <string>
 #include <vector>
 #include <atomic>
 #include <cassert>
-enum class IslandKind {Clipboard,CapsLock,Device,Bluetooth,DoNotDisturb,Volume,Notification,BatteryLow,Progress,Timer,NBAScore,HourlyClock,TomorrowBrief,Media,Idle};
+enum class IslandKind {Clipboard,CapsLock,Device,Bluetooth,DoNotDisturb,Volume,Notification,BatteryLow,Progress,Timer,NBAScore,HourlyClock,TomorrowBrief,Media,Lookup,Idle};
 struct Alert { bool active=false, justFinished=false, available=false; double expiresAt=0, finishedExpiresAt=0; };
-struct SharedState { Alert clipboard,capsLock,device,bluetoothDevice,doNotDisturb,volume,notification,battery,progress,timer,nba,media,hourlyClock,tomorrowBrief; };
-struct Settings { bool capsLock=true,bluetoothIndicator=true,doNotDisturbIndicator=true,volume=true,battery=true,progress=true,timerEnabled=true,nbaScores=true,media=true; };
+struct SharedState { Alert clipboard,capsLock,device,bluetoothDevice,doNotDisturb,volume,notification,battery,progress,timer,nba,media,hourlyClock,tomorrowBrief,lookup; };
+struct Settings { bool capsLock=true,bluetoothIndicator=true,doNotDisturbIndicator=true,volume=true,battery=true,progress=true,timerEnabled=true,nbaScores=true,media=true,quickLookup=true; };
 std::atomic<bool> g_timerDashboardExpanded=false, g_isFullscreen=false, g_manuallyHidden=false;
 int pin=0, nbaClock=0;
 int Wh_GetIntValue(const wchar_t* key,int) { return std::wstring(key)==L"NBAShowClock" ? nbaClock : pin; }
 """
-timer_test += src[src.index('std::vector<IslandKind> ChooseActivities('):src.index('bool VolumeIsPrimary(')]
+timer_test += 'std::atomic<bool> g_volumeDragging{false};\n'
+timer_test += src[src.index('std::vector<IslandKind> ChooseActivities(const SharedState& state, const Settings& settings, double now) {'):src.index('bool VolumeIsPrimary(')]
 timer_test += r"""int main() {
  SharedState state; Settings settings; state.timer.active=true;
+ state.lookup.active=true; state.lookup.expiresAt=11;
+ assert(ChooseActivities(state,settings,10)[0]==IslandKind::Lookup);
+ state.lookup.active=false;
  assert(ChooseActivities(state,settings,10)[0]==IslandKind::Timer);
  g_timerDashboardExpanded=true;
  assert(ChooseActivities(state,settings,10)[0]==IslandKind::Idle);
@@ -536,6 +660,13 @@ timer_test += r"""int main() {
  assert(ChooseActivities(state,settings,10)[0]==IslandKind::Media);
  g_manuallyHidden=false; state.timer.justFinished=true; state.timer.finishedExpiresAt=20;
  assert(ChooseActivities(state,settings,10)[0]==IslandKind::Timer);
+ state.volume.active=true; state.volume.expiresAt=11;
+ assert(ChooseActivities(state,settings,10)[0]==IslandKind::Volume);
+ assert(ChooseActivities(state,settings,11)[0]!=IslandKind::Volume);
+ g_volumeDragging=true;
+ assert(ChooseActivities(state,settings,12)[0]==IslandKind::Volume);
+ g_volumeDragging=false;
+ assert(ChooseActivities(state,settings,12)[0]!=IslandKind::Volume);
 
 }"""
 (root/'timer-checks.cpp').write_text(timer_test,encoding='utf-8')

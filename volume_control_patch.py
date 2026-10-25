@@ -111,4 +111,45 @@ constexpr UINT WM_APP_CAPSLOCK =''')
                 }
             }
 ''')
+    change('settings.volume && state.volume.active && now < state.volume.expiresAt',
+           'settings.volume && state.volume.active && (g_volumeDragging.load() || now < state.volume.expiresAt)')
+    change('g_state.volume.active && now >= g_state.volume.expiresAt',
+           'g_state.volume.active && !g_volumeDragging.load() && now >= g_state.volume.expiresAt')
+    change('    constexpr float kControlSpacing = 64.0f;', '''    constexpr float kControlSpacing = 64.0f;
+    constexpr float kVolumeInsetRight = 44.0f;
+    constexpr float kVolumeButtonRadius = 14.0f;''')
+    change('// Returns 0 = previous, 1 = play/pause, 2 = next, or -1 for no button.',
+           '// Returns 0 = previous, 1 = play/pause, 2 = next, 3 = volume, or -1 for no button.')
+    change('        {MediaLayout::kControlSpacing, MediaLayout::kNavButtonRadius, 2},',
+           '''        {MediaLayout::kControlSpacing, MediaLayout::kNavButtonRadius, 2},
+        {centerX - MediaLayout::kVolumeInsetRight, MediaLayout::kVolumeButtonRadius, 3},''')
+    change('''                        SendMediaTransportCommand(cmd);''', '''                        if (cmd == 3) ShowIslandVolume();
+                        else SendMediaTransportCommand(cmd);''')
+    change('''                                  now);
+            } else if (activeTabId == 1) {''', '''                                  now);
+                DrawMediaVolumeButton(state.system.volumeMuted,
+                    D2D1::Point2F(rect.right - MediaLayout::kVolumeInsetRight, cy));
+            } else if (activeTabId == 1) {''')
+    change('    void DrawMediaControls(bool playing,', '''    void DrawMediaVolumeButton(bool muted, D2D1_POINT_2F center) {
+        const bool hovered = g_hoveredMediaButton.load() == 3;
+        const float radius = MediaLayout::kVolumeButtonRadius;
+        accentBrush_->SetOpacity(hovered ? 0.18f : 0.08f);
+        target_->FillEllipse(D2D1::Ellipse(center, radius, radius), accentBrush_.Get());
+        if (iconFormat_) {
+            const auto alignment = iconFormat_->GetTextAlignment();
+            const auto paragraph = iconFormat_->GetParagraphAlignment();
+            iconFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            iconFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            const wchar_t* glyph = muted ? L"\\uE74F" : (usingFluentIcons_ ? L"\\uE767" : L"\\uE993");
+            accentBrush_->SetOpacity(hovered ? 1.0f : 0.85f);
+            target_->DrawTextW(glyph, 1, iconFormat_.Get(),
+                D2D1::RectF(center.x - radius, center.y - radius, center.x + radius, center.y + radius),
+                accentBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            iconFormat_->SetTextAlignment(alignment);
+            iconFormat_->SetParagraphAlignment(paragraph);
+        }
+        accentBrush_->SetOpacity(1.0f);
+    }
+
+    void DrawMediaControls(bool playing,''')
     return src

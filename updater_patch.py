@@ -91,7 +91,7 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {''')
             nextUpdaterPoll = now + 1.0;
             const bool available = Wh_GetIntValue(L"UpdateAvailable", 0) != 0;
             if (g_updateAvailable.exchange(available) != available) g_layoutDirty = true;
-            const bool busy = snapshot.timer.active || g_importantDaysOpen.load();
+            const bool busy = snapshot.timer.active || g_importantDaysOpen.load() || g_lookupUi.open || g_mediaHttpActive.load() != 0;
             Wh_SetStringValue(L"UpdateVersion", WH_MOD_VERSION);
             Wh_SetIntValue(L"UpdatePid", GetCurrentProcessId());
             Wh_SetIntValue(L"UpdateHeartbeat", GetTickCount64() / 1000);

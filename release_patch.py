@@ -21,7 +21,7 @@ def apply_release(src, version, author):
 /*
 # 灵动岛 · 液态玻璃
 
-默认启用液态玻璃，包含媒体控制、日历、天气、硬件信息、时钟、计时器和 NBA 实时比分。
+默认启用液态玻璃，包含媒体来源切换、实时歌词、快捷查词、日历、天气、硬件信息、时钟、计时器和 NBA 实时比分。
 
 - 天气：留空城市时，向中国天气网查询公网 IP 所在城市；不需要密钥。
   代理或 VPN 可能改变定位结果。可以在设置中填写九位中国天气网城市编号覆盖自动定位。
@@ -29,6 +29,9 @@ def apply_release(src, version, author):
 - NBA：首次启动选择主队；支持全部 30 支球队、多主队及优先顺序。
   暂不开启后不再弹窗；右键灵动岛 → NBA 主队设置，可随时重新选择。
   比分来自 ESPN，无直播时回到普通时钟。
+- 媒体来源：展开媒体页点击底部来源按钮临时切换；右键可锁定来源或自动跟随。
+- 歌词：展开后滚轮进入歌词页；右键可启用收起歌词、媒体页内歌词和歌词置顶。歌词来自 LRCLIB，查询时发送歌名、歌手、专辑和时长，默认本地缓存上限 25 MB。右键可清缓存、微调蓝牙和有线同步。
+- 快捷查词：Alt+Space 打开输入框，提交后查询词典或百科，保留英文释义并通过 MyMemory 补充标注机译的中文译义；Esc 关闭。剪贴板仅作候选，最近查询仅存内存。快捷键可在设置中修改。
 - 重要日子：右键添加自己的生日、考试等日程；新安装没有预置个人日程。
 - 吃饭提醒：默认关闭，可在设置中开启并修改午饭、晚饭时间。
 - 液态玻璃默认参数已内置。英文、数字默认使用 SF Pro Text，中文优先使用苹方；字体由用户手动安装，公开安装包不包含字体文件，缺少字体时使用系统回退。
@@ -49,12 +52,14 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
         'ClockAccentGlow': 'false', 'FontFamily': '"SF Pro Text"',
         'ContourBorderHex': '"#E0E0E069"', 'PillBgColor': '"#10101024"',
         'TextPrimaryColor': '"#F2F2F7"', 'TextSecondaryColor': '"#D1D1D6"',
-        'NBAScores': 'true',
+        'NBAScores': 'true', 'FileTrayModule': 'true',
     }
     import re
     for key, value in defaults.items():
         src, count = re.subn(r'(?m)^(  - ' + key + r': )[^\n]+$', lambda m: m[1] + value, src)
         assert count == 1, (key, count)
+    change('    $description: Adds a File Tray card to the scroll loop. Drag files onto the island to park them there, then click to open one, or use the right-click menu to clear the shelf. Files are only referenced, never copied or moved.',
+           '    $description: 拖入文件可暂存路径，单击打开、按住拖出。点击 × 后，本机普通文件会在 7 天后永久删除原文件（不进回收站）；七天内重新拖入可取消。文件被修改或替换时取消删除。退出期间不执行，下次启动补查。文件夹仅移除入口；右键清空也仅移除入口。')
     change('''  - NBATeam: ""
     $name: 主队（按优先顺序）
     $description: 多支球队用逗号分隔，例如 CLE,PHI（骑士、76人）；只显示这些球队的实时比赛，同时比赛时按填写顺序选择。留空自动显示直播。

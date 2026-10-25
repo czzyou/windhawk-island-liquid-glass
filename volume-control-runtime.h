@@ -36,7 +36,7 @@ bool PublishCurrentVolume(IAudioEndpointVolume* endpoint, bool show) {
         if (settings.volume && (show || changed || g_volumeDragging.load())) {
             wake=!g_state.volume.active || now>=g_state.volume.expiresAt || g_autoHiddenParked.load();
             g_state.volume.active=true;
-            g_state.volume.expiresAt=now+3.0;
+            g_state.volume.expiresAt=now+1.0;
         }
     }
     if (changed || !g_endpointVolumeKnown || show) {
@@ -113,6 +113,7 @@ DWORD WINAPI VolumeControlThreadProc(void*) {
                     if (SUCCEEDED(device->GetId(&id))) { nextId=id; CoTaskMemFree(id); }
                 }
                 if (nextId!=deviceId || !watched) {
+                    UpdateLyricsOutputDevice(device.Get());
                     if (watched && subscribed) watched->UnregisterControlChangeNotify(callback.Get());
                     watched.Reset(); subscribed=false; deviceId=nextId;
                     if (device && !nextId.empty() && SUCCEEDED(device->Activate(__uuidof(IAudioEndpointVolume),CLSCTX_ALL,nullptr,

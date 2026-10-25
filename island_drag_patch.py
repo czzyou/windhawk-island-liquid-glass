@@ -49,7 +49,7 @@ int YasbDockY(int screenTop) {''')
     change('''        case WM_LBUTTONDOWN:
             {''', '''        case WM_LBUTTONDOWN:
             {
-                if ((GetAsyncKeyState(VK_MENU) & 0x8000) && !Wh_GetIntValue(L"UpdateRequested", 0)) {
+                if (!g_lookupUi.open && (GetAsyncKeyState(VK_MENU) & 0x8000) && !Wh_GetIntValue(L"UpdateRequested", 0)) {
                     if (!GetCursorPos(&g_islandDragStart)) return 0;
                     const int dockShift = static_cast<int>(std::lround(CaptionDockShift(
                         g_captionDockAnchor.load(), g_captionDockBlend.load())));
@@ -61,8 +61,7 @@ int YasbDockY(int screenTop) {''')
                     g_layoutDirty = true;
                     return 0;
                 }''')
-    change('''        case WM_MOUSEMOVE: {
-            TRACKMOUSEEVENT''', '''        case WM_MOUSEMOVE: {
+    change('''        case WM_MOUSEMOVE: {''', '''        case WM_MOUSEMOVE: {
             if (g_islandDragging.load()) {
                 POINT cursor{};
                 if (GetCursorPos(&cursor)) {
@@ -72,8 +71,7 @@ int YasbDockY(int screenTop) {''')
                     g_layoutDirty = true;
                 }
                 return 0;
-            }
-            TRACKMOUSEEVENT''')
+            }''')
     change('''        case WM_LBUTTONUP:
             {''', '''        case WM_LBUTTONUP:
             {
@@ -104,6 +102,6 @@ int YasbDockY(int screenTop) {''')
         GUITHREADINFO dockGui{sizeof(GUITHREADINFO)};''')
     change('        const bool dockPaused = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) ||',
            '        const bool dockPaused = g_islandManuallyPlaced.load() || (GetAsyncKeyState(VK_LBUTTON) & 0x8000) ||')
-    change('            const bool busy = snapshot.timer.active || g_importantDaysOpen.load();',
-           '            const bool busy = snapshot.timer.active || g_importantDaysOpen.load() || g_islandDragging.load();')
+    change('            const bool busy = snapshot.timer.active || g_importantDaysOpen.load() || g_lookupUi.open || g_mediaHttpActive.load() != 0;',
+           '            const bool busy = snapshot.timer.active || g_importantDaysOpen.load() || g_lookupUi.open || g_mediaHttpActive.load() != 0 || g_islandDragging.load();')
     return src
