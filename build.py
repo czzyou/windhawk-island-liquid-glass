@@ -363,6 +363,8 @@ from glass_patch import apply_glass
 src = apply_glass(src)
 from native_glass_patch import apply_native_glass
 src = apply_native_glass(src)
+from aurora_glow_patch import apply_aurora_glow
+src = apply_aurora_glow(src)
 from timer_patch import apply_timer
 src = apply_timer(src)
 from timer_ui_patch import apply_timer_ui
@@ -467,6 +469,22 @@ if '--source-only' in sys.argv:
 windhawk=Path(os.environ.get('WINDHAWK_PATH', r'C:\Program Files\Windhawk'))
 compiler=windhawk/'Compiler'
 clang=compiler/'bin/clang++.exe'
+
+glow_test = (root/'aurora-glow-checks.inc').read_text(encoding='utf-8')
+for marker, begin, end in (
+    ('COLOR', 'static float HueToRgb(', '// Returns true if the currently active foreground window'),
+    ('UPDATE', '    bool UpdateAmbientGlow(', '    bool Render('),
+    ('DRAW', '    void DrawAmbientAuroraGlow(', '    // A real soft shadow'),
+    ('SETTINGS', '    const int glowSetting =', '    next.accentBloom ='),
+):
+    start = src.index(begin)
+    glow_test = glow_test.replace('// ' + marker + '_IMPLEMENTATION', src[start:src.index(end, start)])
+assert '2030, L"专辑氛围背光"' in menu and 'case 2030:' in menu
+assert 'glowAnimating || mediaAnimating' in src
+(root/'aurora-glow-checks.cpp').write_text(glow_test, encoding='utf-8')
+subprocess.run([str(clang),'-std=c++23','-static',str(root/'aurora-glow-checks.cpp'),'-o',str(root/'aurora-glow-checks.exe')],cwd=compiler,check=True)
+subprocess.run([str(root/'aurora-glow-checks.exe')],check=True)
+print('Aurora glow checks passed: companion, pause, toggle, pastel/neutral colors, contrast and bounds', flush=True)
 
 waveform_start = src.index('    void DrawWaveform(')
 waveform_end = src.index('\n    void DrawCountdownProgress', waveform_start)
