@@ -14757,17 +14757,20 @@ class Renderer {
             return;
         }
 
-        // Lift luminance slightly so dark/muted cover accents bloom vibrantly
         const float maxC = (std::max)({glowColor.r, glowColor.g, glowColor.b});
         const float minC = (std::min)({glowColor.r, glowColor.g, glowColor.b});
-        if (maxC < 0.35f && maxC > 0.001f) {
+        const float sat = maxC - minC;
+
+        // If the album art is monochrome, neutral, dark, or low-saturation (e.g. gray/black/white covers),
+        // gracefully cast a clean, elegant frosted soft pale white glow instead of a muddy tint.
+        if (sat < 0.18f || maxC <= 0.001f) {
+            glowColor = D2D1::ColorF(0.92f, 0.94f, 0.98f, 1.0f);
+        } else if (maxC < 0.35f && maxC > 0.001f) {
+            // Lift luminance slightly so dark but saturated cover accents bloom vibrantly
             const float boost = 0.35f / maxC;
             glowColor.r = (std::min)(1.0f, glowColor.r * boost);
             glowColor.g = (std::min)(1.0f, glowColor.g * boost);
             glowColor.b = (std::min)(1.0f, glowColor.b * boost);
-        } else if (maxC <= 0.001f || (maxC - minC < 0.04f && maxC < 0.6f)) {
-            // Ethereal cool moonlight tone for pitch black or muddy dark-gray monochrome covers
-            glowColor = D2D1::ColorF(0.65f, 0.78f, 0.95f, 1.0f);
         }
 
         // Calm breathing pulsation (~2.6s cycle) when music is actively playing
@@ -14805,7 +14808,7 @@ class Renderer {
 
             // Concentric smooth falloff
             const float falloff = (1.0f - t) * (1.0f - t);
-            const float alpha = Clamp(0.09f * falloff * totalIntensity * compactFade, 0.0f, 1.0f);
+            const float alpha = Clamp(0.085f * falloff * totalIntensity * compactFade, 0.0f, 1.0f);
             if (alpha <= 0.0015f) {
                 continue;
             }
