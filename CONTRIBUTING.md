@@ -20,7 +20,9 @@ python build.py --release --source-only
 
 这项检查不需要安装 Windhawk，会验证补丁能否合成、发布版本格式和设置 YAML。推送代码或提交 PR 后，GitHub Actions 的 `Source check` 会执行相同命令。若首次运行需要维护者批准，以 PR 页面提示为准。
 
-**Actions 通过只代表源码检查通过。** 涉及 C++ 或运行行为时，在支持的 Windows 环境中按改动验证；完整构建使用 Windhawk 1.7.3 安装版提供的工具链：
+`Windows build` 还会自动使用固定 Windhawk 1.7.3 工具链编译 x64/x86，并运行回归、发布和隔离更新器检查。通过后可在该次运行中下载 `island-build-提交号` 试用包；它包含源码和两种架构 DLL，保留 30 天。
+
+**自动检查通过不能代替实际体验。** 用户作为首位体验测试者；有必要在本机单独构建时，使用 Windhawk 1.7.3 工具链：
 
 ```shell
 python build.py --release
@@ -30,4 +32,4 @@ python build.py --release
 
 ## 发布分工
 
-贡献者提交源码和 PR；维护者按 [发布流程](发布流程.md)完成本机构建、签名和正式 Release 发布。贡献者无需发布私钥，也无需运行 `publish.ps1 -InitializeKey`。Actions 只具有仓库内容读取权限，不执行签名或发布。
+贡献者提交源码和 PR；Actions 负责自动编译、检查和试用包。用户先体验并明确要求发布后，维护者按 [发布流程](发布流程.md)在本机核对当前提交的 Actions 成功结果、签名并发布正式 Release，不重复本机构建。贡献者无需发布私钥，也无需运行 `publish.ps1 -InitializeKey`。Actions 只具有仓库内容读取权限，不执行签名或发布。

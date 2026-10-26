@@ -6,6 +6,7 @@ __pycache__/
 /checks.cpp
 /32/
 /release-output/
+/build-artifact/
 *.reg
 *.log
 *.dpapi

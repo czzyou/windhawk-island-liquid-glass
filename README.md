@@ -37,16 +37,15 @@
 
 参与开发请先阅读 [贡献指南](CONTRIBUTING.md)，其中说明了源码修改、Actions 检查和 PR 提交方式。
 
-GitHub Actions 在推送代码、提交 PR 或手动触发时自动运行 `python build.py --release --source-only`，检查补丁合成、发布版本格式和设置 YAML。此检查不编译插件、不签名或发布；完整构建和实际体验仍按下面的本机流程进行。
+GitHub Actions 在推送代码、提交 PR 或手动触发时自动运行两项检查：`Source check` 验证补丁合成、版本格式和设置 YAML；`Windows build` 使用固定 Windhawk 1.7.3 工具链编译 x64/x86、运行回归及发布检查，并生成保留 30 天的 `island-build-提交号` 试用包。维护者先进行实际体验；Actions 不签名、不自动发布。
 
 固定操作见 [发布流程](发布流程.md)：修改与本机试用之后，用户确认发布，再提交源码并发布正式 Release。只 push 代码不会让使用者收到更新。
 
-日常发布使用现有签名密钥，不需要重新初始化。更新版本和说明后，先准备附件并提交、推送源码，再运行发布命令：
+日常发布使用现有签名密钥，不需要重新初始化。更新版本和说明，生成源码并提交、推送；等待当前提交的两项 Actions 检查成功并完成首轮体验，用户明确要求发布后运行：
 
 ```powershell
-# 生成并检查附件，不发布
+# 复用当前提交的 Actions 成功结果，在本机签名和打包，不重复编译
 powershell -NoProfile -File updater/publish.ps1 -PrepareOnly
-# 按发布流程提交并推送源码
 # 上传草稿，附件齐全后发布为 Latest 正式版
 powershell -NoProfile -File updater/publish.ps1 -PublishPrepared -NotesFile RELEASE_NOTES.md
 ```

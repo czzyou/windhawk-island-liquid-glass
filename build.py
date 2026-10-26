@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import subprocess
 import sys
 import yaml
@@ -463,7 +464,8 @@ assert 'Scale(contentScale, contentScale, pillCenter)' in src
 out.write_text(src, encoding='utf-8')
 if '--source-only' in sys.argv:
     sys.exit(0)
-compiler=Path(r'C:\Program Files\Windhawk\Compiler')
+windhawk=Path(os.environ.get('WINDHAWK_PATH', r'C:\Program Files\Windhawk'))
+compiler=windhawk/'Compiler'
 clang=compiler/'bin/clang++.exe'
 
 waveform_start = src.index('    void DrawWaveform(')
@@ -1163,7 +1165,7 @@ print('Tomorrow brief checks passed: rollover, stale/malformed forecasts, units,
 args=[str(clang),'-std=c++23','-O2','-shared','-DUNICODE','-D_UNICODE',
  '-DWINVER=0x0A00','-D_WIN32_WINNT=0x0A00','-D_WIN32_IE=0x0A00','-DNTDDI_VERSION=0x0A000008',
  '-D__USE_MINGW_ANSI_STDIO=0','-DWH_MOD',f'-DWH_MOD_ID=L"local@{build_id}"',
- f'-DWH_MOD_VERSION=L"{build_version}"',r'C:\Program Files\Windhawk\Engine\1.7.3\64\windhawk.lib',
+ f'-DWH_MOD_VERSION=L"{build_version}"',str(windhawk/'Engine/1.7.3/64/windhawk.lib'),
  '-x','c++',str(out),'-include','windhawk_api.h','-target','x86_64-w64-mingw32',
  '-Wl,--export-all-symbols','-o',str(root/f'local@{build_id}_{build_version}.dll')]
 args += ['-l'+x for x in 'ole32 oleaut32 shcore d2d1 dwrite dwmapi gdi32 user32 shell32 runtimeobject windowscodecs avrt setupapi winhttp pdh winmm d3d11 dxgi dcomp d3dcompiler dxguid comctl32'.split()]

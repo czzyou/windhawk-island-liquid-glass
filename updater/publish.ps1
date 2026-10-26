@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param([switch]$InitializeKey, [switch]$PrepareOnly, [switch]$PublishPrepared, [string]$NotesFile)
 . (Join-Path $PSScriptRoot 'core.ps1')
+. (Join-Path $PSScriptRoot 'publish-checks.ps1')
 $sourceRoot=Split-Path $PSScriptRoot -Parent
 $release=Read-JsonFile (Join-Path $sourceRoot 'release.json')
 Assert-Repository $release.repository
@@ -41,10 +42,9 @@ if ($PublishPrepared -and $PrepareOnly) { throw 'Choose preparation or publicati
 if (-not $PublishPrepared) {
 Push-Location $sourceRoot
 try {
-    & python build.py --release
-    if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
-    & python release-checks.py
-    if ($LASTEXITCODE -ne 0) { throw 'Release checks failed.' }
+    & python build.py --release --source-only
+    if ($LASTEXITCODE -ne 0) { throw 'Release source generation failed.' }
+    Assert-ActionsBuild $release.repository $sourceRoot
 } finally { Pop-Location }
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 Copy-Item -LiteralPath $source -Destination $asset -Force
