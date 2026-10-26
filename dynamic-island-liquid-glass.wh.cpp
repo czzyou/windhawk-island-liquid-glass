@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.4.7
+// @version         1.4.8
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -8359,50 +8359,7 @@ void PushWaveformSample(float amplitude) {
     ++g_state.waveformWrite;
 }
 
-void PushAudioChunks(BYTE* data, UINT32 frames, WAVEFORMATEX* format) {
-    if (!data || !frames || !format || !format->nChannels) {
-        PushWaveformSample(0.0f);
-        return;
-    }
 
-    constexpr UINT32 chunkFrames = 64;
-    const UINT32 channels = format->nChannels;
-    const bool isFloat =
-        format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
-        (format->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
-         format->cbSize >= sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX) &&
-         IsEqualGUID(reinterpret_cast<WAVEFORMATEXTENSIBLE*>(format)->SubFormat,
-                     kSubTypeIeeeFloat));
-    const bool is16 = format->wBitsPerSample == 16;
-
-    if (!isFloat && !is16) {
-        PushWaveformSample(SampleAudioAmplitude(data, frames, format));
-        return;
-    }
-
-    for (UINT32 frame = 0; frame < frames; frame += chunkFrames) {
-        const UINT32 chunk = std::min(chunkFrames, frames - frame);
-        double sum = 0.0;
-        const size_t samples = static_cast<size_t>(chunk) * channels;
-        const size_t start = static_cast<size_t>(frame) * channels;
-
-        if (isFloat) {
-            auto* f = reinterpret_cast<float*>(data);
-            for (size_t i = 0; i < samples; ++i) {
-                const double v = f[start + i];
-                sum += v * v;
-            }
-        } else {
-            auto* s = reinterpret_cast<int16_t*>(data);
-            for (size_t i = 0; i < samples; ++i) {
-                const double v = s[start + i] / 32768.0;
-                sum += v * v;
-            }
-        }
-
-        PushWaveformSample(Clamp(static_cast<float>(std::sqrt(sum / samples) * 4.0), 0.0f, 1.0f));
-    }
-}
 
 #include <winrt/Windows.Foundation.Collections.h>
 
@@ -8985,7 +8942,6 @@ DWORD WINAPI AudioThreadProc(void*) {
             }
 
             float amplitude = 0.0f;
-            int packets = 0;
             while (packetFrames > 0) {
                 BYTE* data = nullptr;
                 UINT32 frames = 0;
@@ -8998,25 +8954,15 @@ DWORD WINAPI AudioThreadProc(void*) {
 
                 if (!(flags & AUDCLNT_BUFFERFLAGS_SILENT)) {
                     amplitude = std::max(amplitude, SampleAudioAmplitude(data, frames, mixFormat));
-                    PushAudioChunks(data, frames, mixFormat);
-                } else {
-                    PushWaveformSample(0.0f);
                 }
                 capture->ReleaseBuffer(frames);
-                ++packets;
 
                 if (FAILED(capture->GetNextPacketSize(&packetFrames))) {
                     packetFrames = 0;
                 }
             }
 
-            if (packets > 0) {
-                if (amplitude <= 0.001f) {
-                    PushWaveformSample(0.0f);
-                }
-            } else {
-                PushWaveformSample(0.0f);
-            }
+            PushWaveformSample(amplitude);
 
             // --- Stall watchdog -------------------------------------------
             // Checked at most once a second (cheap: one time comparison plus
@@ -18570,15 +18516,17 @@ public:
         const float centerY = (rect.top + rect.bottom) * 0.5f;
         const float maxH = (rect.bottom - rect.top) * 0.86f;
 
-        // Use a step size of 4 samples (approx 40ms) so bars aren't identical
-        const size_t step = 4;
+        // Scale real recent samples so quiet playback still has visible dynamics.
+        float peak = 0.01f;
+        for (float sample : state.waveform) peak = std::max(peak, sample);
+        const size_t step = std::min<size_t>(4, (state.waveform.size() - 1) / count);
 
         for (size_t i = 0; i < count; ++i) {
             const size_t offset = (count - i) * step;
             const size_t source = (state.waveformWrite + state.waveform.size() - offset) %
                                   state.waveform.size();
-            const float amp = Clamp(state.waveform[source], 0.03f, 1.0f);
-            const float h = std::max(3.0f, amp * maxH);
+            const float amp = Clamp(state.waveform[source] / peak, 0.0f, 1.0f);
+            const float h = 3.0f + (maxH - 3.0f) * std::sqrt(amp);
             const float x = rect.left + i * (barWidth + gap);
             D2D1_RECT_F bar = D2D1::RectF(x, centerY - h * 0.5f, x + barWidth, centerY + h * 0.5f);
             accentBrush_->SetOpacity(0.45f + 0.5f * amp);

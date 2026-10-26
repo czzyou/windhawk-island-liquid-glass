@@ -15,6 +15,34 @@ def replace(old, new):
 replace('// @id              dynamic-island-for-windows', '// @id              dynamic-island-for-windows-yasb')
 replace('// @name            Dynamic Island for Windows', '// @name            Dynamic Island for Windows - YASB integration')
 replace('// @version         1.3.1', '// @version         1.3.1-local.60')
+
+# Keep about 0.75 seconds of history, rather than overwriting it with 64-frame chunks.
+audio_chunks_start = src.index('void PushAudioChunks(')
+audio_chunks_end = src.index('\n}', audio_chunks_start) + 2
+src = src[:audio_chunks_start] + src[audio_chunks_end:]
+replace('            int packets = 0;\n', '')
+replace('''                    PushAudioChunks(data, frames, mixFormat);
+                } else {
+                    PushWaveformSample(0.0f);
+''', '')
+replace('                ++packets;\n', '')
+replace('''            if (packets > 0) {
+                if (amplitude <= 0.001f) {
+                    PushWaveformSample(0.0f);
+                }
+            } else {
+                PushWaveformSample(0.0f);
+            }''', '            PushWaveformSample(amplitude);')
+replace('''        // Use a step size of 4 samples (approx 40ms) so bars aren't identical
+        const size_t step = 4;''', '''        // Scale real recent samples so quiet playback still has visible dynamics.
+        float peak = 0.01f;
+        for (float sample : state.waveform) peak = std::max(peak, sample);
+        const size_t step = std::min<size_t>(4, (state.waveform.size() - 1) / count);''')
+replace('const float amp = Clamp(state.waveform[source], 0.03f, 1.0f);',
+        'const float amp = Clamp(state.waveform[source] / peak, 0.0f, 1.0f);')
+replace('const float h = std::max(3.0f, amp * maxH);',
+        'const float h = 3.0f + (maxH - 3.0f) * std::sqrt(amp);')
+
 replace('(g_settings.autoHideIdleSeconds == -1 ? 0.0f : 36.0f)', '(g_settings.autoHideIdleSeconds == -1 ? 0.0f : IdleStripLayout::kHeight)')
 notification_route = '''std::wstring NotificationLaunchTarget(const std::wstring& appId) {
     if (appId.empty() || appId.find_first_of(L"\\\\/:\\\"\\r\\n") != std::wstring::npos ||
@@ -437,6 +465,15 @@ if '--source-only' in sys.argv:
     sys.exit(0)
 compiler=Path(r'C:\Program Files\Windhawk\Compiler')
 clang=compiler/'bin/clang++.exe'
+
+waveform_start = src.index('    void DrawWaveform(')
+waveform_end = src.index('\n    void DrawCountdownProgress', waveform_start)
+waveform_test = (root/'waveform-checks.inc').read_text(encoding='utf-8').replace(
+    '// WAVEFORM_IMPLEMENTATION', src[waveform_start:waveform_end])
+(root/'waveform-checks.cpp').write_text(waveform_test, encoding='utf-8')
+subprocess.run([str(clang),'-std=c++23','-static',str(root/'waveform-checks.cpp'),'-o',str(root/'waveform-checks.exe')],cwd=compiler,check=True)
+subprocess.run([str(root/'waveform-checks.exe')],check=True)
+print('Waveform checks passed: quiet audio dynamics, digital silence and full-scale bounds',flush=True)
 
 # Exercise the ported parsers, cache I/O, selection and lookup with network replies stubbed.
 feature_test = r'''#include <windows.h>
