@@ -105,7 +105,8 @@ try {
     Set-ItemProperty -LiteralPath $settings -Name 'Appearance.OffsetX' -Value 88
     New-ItemProperty -LiteralPath $fixture.Storage -Name ImportantDays -Value 'user-data' -PropertyType String | Out-Null
     $oldHash=Get-FileDigest $fixture.Source
-    $next=$manifest.PSObject.Copy(); $next.version='1.5.0'
+    $availableVersion = '{0}.{1}.{2}' -f ([version]$version).Major, ([version]$version).Minor, (([version]$version).Build+1)
+    $next=$manifest.PSObject.Copy(); $next.version=$availableVersion
     $script:compileFails=$true
     Must-Fail { Invoke-IslandInstall $fixture $testRoot $next $sourcePath (Get-UpdaterState $testRoot) } 'Compile failure propagated'
     Assert ((Get-ModSnapshot $fixture).Version -eq $version -and (Get-ModSnapshot $fixture).Disabled -eq 0) 'Compile failure preserves running version'
@@ -121,10 +122,10 @@ try {
     $script:busy=$false
     Set-ModDisabled $fixture 1
     $result=Invoke-IslandInstall $fixture $testRoot $next $sourcePath (Get-UpdaterState $testRoot)
-    Assert ((Get-ModSnapshot $fixture).Disabled -eq 1 -and (Get-ModSnapshot $fixture).Version -eq '1.5.0') 'Disabled mod remains disabled after update'
+    Assert ((Get-ModSnapshot $fixture).Disabled -eq 1 -and (Get-ModSnapshot $fixture).Version -eq $availableVersion) 'Disabled mod remains disabled after update'
     Assert ((Get-Item -LiteralPath $settings).GetValue('Appearance.OffsetX') -eq 88) 'Settings preserved on update'
     [IO.File]::AppendAllText($fixture.Source,'// local edit')
-    $next.version='1.6.0'
+    $next.version='{0}.{1}.{2}' -f ([version]$version).Major, ([version]$version).Minor, (([version]$version).Build+2)
     Must-Fail { Invoke-IslandInstall $fixture $testRoot $next $sourcePath (Get-UpdaterState $testRoot) } 'Local edits protected'
     Copy-Item -LiteralPath $sourcePath -Destination $fixture.Source -Force
     $journal=Read-JsonFile (Join-Path $testRoot 'previous.json')
@@ -147,7 +148,6 @@ try {
     Assert ($result -eq 'Already current.' -and $script:downloadIndex -eq 2) 'Current signed release skips source download'
     Assert ((Get-Item -LiteralPath $fixture.Storage).GetValue('UpdateAvailable',-1) -eq 0) 'No update clears the badge'
 
-    $availableVersion = '{0}.{1}.{2}' -f ([version]$version).Major, ([version]$version).Minor, (([version]$version).Build+1)
     $newManifest=$manifest.PSObject.Copy(); $newManifest.version=$availableVersion; $newManifest.tag='v'+$availableVersion
     $newBytes=$script:Utf8.GetBytes(($newManifest | ConvertTo-Json -Depth 10))
     $newSignature=$rsa.SignData($newBytes,'SHA256')
