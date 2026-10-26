@@ -199,10 +199,10 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
     $name: Soft drop shadow
     $description: Casts a soft shadow beneath the island to lift it off the desktop.
   - AmbientAuroraGlow: true
-    $name: Ambient aurora glow
+    $name: 专辑氛围背光
     $description: Casts a soft, breathing ambient glow around the island driven by the playing album art accent color.
   - AmbientGlowIntensity: 100
-    $name: Ambient glow intensity
+    $name: 氛围背光强度
     $description: 0 to 200. Controls how brightly the ambient aurora glow radiates around the island.
 
   - AccentBloom: 0
@@ -3412,6 +3412,7 @@ struct BitmapPixels {
     UINT height = 0;
     uint64_t generation = 0;
     D2D1_COLOR_F sampledAccent = D2D1::ColorF(0.92f, 0.94f, 0.98f, 1.0f);
+    bool accentIsNeutral = true;
 };
 
 
@@ -5262,7 +5263,13 @@ void LoadSettings() {
 
     next.materialDepth = Wh_GetIntSetting(L"Themes.MaterialDepth") != 0;
     next.dropShadow = Wh_GetIntSetting(L"Themes.DropShadow") != 0;
-    next.ambientAuroraGlow = Wh_GetIntSetting(L"Themes.AmbientAuroraGlow") != 0;
+    const int glowSetting = Wh_GetIntSetting(L"Themes.AmbientAuroraGlow") != 0;
+    int glowOverride = Wh_GetIntValue(L"AmbientAuroraGlowOverride", -1);
+    if (glowOverride >= 0 && Wh_GetIntValue(L"AmbientAuroraGlowOverrideBase", -1) != glowSetting) {
+        Wh_SetIntValue(L"AmbientAuroraGlowOverride", -1);
+        glowOverride = -1;
+    }
+    next.ambientAuroraGlow = glowOverride >= 0 ? glowOverride != 0 : glowSetting != 0;
     next.ambientGlowIntensity = Clamp(Wh_GetIntSetting(L"Themes.AmbientGlowIntensity") / 100.0f, 0.0f, 2.0f);
     next.accentBloom = Clamp(Wh_GetIntSetting(L"Themes.AccentBloom") / 100.0f, 0.0f, 2.0f);
     next.textScale = Clamp(Wh_GetIntSetting(L"Themes.TextScale") / 100.0f, 0.7f, 1.6f);
@@ -6422,6 +6429,7 @@ bool DecodeImageBytesToPixels(const std::vector<uint8_t>& bytes, BitmapPixels* o
         }
 
         if (poolCount > 0) {
+            pixels.accentIsNeutral = false;
             const float invC = 1.0f / static_cast<float>(poolCount);
             const float rawR = static_cast<float>(poolR * invC) / 255.0f;
             const float rawG = static_cast<float>(poolG * invC) / 255.0f;
@@ -6437,14 +6445,11 @@ bool DecodeImageBytesToPixels(const std::vector<uint8_t>& bytes, BitmapPixels* o
                 bgColor);
         }
         // If poolCount is somehow 0 (all neighbors empty and center also cleared),
-        // the existing sampledAccent default (#4cc9f0) is kept unchanged — explicit
+        // the neutral sampledAccent default is kept unchanged — explicit
         // fallback for fully-grayscale/near-black-and-white album art.
-    } else {
-        // True black & white / grayscale album art: use clean, elegant frosted soft white
-        pixels.sampledAccent = D2D1::ColorF(0.92f, 0.94f, 0.98f, 1.0f);
     }
     // else: no qualifying colorful pixel found (B&W / fully-filtered image)
-    // — leave sampledAccent at the BitmapPixels default (#4cc9f0).
+    // — leave sampledAccent at the neutral BitmapPixels default.
 
     pixels.generation = ++g_artGenerationCounter;
     *outPixels = std::move(pixels);
@@ -13763,6 +13768,8 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
                           ? Wh_GetIntValue(L"ExpandOnHoverOverride", 0)
                           : (Wh_GetIntSetting(L"Behavior.ExpandOnHover") != 0);
     AppendMenuW(menu, MF_STRING, 11, activeExpandOnHover ? L"Expand on Click" : L"Expand on Hover");
+    AppendMenuW(menu, MF_STRING | (GetSettingsCopy().ambientAuroraGlow ? MF_CHECKED : 0),
+                2030, L"专辑氛围背光");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 49, g_updateAvailable.load() ? L"安装可用更新…" : L"检查更新…");
     AppendMenuW(menu, MF_STRING, 9, L"Open Windhawk settings");
@@ -13843,6 +13850,13 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
                                   ? Wh_GetIntValue(L"ExpandOnHoverOverride", 0)
                                   : (Wh_GetIntSetting(L"Behavior.ExpandOnHover") != 0);
             Wh_SetIntValue(L"ExpandOnHoverOverride", activeExpandOnHover ? 0 : 1);
+            LoadSettings();
+            g_layoutDirty = true;
+            break;
+        }
+        case 2030: {
+            Wh_SetIntValue(L"AmbientAuroraGlowOverride", !GetSettingsCopy().ambientAuroraGlow);
+            Wh_SetIntValue(L"AmbientAuroraGlowOverrideBase", Wh_GetIntSetting(L"Themes.AmbientAuroraGlow") != 0);
             LoadSettings();
             g_layoutDirty = true;
             break;
@@ -14054,6 +14068,25 @@ class Renderer {
                           initialSettings.textScale);
 
         return CreateBackingBitmap(520, 140);
+    }
+
+    // Ambient Aurora Glow.
+    // Update once per frame, independently of how many pills are painted.
+    bool UpdateAmbientGlow(const Settings& settings, bool mediaShown, bool playing, double now) {
+        const float target = settings.ambientAuroraGlow && mediaShown &&
+            settings.ambientGlowIntensity > 0.005f && settings.backdropMaterial == BackdropMaterial::None
+            ? (playing ? 1.0f : 0.65f) : 0.0f;
+        const float previous = auroraGlowBlend_;
+        if (lastGlowTime_ < 0.0) {
+            auroraGlowBlend_ = target;
+        } else {
+            const double dt = (std::max)(0.0, (std::min)(now - lastGlowTime_, 0.1));
+            const float k = 1.0f - static_cast<float>(std::exp(-dt / 0.18));
+            auroraGlowBlend_ += (target - auroraGlowBlend_) * k;
+            if (std::fabs(target - auroraGlowBlend_) <= 0.005f) auroraGlowBlend_ = target;
+        }
+        lastGlowTime_ = now;
+        return previous != auroraGlowBlend_ || auroraGlowBlend_ != target;
     }
 
     bool Render(const SharedState& state, const Settings& settings, const Activity& primary,
@@ -14665,7 +14698,8 @@ class Renderer {
             targetAccent = GetSystemAccentColor();
         } else if (settings.accentMode == AccentMode::Auto && !state.media.art.bgra.empty()) {
             // Already contrast-corrected when the art was decoded.
-            targetAccent = state.media.art.sampledAccent;
+            targetAccent = EnsureContrastAgainstBackground(
+                state.media.art.sampledAccent, settings.pillBgColor);
         } else {
             // A custom or system accent was never checked against the island's
             // own background. That did not matter while every theme was dark,
@@ -14906,27 +14940,11 @@ class Renderer {
         target_->SetTransform(oldTransform);
     }
 
-    // Ambient Aurora Glow.
-    // Driven by album art accent, this projects a soft breathing aura around
-    // the island on the desktop, creating an organic physical backlight bloom.
     void DrawAmbientAuroraGlow(D2D1_RECT_F rect, float radius,
                                const SharedState& state, const Settings& settings,
                                IslandKind kind, double now) {
-        if (settings.backdropMaterial != BackdropMaterial::None) {
+        if (kind != IslandKind::Media || settings.backdropMaterial != BackdropMaterial::None) {
             return;
-        }
-
-        const bool isMedia = (kind == IslandKind::Media);
-        const float targetBlend = (settings.ambientAuroraGlow && isMedia) ? (state.media.playing ? 1.0f : 0.65f) : 0.0f;
-
-        if (lastGlowTime_ < 0.0) {
-            auroraGlowBlend_ = targetBlend;
-            lastGlowTime_ = now;
-        } else {
-            const double dt = (std::max)(0.0, (std::min)(now - lastGlowTime_, 0.1));
-            lastGlowTime_ = now;
-            const float k = 1.0f - static_cast<float>(std::exp(-dt / 0.18));
-            auroraGlowBlend_ += (targetBlend - auroraGlowBlend_) * k;
         }
 
         if (auroraGlowBlend_ <= 0.005f || settings.ambientGlowIntensity <= 0.005f) {
@@ -14939,12 +14957,8 @@ class Renderer {
         }
 
         const float maxC = (std::max)({glowColor.r, glowColor.g, glowColor.b});
-        const float minC = (std::min)({glowColor.r, glowColor.g, glowColor.b});
-        const float sat = maxC - minC;
-
-        // If the album art is monochrome, neutral, dark, or low-saturation (e.g. gray/black/white covers),
-        // gracefully cast a clean, elegant frosted soft pale white glow instead of a muddy tint.
-        if (sat < 0.12f || maxC <= 0.001f) {
+        // Neutral cover detection belongs to decoding, not the contrast-corrected UI color.
+        if (settings.accentMode == AccentMode::Auto && state.media.art.accentIsNeutral) {
             glowColor = D2D1::ColorF(0.92f, 0.94f, 0.98f, 1.0f);
         } else if (maxC < 0.35f && maxC > 0.001f) {
             // Lift luminance slightly so dark but saturated cover accents bloom vibrantly
@@ -14963,14 +14977,16 @@ class Renderer {
             return;
         }
 
-        // Compute strict safe margins to prevent any outer glow clipping on all DPI scales
-        // (100% ~ 250%), ultra-wide aspect ratios, notch/docked modes, and spring bounce nudges.
-        const float availBottom = (std::max)(4.0f, static_cast<float>(bitmapHeight_) - rect.bottom - 3.5f);
-        const float availLeft = (std::max)(4.0f, rect.left - 4.0f);
-        const float maxSafeSpreadY = (std::min)(16.5f, availBottom / 1.20f);
-        const float spreadY = Clamp(13.5f * settings.sizeScale, 5.0f, maxSafeSpreadY);
-        const float yOffset = (settings.notchStyle || settings.borderMergedMode) ? (spreadY * 0.32f) : (spreadY * 0.16f);
-        const float spreadX = Clamp(spreadY * 1.30f, 6.0f, (std::min)(availLeft, kRenderPadX - 4.0f));
+        const bool flushTop = settings.notchStyle || settings.borderMergedMode;
+        const float offsetRatio = flushTop ? 0.32f : 0.16f;
+        const float availBottom = (std::max)(0.0f, bitmapHeight_ - rect.bottom - 3.5f);
+        const float availTop = (std::max)(0.0f, rect.top - 3.5f);
+        float spreadY = (std::min)(Clamp(13.5f * settings.sizeScale, 5.0f, 16.5f),
+                                   availBottom / (1.0f + offsetRatio));
+        if (!flushTop) spreadY = (std::min)(spreadY, availTop / (0.70f - offsetRatio));
+        const float yOffset = spreadY * offsetRatio;
+        const float availX = (std::max)(0.0f, (std::min)(rect.left, bitmapWidth_ - rect.right) - 4.0f);
+        const float spreadX = (std::min)({spreadY * 1.30f, availX, kRenderPadX - 4.0f});
 
         if (!auroraGlowBrush_) {
             if (FAILED(target_->CreateSolidColorBrush(glowColor, &auroraGlowBrush_)) || !auroraGlowBrush_) {
@@ -22302,8 +22318,10 @@ DWORD WINAPI RenderThreadProc(void*) {
         };
         const bool countdownBarsOn = g_settings.statusCountdownProgress;
 
+        const bool glowAnimating = renderer.UpdateAmbientGlow(
+            g_settings, mediaShown, snapshot.media.playing, now);
         const bool continuousAnimation =
-            mediaAnimating || isTransientPill(primary.kind) ||
+            glowAnimating || mediaAnimating || isTransientPill(primary.kind) ||
             (secondary && isTransientPill(secondary->kind)) ||
             (countdownBarsOn && (hasCountdownBar(primary.kind) ||
                                  (secondary && hasCountdownBar(secondary->kind))));
