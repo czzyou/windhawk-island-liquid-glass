@@ -36,6 +36,12 @@ int main() {
             const auto cell=grid.Cell(day);
             assert(cell.left>=134 && cell.right<=330 && cell.top>=41 && cell.bottom<=170.01f);
             assert(grid.Hit((cell.left+cell.right)*0.5f,(cell.top+cell.bottom)*0.5f)==day);
+            for(float width:{380.0f,592.0f,892.0f}) {
+                const float offset=CalendarContentOffset(width);
+                assert(std::abs((22+offset+330+offset)*0.5f-width*0.5f)<0.01f);
+                const float x=(cell.left+cell.right)*0.5f+offset;
+                assert(grid.Hit(x-offset,(cell.top+cell.bottom)*0.5f)==day);
+            }
         }
         assert(grid.Hit(133,60)==0 && grid.Hit(180,170)==0);
         if(grid.first) assert(grid.Hit(140,42)==0);

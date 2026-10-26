@@ -1,3 +1,4 @@
+// MEDIA_LYRICS_WIDTH_IMPLEMENTATION
 int main() {
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     CheckFileTrayDeletion();
@@ -61,12 +62,43 @@ int main() {
     assert(paragraphBlocks[0].height>18 && paragraphBlocks[1].top>=paragraphBlocks[0].height+27);
     DWRITE_TEXT_METRICS paragraphMetrics{}; paragraphBlocks[0].layout->GetMetrics(&paragraphMetrics);
     assert(paragraphMetrics.width<=320.1f);
-    assert(CollapsedLyricsWidth(100,900)==320);
+    assert(CollapsedLyricsWidth(100,900)==192);
+    assert(CollapsedLyricsWidth(100.5f,900)==193);
     assert(CollapsedLyricsWidth(270,900)==362);
-    assert(CollapsedLyricsWidth(800,900)==400);
+    assert(CollapsedLyricsWidth(800,900)==892);
     assert(CollapsedLyricsWidth(800,350)==350);
     assert(CollapsedLyricsWidth(-1,900)==400);
     assert(CollapsedLyricsWidth(800,-1)==0);
+    assert(IsLyricsCredit(L"作词 : a very long list of writers"));
+    assert(IsLyricsCredit(L"作曲/编曲：名字"));
+    assert(IsLyricsCredit(L"Written By: Writer One / Writer Two"));
+    assert(!IsLyricsCredit(L"I ain't tryna tell you what to do, but try to play it cool"));
+    LyricsWidthTarget changingWidth;
+    assert(changingWidth.Update(300,0,false)==300);
+    assert(changingWidth.Update(315,0.1,false)==300);
+    assert(changingWidth.Update(600,0.2,false)==600);
+    assert(changingWidth.Update(200,1,false)==600);
+    assert(changingWidth.Update(200,1.49,false)==600);
+    assert(changingWidth.Update(200,1.51,false)==200);
+    assert(changingWidth.Update(900,2,true)==200);
+    assert(changingWidth.Update(500,2.1,false)==500);
+    assert(changingWidth.Update(200,3,false)==500);
+    assert(changingWidth.Update(200,3.6,true)==500);
+    assert(changingWidth.Update(200,4,false)==500);
+    assert(changingWidth.Update(200,4.51,false)==200);
+    for (float scale : {0.7f,1.0f,1.5f,2.5f}) {
+        for (float collapsed : {192.0f,400.0f,592.0f,892.0f}) {
+            const float width=collapsed*scale;
+            assert(CheckedMediaLyricsWidth(380*scale,width,false)==width);
+            const float expanded=CheckedMediaLyricsWidth(380*scale,width,true);
+            assert(expanded>=width && expanded>=380*scale);
+            for (float anchor : {0.0f,0.5f,1.0f}) {
+                const float left=-width*anchor, nextLeft=-expanded*anchor;
+                for (float cursor : {left+0.5f,left+width-0.5f})
+                    assert(cursor>=nextLeft && cursor<nextLeft+expanded);
+            }
+        }
+    }
     const auto single=MeasureLongestLyricWidth(textFactory.Get(),lyricFormat.Get(),{{0,L"Short"}});
     const auto longest=MeasureLongestLyricWidth(textFactory.Get(),lyricFormat.Get(),{{0,L"Short"},{1,L"A considerably longer lyric sentence"}});
     assert(single>0 && longest>single);

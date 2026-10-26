@@ -1,11 +1,16 @@
-    int CurrentLyricLine(const SharedState& state, double now) {
-        g_lastLyricsViewTime = now;
-        if (!state.lyrics.hasData || state.lyrics.lines.empty()) return -1;
-        if (!state.lyrics.synced) return 0;
+    double LyricPositionMs(const SharedState& state) {
         double position = state.media.positionTicks / 10000.0;
         if (g_scrubbing.load()) position = g_scrubDragFraction.load() * state.media.endTicks / 10000.0;
         else if (state.media.playing && state.media.lastUpdatedTicks > 0)
             position += static_cast<double>(GetTickCount64() - state.media.lastUpdatedTicks) + LyricsLookaheadSec() * 1000;
+        return position;
+    }
+
+    int CurrentLyricLine(const SharedState& state, double now) {
+        g_lastLyricsViewTime = now;
+        if (!state.lyrics.hasData || state.lyrics.lines.empty()) return -1;
+        if (!state.lyrics.synced) return 0;
+        const double position=LyricPositionMs(state);
         const auto& lines = state.lyrics.lines.vec();
         const auto it = std::upper_bound(lines.begin(), lines.end(), position,
             [](double value, const LyricsLine& line) { return value < line.timeMs; });
@@ -24,21 +29,36 @@
     }
 
    public:
-    float MeasureCollapsedLyricsWidth(const SharedState& state, const Settings& settings) {
-        float widest=-1;
-        if (state.lyrics.hasData && !state.lyrics.lines.empty()) {
-            if (&collapsedMeasureLines_.vec()!=&state.lyrics.lines.vec() || collapsedMeasureFormat_.Get()!=textFormat_.Get()) {
-                collapsedLongestWidth_=MeasureLongestLyricWidth(dwriteFactory_.Get(),textFormat_.Get(),state.lyrics.lines.vec());
-                collapsedMeasureLines_=state.lyrics.lines;
-                collapsedMeasureFormat_=textFormat_;
-            }
-            widest=collapsedLongestWidth_;
+    float MeasureCollapsedLyricsWidth(const SharedState& state, const Settings& settings, double now, bool frozen) {
+        const auto& lines=state.lyrics.lines.vec();
+        if (&collapsedMeasureLines_.vec()!=&lines || collapsedMeasureFormat_.Get()!=textFormat_.Get() ||
+            collapsedMeasureTitle_!=state.media.title) {
+            collapsedMeasureLines_=state.lyrics.lines;
+            collapsedMeasureFormat_=textFormat_;
+            collapsedLineWidths_.assign(lines.size(),-1);
+            collapsedMeasureTitle_=state.media.title;
+            collapsedTitleWidth_=MeasureLongestLyricWidth(dwriteFactory_.Get(),textFormat_.Get(),{{0,state.media.title}});
+            if (!frozen) collapsedWidthTarget_={};
         }
         const auto work=GetAnchorWorkRect();
-        return CollapsedLyricsWidth(widest,(work.right-work.left)/settings.sizeScale-32.0f);
+        const float available=(work.right-work.left)/settings.sizeScale-32.0f;
+        const auto lineWidth=[&](int index) {
+            if (IsLyricsCredit(lines[index].text)) return (std::min)(MediaLayout::kExpandedWidth,available);
+            auto& measured=collapsedLineWidths_[index];
+            if (measured<0) measured=MeasureLongestLyricWidth(dwriteFactory_.Get(),textFormat_.Get(),{{0,lines[index].text}});
+            return CollapsedLyricsWidth(measured,available);
+        };
+        const int index=CurrentLyricLine(state,now);
+        float requested=CollapsedLyricsWidth(collapsedTitleWidth_,available);
+        if (state.lyrics.synced && index>=0) requested=lineWidth(index);
+        if (state.media.playing && state.lyrics.synced && index+1<static_cast<int>(lines.size()) &&
+            !IsLyricsCredit(lines[index+1].text) && lines[index+1].timeMs-LyricPositionMs(state)<=200)
+            requested=(std::max)(requested,lineWidth(index+1));
+        requested=(std::max)(MediaLayout::kExpandedWidth,requested);
+        return (std::min)(available,collapsedWidthTarget_.Update(requested,now,frozen));
     }
 
-    void DrawCompactLyric(const std::wstring& text, D2D1_RECT_F area, const Settings& settings) {
+    void DrawCompactLyric(const std::wstring& text, D2D1_RECT_F area, const Settings& settings, bool centered=false) {
         const float width=area.right-area.left-16, height=area.bottom-area.top-12;
         const float requested=18.0f*Clamp(settings.textScale,0.7f,1.6f);
         const auto key=text+L"\x1f"+settings.fontFamily;
@@ -56,7 +76,13 @@
             compactLyricKey_=key; compactLyricWidth_=width; compactLyricHeight_=height; compactLyricFont_=requested;
         }
         lyricInk_->SetOpacity(1.0f);
-        if (compactLyricLayout_) target_->DrawTextLayout(D2D1::Point2F(area.left+8,area.top+6),compactLyricLayout_.Get(),lyricInk_.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        if (compactLyricLayout_) {
+            compactLyricLayout_->SetTextAlignment(centered ? DWRITE_TEXT_ALIGNMENT_CENTER : DWRITE_TEXT_ALIGNMENT_LEADING);
+            DWRITE_TEXT_METRICS metrics{};
+            const float top=centered && SUCCEEDED(compactLyricLayout_->GetMetrics(&metrics))
+                ? area.top+(std::max)(0.0f,(area.bottom-area.top-metrics.height)*0.5f) : area.top+6;
+            target_->DrawTextLayout(D2D1::Point2F(area.left+8,top),compactLyricLayout_.Get(),lyricInk_.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
     }
 
     void DrawLyricsLines(const SharedState& state, D2D1_RECT_F area, const Settings& settings, double now, bool compact=true) {
@@ -70,7 +96,7 @@
         const auto& lyrics=state.lyrics;
         if (!lyrics.hasData || lyrics.lines.empty()) {
             const auto text=lyrics.failed ? L"歌词查询失败，稍后重试" : lyrics.fetching ? L"正在查找歌词…" : lyrics.notFound ? L"未找到匹配歌词" : L"等待歌词…";
-            DrawCompactLyric(text,area,settings);
+            DrawCompactLyric(text,area,settings,true);
             target_->PopAxisAlignedClip();
             return;
         }
@@ -115,6 +141,17 @@
         const int index = CurrentLyricLine(state, now);
         std::wstring line = state.media.title;
         if (state.lyrics.synced && index >= 0) line = state.lyrics.lines[index].text;
+        if (!state.lyrics.synced || index < 0) {
+            const auto alignment=textFormat_->GetTextAlignment();
+            const auto paragraph=textFormat_->GetParagraphAlignment();
+            textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            textFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            target_->DrawTextW(line.c_str(),static_cast<UINT32>(line.size()),textFormat_.Get(),
+                D2D1::RectF(rect.left+44,rect.top+5,rect.right-48,rect.bottom-5),textBrush_.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            textFormat_->SetTextAlignment(alignment);
+            textFormat_->SetParagraphAlignment(paragraph);
+            return true;
+        }
         const auto identity=MediaTrackIdentity(state.media);
         if (collapsedLyricIdentity_!=identity || collapsedLyricIndex_!=index || collapsedLyricCache_.text!=line) {
             collapsedLyricIdentity_=identity; collapsedLyricIndex_=index; collapsedLyricStartedAt_=now;
@@ -168,7 +205,10 @@
     float compactLyricWidth_=0,compactLyricHeight_=0,compactLyricFont_=0;
     LyricsLines collapsedMeasureLines_;
     ComPtr<IDWriteTextFormat> collapsedMeasureFormat_;
-    float collapsedLongestWidth_=-1;
+    std::vector<float> collapsedLineWidths_;
+    std::wstring collapsedMeasureTitle_;
+    float collapsedTitleWidth_=-1;
+    LyricsWidthTarget collapsedWidthTarget_;
     MarqueeLayoutCache collapsedLyricCache_;
     std::wstring collapsedLyricIdentity_;
     int collapsedLyricIndex_=-2;

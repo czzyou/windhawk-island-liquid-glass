@@ -1,4 +1,5 @@
 std::atomic<bool> g_lyricsTabAvailable{false}, g_defaultOutputIsBluetooth{false};
+std::atomic<bool> g_lyricsPinAllowed{true};
 std::atomic<int> g_lyricsEffectiveOffsetMs{0}, g_lyricsEffectiveOffsetBtMs{0};
 std::atomic<double> g_lastLyricsViewTime{0};
 constexpr int kLyricsOffsetLimitMs = 3000;

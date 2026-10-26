@@ -11,6 +11,11 @@ inline int GetDayOfWeek(int year, int month, int day) {
     return ((day+13*(month+1)/5+k+k/4+j/4+5*j)%7+6)%7;
 }
 
+inline float CalendarContentOffset(float width) {
+    // The date card and month grid occupy x=22..330 in the original layout.
+    return (std::max)(0.0f,(width-352.0f)*0.5f);
+}
+
 struct CalendarGrid {
     int first, days, rows;
     float left=134, top=41, col=28, row;

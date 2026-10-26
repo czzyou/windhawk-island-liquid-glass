@@ -596,6 +596,10 @@ for marker, ending in [('namespace MediaLayout {', '\n}'),
     start = src.index(marker)
     feature_test += '\n' + src[start:src.index(ending, start) + len(ending)] + '\n'
 feature_test += (root/'media-feature-checks.inc').read_text(encoding='utf-8')
+width_expression = re.search(r'primary\.width = (isHoverExpanded \? [^;]+ : lyricWidth);', src).group(1)
+feature_test = feature_test.replace('// MEDIA_LYRICS_WIDTH_IMPLEMENTATION',
+    'float CheckedMediaLyricsWidth(float panelWidth, float lyricWidth, bool isHoverExpanded) { return ' +
+    width_expression.replace('primary.width', 'panelWidth') + '; }')
 (root/'media-feature-checks.cpp').write_text(feature_test,encoding='utf-8')
 subprocess.run([str(clang),'-std=c++23','-static',str(root/'media-feature-checks.cpp'),'-ldwrite','-lole32','-loleaut32','-lshell32','-lruntimeobject','-o',str(root/'media-feature-checks.exe')],cwd=compiler,check=True)
 subprocess.run([str(root/'media-feature-checks.exe')],check=True)
@@ -604,7 +608,7 @@ print('Media feature checks passed: LRC precision, cache atomicity, source selec
 # Test the real tab arithmetic for every optional-module combination.
 tab_test = '#include <windows.h>\n#include <d2d1.h>\n#include <algorithm>\n#include <atomic>\n#include <cassert>\n#include <vector>\n'
 tab_test += (root/'update-badge.h').read_text(encoding='utf-8')
-tab_test += 'struct Settings { bool weather=false, hardwareMonitorModule=false, fileTrayModule=false, lyrics=false, lyricsPinnedFirst=false, media=true; };\nstd::atomic<int> g_idleTab{0};\nstd::atomic<bool> g_lyricsTabAvailable{false}, g_layoutDirty{false};\n'
+tab_test += 'struct Settings { bool weather=false, hardwareMonitorModule=false, fileTrayModule=false, lyrics=false, lyricsPinnedFirst=false, media=true; };\nstd::atomic<int> g_idleTab{0};\nstd::atomic<bool> g_lyricsTabAvailable{false}, g_lyricsPinAllowed{true}, g_layoutDirty{false};\n'
 tabs_start = src.index('std::vector<int> DashboardTabs(')
 tab_test += src[tabs_start:src.index('// ── Localization', tabs_start)]
 tab_test += r'''
@@ -646,6 +650,17 @@ int main() {
     assert(CurrentDashboardTab(changing)==1);
     RefreshDashboardTabs(changing,true); g_idleTab=DashboardTabIndex(changing,6);
     RefreshDashboardTabs(changing,false); assert(CurrentDashboardTab(changing)==0);
+    RefreshDashboardTabs(changing,true);
+    assert(DashboardTabs(changing).front()==6);
+    g_idleTab=DashboardTabIndex(changing,6);
+    RefreshDashboardTabs(changing,true,true);
+    assert(DashboardTabs(changing).front()==0 && DashboardTabs(changing).back()==6);
+    assert(CurrentDashboardTab(changing)==0);
+    g_idleTab=DashboardTabIndex(changing,6);
+    RefreshDashboardTabs(changing,true,true);
+    assert(CurrentDashboardTab(changing)==6);
+    RefreshDashboardTabs(changing,true,false);
+    assert(DashboardTabs(changing).front()==6 && changing.lyricsPinnedFirst);
 }
 '''
 (root/'card-tabs-checks.cpp').write_text(tab_test,encoding='utf-8')
@@ -822,6 +837,17 @@ motion_test += '''int main() {
  assert(NotificationLaunchTarget(L"C:\\\\app.exe")==L"ms-actioncenter:");
  assert(NotificationLaunchTarget(L"app\\nargs")==L"ms-actioncenter:");
  for(float fps : {30.0f,60.0f,144.0f,240.0f}) {
+   SpringValue lyric; lyric.Reset(192); lyric.target=892;
+   for(int i=0;i<fps/5;++i) {
+     const float before=lyric.value; lyric.StepExponential(1/fps);
+     assert(lyric.value>=before && lyric.value<=892);
+   }
+   lyric.target=320;
+   for(int i=0;i<fps;++i) {
+     const float before=lyric.value; lyric.StepExponential(1/fps);
+     assert(lyric.value<=before && lyric.value>=320);
+   }
+   assert(lyric.value==320);
    SpringValue w,h; w.Reset(300); h.Reset(36); w.target=240; h.target=29;
    float last=36;
    for(int i=0;i<fps;i++) {

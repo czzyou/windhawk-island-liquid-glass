@@ -35,6 +35,9 @@ std::atomic<float> g_calendarHintOpacity{0}, g_calendarHintHeight{66};''')
             Wh_SetIntValue(L"CalendarDaysRendered",lastCount);
         }
         const auto panel=rect;
+        const float offset=CalendarContentOffset((rect.right-rect.left)/scale)*scale;
+        rect.left+=offset;
+        rect.right+=offset;
         rect.bottom=rect.top+184.0f*scale;
         const CalendarGrid geometry(local.wYear,local.wMonth);''')
     a = body.index('            const D2D1_RECT_F cell =', body.index('for (int d = 1;'))
@@ -72,7 +75,7 @@ std::atomic<float> g_calendarHintOpacity{0}, g_calendarHintHeight{66};''')
                     const auto p=MediaContentFromClient(xPos,yPos,true);
                     if (p.valid && p.height>=175 && p.width>=365) {
                         SYSTEMTIME local{}; GetLocalTime(&local);
-                        const int day=CalendarGrid(local.wYear,local.wMonth).Hit(p.x,p.y);
+                        const int day=CalendarGrid(local.wYear,local.wMonth).Hit(p.x-CalendarContentOffset(p.width),p.y);
                         const int date=local.wYear*10000+local.wMonth*100+day;
                         if (day && CalendarDayKinds(g_state.importantDays,date)) calendarHovered=date;
                     }

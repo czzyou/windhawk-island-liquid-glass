@@ -56,5 +56,5 @@ float MeasureLongestLyricWidth(IDWriteFactory* factory, IDWriteTextFormat* forma
     return widest;
 }
 float CollapsedLyricsWidth(float widest, float available) {
-    return (std::min)((std::max)(0.0f,available),widest<0 ? 400.0f : std::clamp(std::ceil(widest+92.0f),320.0f,400.0f));
+    return (std::min)((std::max)(0.0f,available),widest<0 ? 400.0f : std::ceil(widest+92.0f));
 }

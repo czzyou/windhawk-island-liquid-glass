@@ -5,7 +5,7 @@ std::vector<int> DashboardTabs(const Settings& settings) {
     tabs.push_back(5);
     if (settings.fileTrayModule) tabs.push_back(4);
     if (settings.lyrics && g_lyricsTabAvailable.load()) {
-        if (settings.lyricsPinnedFirst) tabs.insert(tabs.begin(), 6);
+        if (settings.lyricsPinnedFirst && g_lyricsPinAllowed.load()) tabs.insert(tabs.begin(), 6);
         else tabs.push_back(6);
     }
     return tabs;
@@ -27,12 +27,14 @@ int HardwareMonitorTabIndex(const Settings& settings) { return DashboardTabIndex
 int ClockTabIndex(const Settings& settings) { return DashboardTabIndex(settings, 5); }
 int FileTrayTabIndex(const Settings& settings) { return DashboardTabIndex(settings, 4); }
 
-void RefreshDashboardTabs(const Settings& settings, bool mediaAvailable) {
+void RefreshDashboardTabs(const Settings& settings, bool mediaAvailable, bool lyricsUnavailable=false) {
     static std::vector<int> previous;
     const int raw = g_idleTab.load();
     const int count = static_cast<int>(previous.size());
-    const int selected = previous.empty() ? 0 : previous[((raw % count) + count) % count];
+    int selected = previous.empty() ? 0 : previous[((raw % count) + count) % count];
+    if (lyricsUnavailable && selected==6 && previous.front()==6) selected=0;
     g_lyricsTabAvailable = settings.media && mediaAvailable;
+    g_lyricsPinAllowed = !lyricsUnavailable;
     const auto next = DashboardTabs(settings);
     if (next != previous) {
         const auto it = std::find(next.begin(), next.end(), selected);

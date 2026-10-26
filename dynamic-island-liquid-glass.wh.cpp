@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.4.9
+// @version         1.4.10
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -4003,6 +4003,35 @@ float CollapsedLyricsOffset(float textWidth, float available, double elapsed, do
     return overflow*static_cast<float>(std::clamp((elapsed-hold)/travel,0.0,1.0));
 }
 
+bool IsLyricsCredit(const std::wstring& text) {
+    auto lower=text;
+    for (auto& c:lower) c=static_cast<wchar_t>(towlower(c));
+    const auto first=lower.find_first_not_of(L" \t");
+    if (first==std::wstring::npos) return false;
+    for (const auto* prefix : {L"作词",L"作曲",L"词曲",L"编曲",L"制作人",L"制作",L"录音",L"混音",L"母带",L"监制",L"出品",L"发行",L"词",L"曲",
+                              L"lyrics by",L"composed by",L"written by",L"produced by",L"arranged by",L"composer",L"lyricist",L"producer",L"mixing",L"mastering"}) {
+        const size_t end=first+wcslen(prefix);
+        if (lower.compare(first,wcslen(prefix),prefix)==0 && end<lower.size() &&
+            std::wstring(L" :：/\t").find(lower[end])!=std::wstring::npos) return true;
+    }
+    return false;
+}
+
+struct LyricsWidthTarget {
+    float value=-1, pending=-1;
+    double shrinkAt=0;
+    float Update(float requested,double now,bool frozen) {
+        if (value<0) value=requested;
+        if (frozen) {pending=-1; return value;}
+        if (requested>value+24) {value=requested; pending=-1;}
+        else if (requested<value-24) {
+            if (pending!=requested) {pending=requested; shrinkAt=now+0.5;}
+            if (now>=shrinkAt) {value=requested; pending=-1;}
+        } else pending=-1;
+        return value;
+    }
+};
+
 struct LyricTextBlock {
     Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
     float top = 0, height = 0;
@@ -4061,10 +4090,11 @@ float MeasureLongestLyricWidth(IDWriteFactory* factory, IDWriteTextFormat* forma
     return widest;
 }
 float CollapsedLyricsWidth(float widest, float available) {
-    return (std::min)((std::max)(0.0f,available),widest<0 ? 400.0f : std::clamp(std::ceil(widest+92.0f),320.0f,400.0f));
+    return (std::min)((std::max)(0.0f,available),widest<0 ? 400.0f : std::ceil(widest+92.0f));
 }
 
 std::atomic<bool> g_lyricsTabAvailable{false}, g_defaultOutputIsBluetooth{false};
+std::atomic<bool> g_lyricsPinAllowed{true};
 std::atomic<int> g_lyricsEffectiveOffsetMs{0}, g_lyricsEffectiveOffsetBtMs{0};
 std::atomic<double> g_lastLyricsViewTime{0};
 constexpr int kLyricsOffsetLimitMs = 3000;
@@ -4132,7 +4162,7 @@ std::vector<int> DashboardTabs(const Settings& settings) {
     tabs.push_back(5);
     if (settings.fileTrayModule) tabs.push_back(4);
     if (settings.lyrics && g_lyricsTabAvailable.load()) {
-        if (settings.lyricsPinnedFirst) tabs.insert(tabs.begin(), 6);
+        if (settings.lyricsPinnedFirst && g_lyricsPinAllowed.load()) tabs.insert(tabs.begin(), 6);
         else tabs.push_back(6);
     }
     return tabs;
@@ -4154,12 +4184,14 @@ int HardwareMonitorTabIndex(const Settings& settings) { return DashboardTabIndex
 int ClockTabIndex(const Settings& settings) { return DashboardTabIndex(settings, 5); }
 int FileTrayTabIndex(const Settings& settings) { return DashboardTabIndex(settings, 4); }
 
-void RefreshDashboardTabs(const Settings& settings, bool mediaAvailable) {
+void RefreshDashboardTabs(const Settings& settings, bool mediaAvailable, bool lyricsUnavailable=false) {
     static std::vector<int> previous;
     const int raw = g_idleTab.load();
     const int count = static_cast<int>(previous.size());
-    const int selected = previous.empty() ? 0 : previous[((raw % count) + count) % count];
+    int selected = previous.empty() ? 0 : previous[((raw % count) + count) % count];
+    if (lyricsUnavailable && selected==6 && previous.front()==6) selected=0;
     g_lyricsTabAvailable = settings.media && mediaAvailable;
+    g_lyricsPinAllowed = !lyricsUnavailable;
     const auto next = DashboardTabs(settings);
     if (next != previous) {
         const auto it = std::find(next.begin(), next.end(), selected);
@@ -8863,6 +8895,11 @@ inline int GetDayOfWeek(int year, int month, int day) {
     if (month<3) {month+=12; --year;}
     const int k=year%100,j=year/100;
     return ((day+13*(month+1)/5+k+k/4+j/4+5*j)%7+6)%7;
+}
+
+inline float CalendarContentOffset(float width) {
+    // The date card and month grid occupy x=22..330 in the original layout.
+    return (std::max)(0.0f,(width-352.0f)*0.5f);
 }
 
 struct CalendarGrid {
@@ -15531,6 +15568,9 @@ class Renderer {
             Wh_SetIntValue(L"CalendarDaysRendered",lastCount);
         }
         const auto panel=rect;
+        const float offset=CalendarContentOffset((rect.right-rect.left)/scale)*scale;
+        rect.left+=offset;
+        rect.right+=offset;
         rect.bottom=rect.top+184.0f*scale;
         const CalendarGrid geometry(local.wYear,local.wMonth);
         (void)now;
@@ -17445,14 +17485,19 @@ class Renderer {
     // reaching for g_settings. The dashboards it delegates to read std::wstring
     // members (DrawCalendarDashboard -> settings.dateFormat), which would
     // otherwise race with LoadSettings() replacing the struct mid-frame.
-    int CurrentLyricLine(const SharedState& state, double now) {
-        g_lastLyricsViewTime = now;
-        if (!state.lyrics.hasData || state.lyrics.lines.empty()) return -1;
-        if (!state.lyrics.synced) return 0;
+    double LyricPositionMs(const SharedState& state) {
         double position = state.media.positionTicks / 10000.0;
         if (g_scrubbing.load()) position = g_scrubDragFraction.load() * state.media.endTicks / 10000.0;
         else if (state.media.playing && state.media.lastUpdatedTicks > 0)
             position += static_cast<double>(GetTickCount64() - state.media.lastUpdatedTicks) + LyricsLookaheadSec() * 1000;
+        return position;
+    }
+
+    int CurrentLyricLine(const SharedState& state, double now) {
+        g_lastLyricsViewTime = now;
+        if (!state.lyrics.hasData || state.lyrics.lines.empty()) return -1;
+        if (!state.lyrics.synced) return 0;
+        const double position=LyricPositionMs(state);
         const auto& lines = state.lyrics.lines.vec();
         const auto it = std::upper_bound(lines.begin(), lines.end(), position,
             [](double value, const LyricsLine& line) { return value < line.timeMs; });
@@ -17471,21 +17516,36 @@ class Renderer {
     }
 
    public:
-    float MeasureCollapsedLyricsWidth(const SharedState& state, const Settings& settings) {
-        float widest=-1;
-        if (state.lyrics.hasData && !state.lyrics.lines.empty()) {
-            if (&collapsedMeasureLines_.vec()!=&state.lyrics.lines.vec() || collapsedMeasureFormat_.Get()!=textFormat_.Get()) {
-                collapsedLongestWidth_=MeasureLongestLyricWidth(dwriteFactory_.Get(),textFormat_.Get(),state.lyrics.lines.vec());
-                collapsedMeasureLines_=state.lyrics.lines;
-                collapsedMeasureFormat_=textFormat_;
-            }
-            widest=collapsedLongestWidth_;
+    float MeasureCollapsedLyricsWidth(const SharedState& state, const Settings& settings, double now, bool frozen) {
+        const auto& lines=state.lyrics.lines.vec();
+        if (&collapsedMeasureLines_.vec()!=&lines || collapsedMeasureFormat_.Get()!=textFormat_.Get() ||
+            collapsedMeasureTitle_!=state.media.title) {
+            collapsedMeasureLines_=state.lyrics.lines;
+            collapsedMeasureFormat_=textFormat_;
+            collapsedLineWidths_.assign(lines.size(),-1);
+            collapsedMeasureTitle_=state.media.title;
+            collapsedTitleWidth_=MeasureLongestLyricWidth(dwriteFactory_.Get(),textFormat_.Get(),{{0,state.media.title}});
+            if (!frozen) collapsedWidthTarget_={};
         }
         const auto work=GetAnchorWorkRect();
-        return CollapsedLyricsWidth(widest,(work.right-work.left)/settings.sizeScale-32.0f);
+        const float available=(work.right-work.left)/settings.sizeScale-32.0f;
+        const auto lineWidth=[&](int index) {
+            if (IsLyricsCredit(lines[index].text)) return (std::min)(MediaLayout::kExpandedWidth,available);
+            auto& measured=collapsedLineWidths_[index];
+            if (measured<0) measured=MeasureLongestLyricWidth(dwriteFactory_.Get(),textFormat_.Get(),{{0,lines[index].text}});
+            return CollapsedLyricsWidth(measured,available);
+        };
+        const int index=CurrentLyricLine(state,now);
+        float requested=CollapsedLyricsWidth(collapsedTitleWidth_,available);
+        if (state.lyrics.synced && index>=0) requested=lineWidth(index);
+        if (state.media.playing && state.lyrics.synced && index+1<static_cast<int>(lines.size()) &&
+            !IsLyricsCredit(lines[index+1].text) && lines[index+1].timeMs-LyricPositionMs(state)<=200)
+            requested=(std::max)(requested,lineWidth(index+1));
+        requested=(std::max)(MediaLayout::kExpandedWidth,requested);
+        return (std::min)(available,collapsedWidthTarget_.Update(requested,now,frozen));
     }
 
-    void DrawCompactLyric(const std::wstring& text, D2D1_RECT_F area, const Settings& settings) {
+    void DrawCompactLyric(const std::wstring& text, D2D1_RECT_F area, const Settings& settings, bool centered=false) {
         const float width=area.right-area.left-16, height=area.bottom-area.top-12;
         const float requested=18.0f*Clamp(settings.textScale,0.7f,1.6f);
         const auto key=text+L"\x1f"+settings.fontFamily;
@@ -17503,7 +17563,13 @@ class Renderer {
             compactLyricKey_=key; compactLyricWidth_=width; compactLyricHeight_=height; compactLyricFont_=requested;
         }
         lyricInk_->SetOpacity(1.0f);
-        if (compactLyricLayout_) target_->DrawTextLayout(D2D1::Point2F(area.left+8,area.top+6),compactLyricLayout_.Get(),lyricInk_.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        if (compactLyricLayout_) {
+            compactLyricLayout_->SetTextAlignment(centered ? DWRITE_TEXT_ALIGNMENT_CENTER : DWRITE_TEXT_ALIGNMENT_LEADING);
+            DWRITE_TEXT_METRICS metrics{};
+            const float top=centered && SUCCEEDED(compactLyricLayout_->GetMetrics(&metrics))
+                ? area.top+(std::max)(0.0f,(area.bottom-area.top-metrics.height)*0.5f) : area.top+6;
+            target_->DrawTextLayout(D2D1::Point2F(area.left+8,top),compactLyricLayout_.Get(),lyricInk_.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
     }
 
     void DrawLyricsLines(const SharedState& state, D2D1_RECT_F area, const Settings& settings, double now, bool compact=true) {
@@ -17517,7 +17583,7 @@ class Renderer {
         const auto& lyrics=state.lyrics;
         if (!lyrics.hasData || lyrics.lines.empty()) {
             const auto text=lyrics.failed ? L"歌词查询失败，稍后重试" : lyrics.fetching ? L"正在查找歌词…" : lyrics.notFound ? L"未找到匹配歌词" : L"等待歌词…";
-            DrawCompactLyric(text,area,settings);
+            DrawCompactLyric(text,area,settings,true);
             target_->PopAxisAlignedClip();
             return;
         }
@@ -17562,6 +17628,17 @@ class Renderer {
         const int index = CurrentLyricLine(state, now);
         std::wstring line = state.media.title;
         if (state.lyrics.synced && index >= 0) line = state.lyrics.lines[index].text;
+        if (!state.lyrics.synced || index < 0) {
+            const auto alignment=textFormat_->GetTextAlignment();
+            const auto paragraph=textFormat_->GetParagraphAlignment();
+            textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            textFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            target_->DrawTextW(line.c_str(),static_cast<UINT32>(line.size()),textFormat_.Get(),
+                D2D1::RectF(rect.left+44,rect.top+5,rect.right-48,rect.bottom-5),textBrush_.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            textFormat_->SetTextAlignment(alignment);
+            textFormat_->SetParagraphAlignment(paragraph);
+            return true;
+        }
         const auto identity=MediaTrackIdentity(state.media);
         if (collapsedLyricIdentity_!=identity || collapsedLyricIndex_!=index || collapsedLyricCache_.text!=line) {
             collapsedLyricIdentity_=identity; collapsedLyricIndex_=index; collapsedLyricStartedAt_=now;
@@ -17615,7 +17692,10 @@ class Renderer {
     float compactLyricWidth_=0,compactLyricHeight_=0,compactLyricFont_=0;
     LyricsLines collapsedMeasureLines_;
     ComPtr<IDWriteTextFormat> collapsedMeasureFormat_;
-    float collapsedLongestWidth_=-1;
+    std::vector<float> collapsedLineWidths_;
+    std::wstring collapsedMeasureTitle_;
+    float collapsedTitleWidth_=-1;
+    LyricsWidthTarget collapsedWidthTarget_;
     MarqueeLayoutCache collapsedLyricCache_;
     std::wstring collapsedLyricIdentity_;
     int collapsedLyricIndex_=-2;
@@ -18858,7 +18938,8 @@ public:
         target_->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
         if (cache.metrics.widthIncludingTrailingWhitespace <= available) {
-            target_->DrawTextLayout(D2D1::Point2F(rect.left, rect.top), cache.layout.Get(), brush,
+            const float left=rect.left+(lyricDuration>0 ? (available-cache.metrics.widthIncludingTrailingWhitespace)*0.5f : 0.0f);
+            target_->DrawTextLayout(D2D1::Point2F(left, rect.top), cache.layout.Get(), brush,
                                     D2D1_DRAW_TEXT_OPTIONS_NONE);
         } else {
             const float cycle = cache.metrics.widthIncludingTrailingWhitespace + 38.0f;
@@ -20946,7 +21027,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     const auto p=MediaContentFromClient(xPos,yPos,true);
                     if (p.valid && p.height>=175 && p.width>=365) {
                         SYSTEMTIME local{}; GetLocalTime(&local);
-                        const int day=CalendarGrid(local.wYear,local.wMonth).Hit(p.x,p.y);
+                        const int day=CalendarGrid(local.wYear,local.wMonth).Hit(p.x-CalendarContentOffset(p.width),p.y);
                         const int date=local.wYear*10000+local.wMonth*100+day;
                         if (day && CalendarDayKinds(g_state.importantDays,date)) calendarHovered=date;
                     }
@@ -21737,7 +21818,9 @@ DWORD WINAPI RenderThreadProc(void*) {
                 TriggerNudge();
         }
 
-        RefreshDashboardTabs(g_settings, snapshot.media.available && snapshot.media.lyricsEligible);
+        const bool lyricsUnavailable = snapshot.lyrics.trackIdentity==MediaTrackIdentity(snapshot.media) &&
+            !snapshot.lyrics.hasData && (snapshot.lyrics.notFound || snapshot.lyrics.failed);
+        RefreshDashboardTabs(g_settings, snapshot.media.available && snapshot.media.lyricsEligible, lyricsUnavailable);
         if (g_lookupUi.open && (!g_settings.quickLookup || !snapshot.lookup.active || now >= snapshot.lookup.expiresAt))
             CloseLookupPanel(hwnd);
         if (now >= nextUpdaterPoll) {
@@ -22056,8 +22139,12 @@ DWORD WINAPI RenderThreadProc(void*) {
             needsRender = true;
             isHidden = false;
         }
-        if (primary.kind == IslandKind::Media && snapshot.media.lyricsEligible && g_settings.collapsedLyrics && !pinned && !isHoverExpanded)
-            primary.width = (std::max)(primary.width, (snapshot.media.playing ? renderer.MeasureCollapsedLyricsWidth(snapshot,g_settings) : 320.0f) * g_settings.sizeScale);
+        if (primary.kind == IslandKind::Media && snapshot.media.lyricsEligible && g_settings.collapsedLyrics && !pinned) {
+            const float lyricWidth = renderer.MeasureCollapsedLyricsWidth(snapshot,g_settings,now,isHoverExpanded) * g_settings.sizeScale;
+            // Shrinking on hover would move a wide lyric strip out from under the pointer.
+            primary.width = isHoverExpanded ? (std::max)(primary.width, lyricWidth) : lyricWidth;
+            if (isHoverExpanded) primary.width=(std::max)(primary.width,widthSpring.value);
+        }
         if (primary.kind == IslandKind::Media && (g_settings.collapsedLyrics || CurrentDashboardTab(g_settings)==6 || g_settings.mediaTabLyrics))
             needsRender = true;
         const float normalIdleWidth = primary.width;
@@ -22139,7 +22226,15 @@ DWORD WINAPI RenderThreadProc(void*) {
 
         const bool compactResize = compactEligible && !isHoverExpanded && !pinned &&
             targetHeight > 0.0f && heightSpring.value <= 36.0f * g_settings.sizeScale + 0.5f;
-        if (compactResize) widthSpring.StepExponential(dt * speed);
+        const bool lyricResize=primary.kind==IslandKind::Media && g_settings.collapsedLyrics && !secondary;
+        static BOOL lyricMotionEnabled=TRUE;
+        static double lyricMotionCheckedAt=-1;
+        if (lyricResize && now-lyricMotionCheckedAt>=0.5) {
+            SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&lyricMotionEnabled,0);
+            lyricMotionCheckedAt=now;
+        }
+        if (lyricResize && !lyricMotionEnabled) widthSpring.Reset(widthSpring.target);
+        else if (compactResize || lyricResize) widthSpring.StepExponential(dt * speed);
         else widthSpring.Step(dt * speed, widthStiffness, widthDamping);
         if (widthSpring.value < 0.0f) {
             widthSpring.value = 0.0f;

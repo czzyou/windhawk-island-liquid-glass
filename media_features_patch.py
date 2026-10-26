@@ -235,6 +235,9 @@ def apply_media_features(src):
                 cache.layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                 cache.layout->GetMetrics(&cache.metrics);''')
     change('float speed, MarqueeLayoutCache& cache) {', 'float speed, MarqueeLayoutCache& cache, double lyricDuration=0.0) {')
+    change('''            target_->DrawTextLayout(D2D1::Point2F(rect.left, rect.top), cache.layout.Get(), brush,''',
+           '''            const float left=rect.left+(lyricDuration>0 ? (available-cache.metrics.widthIncludingTrailingWhitespace)*0.5f : 0.0f);
+            target_->DrawTextLayout(D2D1::Point2F(left, rect.top), cache.layout.Get(), brush,''')
     change('const float offset = std::fmod(static_cast<float>(now) * speed, cycle);',
            'const float offset = lyricDuration>0 ? CollapsedLyricsOffset(cache.metrics.widthIncludingTrailingWhitespace,available,now,lyricDuration) : std::fmod(static_cast<float>(now) * speed, cycle);')
     # Every test of page position must follow the new optional first lyrics tab.
@@ -254,7 +257,9 @@ def apply_media_features(src):
     if (settings.quickLookup && state.lookup.active && now < state.lookup.expiresAt)
         return {IslandKind::Lookup};''')
     marker = '        const std::vector<IslandKind> kinds = ChooseActivities(snapshot, g_settings, now);'
-    change(marker, '''        RefreshDashboardTabs(g_settings, snapshot.media.available && snapshot.media.lyricsEligible);
+    change(marker, '''        const bool lyricsUnavailable = snapshot.lyrics.trackIdentity==MediaTrackIdentity(snapshot.media) &&
+            !snapshot.lyrics.hasData && (snapshot.lyrics.notFound || snapshot.lyrics.failed);
+        RefreshDashboardTabs(g_settings, snapshot.media.available && snapshot.media.lyricsEligible, lyricsUnavailable);
         if (g_lookupUi.open && (!g_settings.quickLookup || !snapshot.lookup.active || now >= snapshot.lookup.expiresAt))
             CloseLookupPanel(hwnd);
 ''' + marker)
@@ -265,11 +270,24 @@ def apply_media_features(src):
             needsRender = true;
             isHidden = false;
         }
-        if (primary.kind == IslandKind::Media && snapshot.media.lyricsEligible && g_settings.collapsedLyrics && !pinned && !isHoverExpanded)
-            primary.width = (std::max)(primary.width, (snapshot.media.playing ? renderer.MeasureCollapsedLyricsWidth(snapshot,g_settings) : 320.0f) * g_settings.sizeScale);
+        if (primary.kind == IslandKind::Media && snapshot.media.lyricsEligible && g_settings.collapsedLyrics && !pinned) {
+            const float lyricWidth = renderer.MeasureCollapsedLyricsWidth(snapshot,g_settings,now,isHoverExpanded) * g_settings.sizeScale;
+            // Shrinking on hover would move a wide lyric strip out from under the pointer.
+            primary.width = isHoverExpanded ? (std::max)(primary.width, lyricWidth) : lyricWidth;
+            if (isHoverExpanded) primary.width=(std::max)(primary.width,widthSpring.value);
+        }
         if (primary.kind == IslandKind::Media && (g_settings.collapsedLyrics || CurrentDashboardTab(g_settings)==6 || g_settings.mediaTabLyrics))
             needsRender = true;
         const float normalIdleWidth = primary.width;''')
+    change('''        if (compactResize) widthSpring.StepExponential(dt * speed);''', '''        const bool lyricResize=primary.kind==IslandKind::Media && g_settings.collapsedLyrics && !secondary;
+        static BOOL lyricMotionEnabled=TRUE;
+        static double lyricMotionCheckedAt=-1;
+        if (lyricResize && now-lyricMotionCheckedAt>=0.5) {
+            SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&lyricMotionEnabled,0);
+            lyricMotionCheckedAt=now;
+        }
+        if (lyricResize && !lyricMotionEnabled) widthSpring.Reset(widthSpring.target);
+        else if (compactResize || lyricResize) widthSpring.StepExponential(dt * speed);''')
     change('bool isTransientAlert = (primary.kind == IslandKind::Clipboard ||', 'bool isTransientAlert = (primary.kind == IslandKind::Lookup || primary.kind == IslandKind::Clipboard ||')
     change('        case WM_HOTKEY: {', '        case WM_HOTKEY: {\n            if (wParam == ID_LOOKUP_HOTKEY) { StartQuickLookup(hwnd); return 0; }')
     change('    switch (msg) {\n        case WM_CREATE:', '''    switch (msg) {
