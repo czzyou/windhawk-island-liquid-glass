@@ -2,6 +2,8 @@
 
 基于 Himanshu / devcode90 的 Dynamic Island for Windows 修改，使用 Windhawk 运行，液态玻璃后端来自 hicccc77/electron-liquid-glass。保留原作者及第三方 MIT 许可证。
 
+**构建与测试声明：** GitHub Actions 负责自动编译、回归检查和生成试用包，维护者作为首位体验测试者。自动检查通过不代表界面、动画和交互已经实机验证；体验确认并明确授权发布后，才在本机签名并发布正式 Release。
+
 ## 安装
 
 支持 Windows x64、本机管理员账号和 Windhawk **1.7.3 安装版**。需要先安装并运行 Windhawk；本项目无需提交或通过 Windhawk 官方模组库安装。
@@ -39,7 +41,7 @@
 
 GitHub Actions 在推送代码、提交 PR 或手动触发时自动运行两项检查：`Source check` 验证补丁合成、版本格式和设置 YAML；`Windows build` 使用固定 Windhawk 1.7.3 工具链编译 x64/x86、运行回归及发布检查，并生成保留 30 天的 `island-build-提交号` 试用包。维护者先进行实际体验；Actions 不签名、不自动发布。
 
-固定操作见 [发布流程](发布流程.md)：修改与本机试用之后，用户确认发布，再提交源码并发布正式 Release。只 push 代码不会让使用者收到更新。
+固定操作见 [发布流程](发布流程.md)：推送源码后由 Actions 构建，维护者先试用，明确授权发布后再本机签名并发布正式 Release。只 push 代码不会让使用者收到更新。
 
 日常发布使用现有签名密钥，不需要重新初始化。更新版本和说明，生成源码并提交、推送；等待当前提交的两项 Actions 检查成功并完成首轮体验，用户明确要求发布后运行：
 
