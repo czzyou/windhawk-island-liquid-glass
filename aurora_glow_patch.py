@@ -36,13 +36,20 @@ def apply_aurora_glow(src):
     next.ambientAuroraGlow = Wh_GetIntSetting(L"Themes.AmbientAuroraGlow") != 0;
     next.ambientGlowIntensity = Clamp(Wh_GetIntSetting(L"Themes.AmbientGlowIntensity") / 100.0f, 0.0f, 2.0f);''')
 
-    # 4. Add Renderer member variables
+    # 4. Add Renderer member variables & device release
     change('''    ComPtr<ID2D1LinearGradientBrush> glassRimBrush_;
     float settingsOpacity_ = 0.96f;''',
            '''    ComPtr<ID2D1LinearGradientBrush> glassRimBrush_;
+    ComPtr<ID2D1SolidColorBrush> auroraGlowBrush_;
     float auroraGlowBlend_ = 0.0f;
     double lastGlowTime_ = -1.0;
     float settingsOpacity_ = 0.96f;''')
+
+    change('''        glassRimBrush_.Reset();
+        glassRimStops_.Reset();''',
+           '''        glassRimBrush_.Reset();
+        glassRimStops_.Reset();
+        auroraGlowBrush_.Reset();''')
 
     # 5. Add DrawAmbientAuroraGlow method right before DrawSoftShadow
     glow_method = '''    // Ambient Aurora Glow.
@@ -79,13 +86,15 @@ def apply_aurora_glow(src):
 
         // Lift luminance slightly so dark/muted cover accents bloom vibrantly
         const float maxC = (std::max)({glowColor.r, glowColor.g, glowColor.b});
+        const float minC = (std::min)({glowColor.r, glowColor.g, glowColor.b});
         if (maxC < 0.35f && maxC > 0.001f) {
             const float boost = 0.35f / maxC;
             glowColor.r = (std::min)(1.0f, glowColor.r * boost);
             glowColor.g = (std::min)(1.0f, glowColor.g * boost);
             glowColor.b = (std::min)(1.0f, glowColor.b * boost);
-        } else if (maxC <= 0.001f) {
-            glowColor = D2D1::ColorF(0.40f, 0.60f, 0.90f, 1.0f);
+        } else if (maxC <= 0.001f || (maxC - minC < 0.04f && maxC < 0.6f)) {
+            // Ethereal cool moonlight tone for pitch black or muddy dark-gray monochrome covers
+            glowColor = D2D1::ColorF(0.65f, 0.78f, 0.95f, 1.0f);
         }
 
         // Calm breathing pulsation (~2.6s cycle) when music is actively playing
@@ -97,17 +106,24 @@ def apply_aurora_glow(src):
             return;
         }
 
-        // Keep spread within render padding bounds (kRenderPadY = 22.0f, kRenderPadX = 28.0f)
-        const float spreadY = Clamp(16.0f * settings.sizeScale, 6.0f, kRenderPadY - 3.0f);
-        const float spreadX = Clamp(spreadY * 1.25f, 6.0f, kRenderPadX - 3.0f);
-        const float yOffset = spreadY * 0.20f;
+        // Compute strict safe margins to prevent any outer glow clipping on all DPI scales
+        // (100% ~ 250%), ultra-wide aspect ratios, notch/docked modes, and spring bounce nudges.
+        const float availBottom = (std::max)(4.0f, static_cast<float>(bitmapHeight_) - rect.bottom - 3.5f);
+        const float availLeft = (std::max)(4.0f, rect.left - 4.0f);
+        const float maxSafeSpreadY = (std::min)(16.5f, availBottom / 1.20f);
+        const float spreadY = Clamp(13.5f * settings.sizeScale, 5.0f, maxSafeSpreadY);
+        const float yOffset = (settings.notchStyle || settings.borderMergedMode) ? (spreadY * 0.32f) : (spreadY * 0.16f);
+        const float spreadX = Clamp(spreadY * 1.30f, 6.0f, (std::min)(availLeft, kRenderPadX - 4.0f));
 
-        constexpr int kSteps = 10;
-        ComPtr<ID2D1SolidColorBrush> brush;
-        if (FAILED(target_->CreateSolidColorBrush(glowColor, &brush)) || !brush) {
-            return;
+        if (!auroraGlowBrush_) {
+            if (FAILED(target_->CreateSolidColorBrush(glowColor, &auroraGlowBrush_)) || !auroraGlowBrush_) {
+                return;
+            }
+        } else {
+            auroraGlowBrush_->SetColor(glowColor);
         }
 
+        constexpr int kSteps = 10;
         const float compactFade = 1.0f - g_idleCompactBlend.load();
         for (int i = kSteps; i >= 1; --i) {
             const float t = static_cast<float>(i) / static_cast<float>(kSteps);
@@ -121,15 +137,17 @@ def apply_aurora_glow(src):
                 continue;
             }
 
-            brush->SetOpacity(alpha);
+            auroraGlowBrush_->SetOpacity(alpha);
+            const float glowTop = (settings.notchStyle || settings.borderMergedMode) ?
+                rect.top : (rect.top - growY * 0.70f + yOffset);
             const D2D1_RECT_F glowRect = D2D1::RectF(
                 rect.left - growX,
-                rect.top - growY * 0.70f + yOffset,
+                glowTop,
                 rect.right + growX,
                 rect.bottom + growY + yOffset
             );
             FillIslandShape(glowRect, radius + growY, settings.w11Style,
-                            settings.notchStyle, brush.Get());
+                            settings.notchStyle, auroraGlowBrush_.Get());
         }
     }
 
