@@ -37,6 +37,9 @@ def apply_media_features(src):
     settings_yaml = '''  - Lyrics: true
     $name: 实时歌词
     $description: 通过网易云、QQ、酷狗和 LRCLIB 匹配当前歌曲；展开后可切换到歌词页。
+  - CollapsedLyrics: true
+    $name: 收起时显示歌词
+    $description: 播放音乐且胶囊收起时，平滑自适应显示当前句歌词；右键菜单亦可随时切换。
   - MediaTabLyrics: false
     $name: 媒体页内显示歌词
   - LyricsCache: true
@@ -77,7 +80,16 @@ def apply_media_features(src):
         Wh_SetIntValue(L"MediaTabLyricsOverride", -1); mediaLyricsOverride=-1;
     }
     next.mediaTabLyrics = mediaLyricsOverride >= 0 ? mediaLyricsOverride != 0 : mediaLyricsSetting != 0;
-    next.collapsedLyrics = Wh_GetIntValue(L"CollapsedLyrics", 0) != 0;
+    const int collapsedLyricsSetting = Wh_GetIntSetting(L"Modules.CollapsedLyrics") != 0;
+    int collapsedLyricsOverride = Wh_GetIntValue(L"CollapsedLyricsOverride", -1);
+    if (collapsedLyricsOverride >= 0 && Wh_GetIntValue(L"CollapsedLyricsOverrideBase", -1) != collapsedLyricsSetting) {
+        Wh_SetIntValue(L"CollapsedLyricsOverride", -1); collapsedLyricsOverride = -1;
+    }
+    int legacyCollapsedLyrics = Wh_GetIntValue(L"CollapsedLyrics", -1);
+    if (collapsedLyricsOverride < 0 && legacyCollapsedLyrics >= 0) {
+        collapsedLyricsOverride = legacyCollapsedLyrics;
+    }
+    next.collapsedLyrics = collapsedLyricsOverride >= 0 ? (collapsedLyricsOverride != 0) : (collapsedLyricsSetting != 0);
     next.lyricsPinnedFirst = Wh_GetIntValue(L"LyricsPinnedFirst", 0) != 0;
     next.lyricsCache = Wh_GetIntSetting(L"Modules.LyricsCache") != 0;
     next.lyricsCacheMaxMB = ClampInt(_wtoi(GetStringSettingCopy(L"Modules.LyricsCacheMaxMB").c_str()), 0, 100);

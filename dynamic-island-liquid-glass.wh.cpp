@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.5.0
+// @version         1.5.1
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -26,7 +26,7 @@
 - 歌词：展开后滚轮进入歌词页；右键可启用收起歌词、媒体页内歌词和歌词置顶。支持网易云、QQ、酷狗和 LRCLIB，中文歌优先国内来源；查询会向使用的来源发送歌名、歌手和时长，LRCLIB 还会收到专辑信息。默认本地缓存上限 25 MB，右键可清缓存、微调蓝牙和有线同步。
 - 快捷查词：Alt+Space 打开输入框，提交后查询词典或百科，保留英文释义并通过 MyMemory 补充标注机译的中文译义；Esc 关闭。剪贴板仅作候选，最近查询仅存内存。快捷键可在设置中修改。
 - 重要日子：右键添加自己的生日、考试等日程；新安装没有预置个人日程。
-- 吃饭提醒：默认关闭，可在设置中开启并修改午饭、晚饭时间。
+- 吃饭提醒：按本机时间提醒午饭和晚饭，可在设置中修改时间。
 - 液态玻璃默认参数已内置。英文、数字默认使用 SF Pro Text，中文优先使用苹方；字体由用户手动安装，公开安装包不包含字体文件，缺少字体时使用系统回退。
 
 安装：在 Windhawk 中新建模组，用此文件的完整内容替换模板，点击编译并启用。
@@ -328,9 +328,9 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
   - WeatherCity: ""
     $name: 天气城市（留空按公网 IP 定位）
     $description: '留空自动定位；代理或 VPN 可能影响结果。手动覆盖可填九位中国天气网城市编号，例如北京 101010100。'
-  - MealReminders: false
+  - MealReminders: true
     $name: 吃饭提醒
-    $description: 按本机时间提醒午饭和晚饭，默认关闭。
+    $description: 按本机时间提醒午饭和晚饭。
   - LunchTime: "11:00"
     $name: 午饭时间
     $description: 使用 24 小时制 HH:mm，留空或格式错误则不提醒。
@@ -376,6 +376,9 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
   - Lyrics: true
     $name: 实时歌词
     $description: 通过网易云、QQ、酷狗和 LRCLIB 匹配当前歌曲；展开后可切换到歌词页。
+  - CollapsedLyrics: true
+    $name: 收起时显示歌词
+    $description: 播放音乐且胶囊收起时，平滑自适应显示当前句歌词；右键菜单亦可随时切换。
   - MediaTabLyrics: false
     $name: 媒体页内显示歌词
   - LyricsCache: true
@@ -3280,7 +3283,7 @@ struct Settings {
 // Adapted from devcode90/Dynamic-Island-for-Windows, MIT.
 // Upstream: 7fe506e81e4e72460251aa60110437794dbc88da (1.4.0).
     bool lyrics = true;
-    bool collapsedLyrics = false;
+    bool collapsedLyrics = true;
     bool lyricsPinnedFirst = false;
     bool lyricsCache = true;
     int lyricsCacheMaxMB = 25;
@@ -5124,7 +5127,16 @@ void LoadSettings() {
         Wh_SetIntValue(L"MediaTabLyricsOverride", -1); mediaLyricsOverride=-1;
     }
     next.mediaTabLyrics = mediaLyricsOverride >= 0 ? mediaLyricsOverride != 0 : mediaLyricsSetting != 0;
-    next.collapsedLyrics = Wh_GetIntValue(L"CollapsedLyrics", 0) != 0;
+    const int collapsedLyricsSetting = Wh_GetIntSetting(L"Modules.CollapsedLyrics") != 0;
+    int collapsedLyricsOverride = Wh_GetIntValue(L"CollapsedLyricsOverride", -1);
+    if (collapsedLyricsOverride >= 0 && Wh_GetIntValue(L"CollapsedLyricsOverrideBase", -1) != collapsedLyricsSetting) {
+        Wh_SetIntValue(L"CollapsedLyricsOverride", -1); collapsedLyricsOverride = -1;
+    }
+    int legacyCollapsedLyrics = Wh_GetIntValue(L"CollapsedLyrics", -1);
+    if (collapsedLyricsOverride < 0 && legacyCollapsedLyrics >= 0) {
+        collapsedLyricsOverride = legacyCollapsedLyrics;
+    }
+    next.collapsedLyrics = collapsedLyricsOverride >= 0 ? (collapsedLyricsOverride != 0) : (collapsedLyricsSetting != 0);
     next.lyricsPinnedFirst = Wh_GetIntValue(L"LyricsPinnedFirst", 0) != 0;
     next.lyricsCache = Wh_GetIntSetting(L"Modules.LyricsCache") != 0;
     next.lyricsCacheMaxMB = ClampInt(_wtoi(GetStringSettingCopy(L"Modules.LyricsCacheMaxMB").c_str()), 0, 100);
@@ -13558,7 +13570,12 @@ void AppendLyricsMenu(HMENU menu) {
 }
 bool HandleLyricsMenu(HWND hwnd,UINT cmd) {
     const auto settings=GetSettingsCopy();
-    if(cmd==2001) Wh_SetIntValue(L"CollapsedLyrics",!settings.collapsedLyrics);
+    if(cmd==2001) {
+        const bool newVal = !settings.collapsedLyrics;
+        Wh_SetIntValue(L"CollapsedLyrics", newVal);
+        Wh_SetIntValue(L"CollapsedLyricsOverride", newVal);
+        Wh_SetIntValue(L"CollapsedLyricsOverrideBase", Wh_GetIntSetting(L"Modules.CollapsedLyrics") != 0);
+    }
     else if(cmd==2002) Wh_SetIntValue(L"LyricsPinnedFirst",!settings.lyricsPinnedFirst);
     else if(cmd==2003) {
         Wh_SetIntValue(L"MediaTabLyricsOverride",!settings.mediaTabLyrics);

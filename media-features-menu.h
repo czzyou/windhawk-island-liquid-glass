@@ -69,7 +69,12 @@ void AppendLyricsMenu(HMENU menu) {
 }
 bool HandleLyricsMenu(HWND hwnd,UINT cmd) {
     const auto settings=GetSettingsCopy();
-    if(cmd==2001) Wh_SetIntValue(L"CollapsedLyrics",!settings.collapsedLyrics);
+    if(cmd==2001) {
+        const bool newVal = !settings.collapsedLyrics;
+        Wh_SetIntValue(L"CollapsedLyrics", newVal);
+        Wh_SetIntValue(L"CollapsedLyricsOverride", newVal);
+        Wh_SetIntValue(L"CollapsedLyricsOverrideBase", Wh_GetIntSetting(L"Modules.CollapsedLyrics") != 0);
+    }
     else if(cmd==2002) Wh_SetIntValue(L"LyricsPinnedFirst",!settings.lyricsPinnedFirst);
     else if(cmd==2003) {
         Wh_SetIntValue(L"MediaTabLyricsOverride",!settings.mediaTabLyrics);

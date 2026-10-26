@@ -33,7 +33,7 @@ def apply_release(src, version, author):
 - 歌词：展开后滚轮进入歌词页；右键可启用收起歌词、媒体页内歌词和歌词置顶。支持网易云、QQ、酷狗和 LRCLIB，中文歌优先国内来源；查询会向使用的来源发送歌名、歌手和时长，LRCLIB 还会收到专辑信息。默认本地缓存上限 25 MB，右键可清缓存、微调蓝牙和有线同步。
 - 快捷查词：Alt+Space 打开输入框，提交后查询词典或百科，保留英文释义并通过 MyMemory 补充标注机译的中文译义；Esc 关闭。剪贴板仅作候选，最近查询仅存内存。快捷键可在设置中修改。
 - 重要日子：右键添加自己的生日、考试等日程；新安装没有预置个人日程。
-- 吃饭提醒：默认关闭，可在设置中开启并修改午饭、晚饭时间。
+- 吃饭提醒：按本机时间提醒午饭和晚饭，可在设置中修改时间。
 - 液态玻璃默认参数已内置。英文、数字默认使用 SF Pro Text，中文优先使用苹方；字体由用户手动安装，公开安装包不包含字体文件，缺少字体时使用系统回退。
 
 安装：在 Windhawk 中新建模组，用此文件的完整内容替换模板，点击编译并启用。
@@ -144,9 +144,9 @@ std::wstring ReadNbaSetup() {
             AddClipboardFormatListener(hwnd);''')
 
     # Keep optional personal reminders configurable without exporting user data.
-    change('  - WeatherFahrenheit: false', '''  - MealReminders: false
+    change('  - WeatherFahrenheit: false', '''  - MealReminders: true
     $name: 吃饭提醒
-    $description: 按本机时间提醒午饭和晚饭，默认关闭。
+    $description: 按本机时间提醒午饭和晚饭。
   - LunchTime: "11:00"
     $name: 午饭时间
     $description: 使用 24 小时制 HH:mm，留空或格式错误则不提醒。
