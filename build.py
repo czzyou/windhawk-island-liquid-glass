@@ -334,6 +334,8 @@ from glass_patch import apply_glass
 src = apply_glass(src)
 from native_glass_patch import apply_native_glass
 src = apply_native_glass(src)
+from aurora_glow_patch import apply_aurora_glow
+src = apply_aurora_glow(src)
 from timer_patch import apply_timer
 src = apply_timer(src)
 from timer_ui_patch import apply_timer_ui

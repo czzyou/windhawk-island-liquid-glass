@@ -198,6 +198,13 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
   - DropShadow: false
     $name: Soft drop shadow
     $description: Casts a soft shadow beneath the island to lift it off the desktop.
+  - AmbientAuroraGlow: true
+    $name: Ambient aurora glow
+    $description: Casts a soft, breathing ambient glow around the island driven by the playing album art accent color.
+  - AmbientGlowIntensity: 100
+    $name: Ambient glow intensity
+    $description: 0 to 200. Controls how brightly the ambient aurora glow radiates around the island.
+
   - AccentBloom: 0
     $name: Accent bloom intensity
     $description: 0 to 200. Strength of the soft accent-coloured wash bleeding in from the top of the island. Driven by album art when the accent mode is Auto. Set to 0 to remove it.
@@ -3363,6 +3370,8 @@ struct Settings {
     bool nativeGlass = false;
     bool materialDepth = true;      // downward depth shading + accent bloom
     bool dropShadow = true;         // soft shadow under the island
+    bool ambientAuroraGlow = true;  // soft ambient glow around the island driven by album accent
+    float ambientGlowIntensity = 1.0f;
     float accentBloom = 1.0f;       // 0..2 multiplier on the accent wash
     float textScale = 1.0f;         // independent typography scale (#41)
     BackdropMaterial backdropMaterial = BackdropMaterial::None;  // #59
@@ -5251,6 +5260,8 @@ void LoadSettings() {
 
     next.materialDepth = Wh_GetIntSetting(L"Themes.MaterialDepth") != 0;
     next.dropShadow = Wh_GetIntSetting(L"Themes.DropShadow") != 0;
+    next.ambientAuroraGlow = Wh_GetIntSetting(L"Themes.AmbientAuroraGlow") != 0;
+    next.ambientGlowIntensity = Clamp(Wh_GetIntSetting(L"Themes.AmbientGlowIntensity") / 100.0f, 0.0f, 2.0f);
     next.accentBloom = Clamp(Wh_GetIntSetting(L"Themes.AccentBloom") / 100.0f, 0.0f, 2.0f);
     next.textScale = Clamp(Wh_GetIntSetting(L"Themes.TextScale") / 100.0f, 0.7f, 1.6f);
 
@@ -14614,6 +14625,7 @@ class Renderer {
         }
         nativeGlass_.Sync(rect.left, rect.top, rect.right, rect.bottom, radius,
             settings.sizeScale, settings.pillOpacity);
+        DrawAmbientAuroraGlow(rect, radius, state, settings, activity.kind, now);
         DrawSoftShadow(rect, radius);
 
         DrawPillSurface(rect, radius, activity.kind, settings);
@@ -14710,6 +14722,94 @@ class Renderer {
         if (!activity.companion) DrawPrivacyDots(state, settings, unscaledRect, now);
 
         target_->SetTransform(oldTransform);
+    }
+
+    // Ambient Aurora Glow.
+    // Driven by album art accent, this projects a soft breathing aura around
+    // the island on the desktop, creating an organic physical backlight bloom.
+    void DrawAmbientAuroraGlow(D2D1_RECT_F rect, float radius,
+                               const SharedState& state, const Settings& settings,
+                               IslandKind kind, double now) {
+        if (settings.backdropMaterial != BackdropMaterial::None) {
+            return;
+        }
+
+        const bool isMedia = (kind == IslandKind::Media);
+        const float targetBlend = (settings.ambientAuroraGlow && isMedia) ? (state.media.playing ? 1.0f : 0.65f) : 0.0f;
+
+        if (lastGlowTime_ < 0.0) {
+            auroraGlowBlend_ = targetBlend;
+            lastGlowTime_ = now;
+        } else {
+            const double dt = (std::max)(0.0, (std::min)(now - lastGlowTime_, 0.1));
+            lastGlowTime_ = now;
+            const float k = 1.0f - static_cast<float>(std::exp(-dt / 0.18));
+            auroraGlowBlend_ += (targetBlend - auroraGlowBlend_) * k;
+        }
+
+        if (auroraGlowBlend_ <= 0.005f || settings.ambientGlowIntensity <= 0.005f) {
+            return;
+        }
+
+        D2D1_COLOR_F glowColor = currentAccent_;
+        if (glowColor.a <= 0.001f) {
+            return;
+        }
+
+        // Lift luminance slightly so dark/muted cover accents bloom vibrantly
+        const float maxC = (std::max)({glowColor.r, glowColor.g, glowColor.b});
+        if (maxC < 0.35f && maxC > 0.001f) {
+            const float boost = 0.35f / maxC;
+            glowColor.r = (std::min)(1.0f, glowColor.r * boost);
+            glowColor.g = (std::min)(1.0f, glowColor.g * boost);
+            glowColor.b = (std::min)(1.0f, glowColor.b * boost);
+        } else if (maxC <= 0.001f) {
+            glowColor = D2D1::ColorF(0.40f, 0.60f, 0.90f, 1.0f);
+        }
+
+        // Calm breathing pulsation (~2.6s cycle) when music is actively playing
+        const float pulse = state.media.playing ?
+            (0.86f + 0.14f * std::sin(static_cast<float>(now * 2.4))) : 0.85f;
+
+        const float totalIntensity = settings.ambientGlowIntensity * auroraGlowBlend_ * pulse * settingsOpacity_;
+        if (totalIntensity <= 0.005f) {
+            return;
+        }
+
+        // Keep spread within render padding bounds (kRenderPadY = 22.0f, kRenderPadX = 28.0f)
+        const float spreadY = Clamp(16.0f * settings.sizeScale, 6.0f, kRenderPadY - 3.0f);
+        const float spreadX = Clamp(spreadY * 1.25f, 6.0f, kRenderPadX - 3.0f);
+        const float yOffset = spreadY * 0.20f;
+
+        constexpr int kSteps = 10;
+        ComPtr<ID2D1SolidColorBrush> brush;
+        if (FAILED(target_->CreateSolidColorBrush(glowColor, &brush)) || !brush) {
+            return;
+        }
+
+        const float compactFade = 1.0f - g_idleCompactBlend.load();
+        for (int i = kSteps; i >= 1; --i) {
+            const float t = static_cast<float>(i) / static_cast<float>(kSteps);
+            const float growX = spreadX * t;
+            const float growY = spreadY * t;
+
+            // Concentric smooth falloff
+            const float falloff = (1.0f - t) * (1.0f - t);
+            const float alpha = Clamp(0.09f * falloff * totalIntensity * compactFade, 0.0f, 1.0f);
+            if (alpha <= 0.0015f) {
+                continue;
+            }
+
+            brush->SetOpacity(alpha);
+            const D2D1_RECT_F glowRect = D2D1::RectF(
+                rect.left - growX,
+                rect.top - growY * 0.70f + yOffset,
+                rect.right + growX,
+                rect.bottom + growY + yOffset
+            );
+            FillIslandShape(glowRect, radius + growY, settings.w11Style,
+                            settings.notchStyle, brush.Get());
+        }
     }
 
     // A real soft shadow, approximated by stacking concentric rounded shapes
@@ -19768,6 +19868,8 @@ public:
     uint64_t fileTrayIconGeneration_ = 0;
     ComPtr<ID2D1GradientStopCollection> glassRimStops_;
     ComPtr<ID2D1LinearGradientBrush> glassRimBrush_;
+    float auroraGlowBlend_ = 0.0f;
+    double lastGlowTime_ = -1.0;
     float settingsOpacity_ = 0.96f;
     D2D1_COLOR_F pillBgColor_ = D2D1::ColorF(0.031f, 0.031f, 0.039f, 1.0f);
     // Design tokens for the current frame, rebuilt by EnsureBrushes.
