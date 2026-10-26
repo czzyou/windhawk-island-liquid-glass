@@ -3409,7 +3409,7 @@ struct BitmapPixels {
     UINT width = 0;
     UINT height = 0;
     uint64_t generation = 0;
-    D2D1_COLOR_F sampledAccent = D2D1::ColorF(0x4cc9f0);
+    D2D1_COLOR_F sampledAccent = D2D1::ColorF(0.92f, 0.94f, 0.98f, 1.0f);
 };
 
 
@@ -6339,10 +6339,8 @@ bool DecodeImageBytesToPixels(const std::vector<uint8_t>& bytes, BitmapPixels* o
         const int minc = std::min({red, green, blue});
         const int luminance = (54 * red + 183 * green + 19 * blue) / 256;
         const int saturation = maxc - minc;
-        // Reject near-black, near-white, and near-gray pixels.
-        // Raise luminance floor slightly (36 instead of 28) so very dark-but-colorful
-        // pixels don't swamp vibrancy scoring on dark-mood album art.
-        if (luminance < 36 || luminance > 220 || saturation < 28) {
+        // Full spectrum color extraction: capture deep moody tones, delicate pastels, earthy hues and rich vivid colors
+        if (luminance < 14 || luminance > 246 || saturation < 12) {
             continue;
         }
 
@@ -6375,16 +6373,17 @@ bool DecodeImageBytesToPixels(const std::vector<uint8_t>& bytes, BitmapPixels* o
         }
     }
 
-    // Among those top-3, pick the one with the highest avg saturation.
+    // Balance dominant area presence with visual color vibrancy so the true aesthetic theme wins
     const Bucket* best = nullptr;
     size_t bestIdx = 0;
-    float bestVibrancy = -1.0f;
+    float bestScore = -1.0f;
     for (int s = 0; s < 3; ++s) {
         if (!top[s].b) break;
         const float vibrancy = static_cast<float>(top[s].b->satSum) /
                                static_cast<float>(top[s].b->count);
-        if (vibrancy > bestVibrancy) {
-            bestVibrancy = vibrancy;
+        const float score = static_cast<float>(top[s].b->count) * (0.8f + (std::min)(vibrancy / 48.0f, 2.5f));
+        if (score > bestScore) {
+            bestScore = score;
             best = top[s].b;
             bestIdx = top[s].idx;
         }
@@ -6438,6 +6437,9 @@ bool DecodeImageBytesToPixels(const std::vector<uint8_t>& bytes, BitmapPixels* o
         // If poolCount is somehow 0 (all neighbors empty and center also cleared),
         // the existing sampledAccent default (#4cc9f0) is kept unchanged — explicit
         // fallback for fully-grayscale/near-black-and-white album art.
+    } else {
+        // True black & white / grayscale album art: use clean, elegant frosted soft white
+        pixels.sampledAccent = D2D1::ColorF(0.92f, 0.94f, 0.98f, 1.0f);
     }
     // else: no qualifying colorful pixel found (B&W / fully-filtered image)
     // — leave sampledAccent at the BitmapPixels default (#4cc9f0).
@@ -14763,7 +14765,7 @@ class Renderer {
 
         // If the album art is monochrome, neutral, dark, or low-saturation (e.g. gray/black/white covers),
         // gracefully cast a clean, elegant frosted soft pale white glow instead of a muddy tint.
-        if (sat < 0.18f || maxC <= 0.001f) {
+        if (sat < 0.12f || maxC <= 0.001f) {
             glowColor = D2D1::ColorF(0.92f, 0.94f, 0.98f, 1.0f);
         } else if (maxC < 0.35f && maxC > 0.001f) {
             // Lift luminance slightly so dark but saturated cover accents bloom vibrantly

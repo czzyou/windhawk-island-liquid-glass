@@ -1,4 +1,4 @@
-"""Add Ambient Aurora Glow to the island."""
+"""Add Ambient Aurora Glow to the island with rich full-spectrum album color extraction."""
 from pathlib import Path
 
 
@@ -36,7 +36,66 @@ def apply_aurora_glow(src):
     next.ambientAuroraGlow = Wh_GetIntSetting(L"Themes.AmbientAuroraGlow") != 0;
     next.ambientGlowIntensity = Clamp(Wh_GetIntSetting(L"Themes.AmbientGlowIntensity") / 100.0f, 0.0f, 2.0f);''')
 
-    # 4. Add Renderer member variables & device release
+    # 4. Enhance BitmapPixels default accent: Pure soft frosted white instead of cyan
+    change('''    D2D1_COLOR_F sampledAccent = D2D1::ColorF(0x4cc9f0);''',
+           '''    D2D1_COLOR_F sampledAccent = D2D1::ColorF(0.92f, 0.94f, 0.98f, 1.0f);''')
+
+    # 5. Expand album color extraction spectrum (unlock moody darks, soft pastels, warm earthy & vivid tones)
+    old_color_filter = '''        // Reject near-black, near-white, and near-gray pixels.
+        // Raise luminance floor slightly (36 instead of 28) so very dark-but-colorful
+        // pixels don't swamp vibrancy scoring on dark-mood album art.
+        if (luminance < 36 || luminance > 220 || saturation < 28) {
+            continue;
+        }'''
+    new_color_filter = '''        // Full spectrum color extraction: capture deep moody tones, delicate pastels, earthy hues and rich vivid colors
+        if (luminance < 14 || luminance > 246 || saturation < 12) {
+            continue;
+        }'''
+    change(old_color_filter, new_color_filter)
+
+    # 6. Balance dominant area presence with visual vibrancy in candidate selection
+    old_scoring = '''    // Among those top-3, pick the one with the highest avg saturation.
+    const Bucket* best = nullptr;
+    size_t bestIdx = 0;
+    float bestVibrancy = -1.0f;
+    for (int s = 0; s < 3; ++s) {
+        if (!top[s].b) break;
+        const float vibrancy = static_cast<float>(top[s].b->satSum) /
+                               static_cast<float>(top[s].b->count);
+        if (vibrancy > bestVibrancy) {
+            bestVibrancy = vibrancy;
+            best = top[s].b;
+            bestIdx = top[s].idx;
+        }
+    }'''
+    new_scoring = '''    // Balance dominant area presence with visual color vibrancy so the true aesthetic theme wins
+    const Bucket* best = nullptr;
+    size_t bestIdx = 0;
+    float bestScore = -1.0f;
+    for (int s = 0; s < 3; ++s) {
+        if (!top[s].b) break;
+        const float vibrancy = static_cast<float>(top[s].b->satSum) /
+                               static_cast<float>(top[s].b->count);
+        const float score = static_cast<float>(top[s].b->count) * (0.8f + (std::min)(vibrancy / 48.0f, 2.5f));
+        if (score > bestScore) {
+            bestScore = score;
+            best = top[s].b;
+            bestIdx = top[s].idx;
+        }
+    }'''
+    change(old_scoring, new_scoring)
+
+    # 7. Fallback for black & white / monochrome album art (e.g. Ariana Grande vinyl, monochrome photography)
+    old_fallback = '''        // fallback for fully-grayscale/near-black-and-white album art.
+    }'''
+    new_fallback = '''        // fallback for fully-grayscale/near-black-and-white album art.
+    } else {
+        // True black & white / grayscale album art: use clean, elegant frosted soft white
+        pixels.sampledAccent = D2D1::ColorF(0.92f, 0.94f, 0.98f, 1.0f);
+    }'''
+    change(old_fallback, new_fallback)
+
+    # 8. Add Renderer member variables & device release
     change('''    ComPtr<ID2D1LinearGradientBrush> glassRimBrush_;
     float settingsOpacity_ = 0.96f;''',
            '''    ComPtr<ID2D1LinearGradientBrush> glassRimBrush_;
@@ -51,7 +110,7 @@ def apply_aurora_glow(src):
         glassRimStops_.Reset();
         auroraGlowBrush_.Reset();''')
 
-    # 5. Add DrawAmbientAuroraGlow method right before DrawSoftShadow
+    # 9. Add DrawAmbientAuroraGlow method right before DrawSoftShadow
     glow_method = '''    // Ambient Aurora Glow.
     // Driven by album art accent, this projects a soft breathing aura around
     // the island on the desktop, creating an organic physical backlight bloom.
@@ -90,7 +149,7 @@ def apply_aurora_glow(src):
 
         // If the album art is monochrome, neutral, dark, or low-saturation (e.g. gray/black/white covers),
         // gracefully cast a clean, elegant frosted soft pale white glow instead of a muddy tint.
-        if (sat < 0.18f || maxC <= 0.001f) {
+        if (sat < 0.12f || maxC <= 0.001f) {
             glowColor = D2D1::ColorF(0.92f, 0.94f, 0.98f, 1.0f);
         } else if (maxC < 0.35f && maxC > 0.001f) {
             // Lift luminance slightly so dark but saturated cover accents bloom vibrantly
@@ -158,7 +217,7 @@ def apply_aurora_glow(src):
     change('''    // A real soft shadow, approximated by stacking concentric rounded shapes''',
            glow_method + '''    // A real soft shadow, approximated by stacking concentric rounded shapes''')
 
-    # 6. Call DrawAmbientAuroraGlow in DrawPill
+    # 10. Call DrawAmbientAuroraGlow in DrawPill
     change('''        nativeGlass_.Sync(rect.left, rect.top, rect.right, rect.bottom, radius,
             settings.sizeScale, settings.pillOpacity);
         DrawSoftShadow(rect, radius);''',
