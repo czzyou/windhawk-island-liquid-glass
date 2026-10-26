@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param([switch]$Compile)
 . (Join-Path $PSScriptRoot 'core.ps1')
+. (Join-Path $PSScriptRoot 'publish-checks.ps1')
 $script:checks=0
 function Assert([bool]$Condition,[string]$Message) { if (-not $Condition) { throw $Message }; $script:checks++ }
 function Must-Fail([scriptblock]$Action,[string]$Message) { $failed=$false; try { & $Action | Out-Null } catch { $failed=$true }; Assert $failed $Message }
@@ -18,6 +19,35 @@ try {
     Assert ((Get-ReleaseVersion '1.10.0') -gt (Get-ReleaseVersion '1.9.0')) 'Numeric version ordering'
     foreach ($bad in @('1.0.0-beta','1.0','v1.0.0','01.0.0','1.0.0/../evil')) { Must-Fail { Get-ReleaseVersion $bad } ('Reject version '+$bad) }
     foreach ($bad in @('a/b/c','../repo','a/repo?x=1','https://github.com/a/b')) { Must-Fail { Assert-Repository $bad } ('Reject repository '+$bad) }
+    & {
+        $script:actionsDirty = $false
+        $script:actionsUnavailable = $false
+        $script:actionsRun = @{headSha=('a'*40);headBranch='main';event='push';status='completed';conclusion='success';url='https://example.com/run'}
+        function git {
+            $global:LASTEXITCODE = 0
+            if ($args -contains 'rev-parse') { 'a'*40 }
+            elseif ($script:actionsDirty) { ' M build.py' }
+        }
+        function gh {
+            $global:LASTEXITCODE = 0
+            if ($script:actionsUnavailable) { '[]' }
+            else { ConvertTo-Json -InputObject @($script:actionsRun) -Compress }
+        }
+        Assert-ActionsBuild 'test/repo' $testRoot
+        $script:checks++
+        $script:actionsDirty = $true
+        Must-Fail { Assert-ActionsBuild 'test/repo' $testRoot } 'Uncommitted release inputs rejected'
+        $script:actionsDirty = $false
+        $script:actionsUnavailable = $true
+        Must-Fail { Assert-ActionsBuild 'test/repo' $testRoot } 'Missing successful build rejected'
+        $script:actionsUnavailable = $false
+        foreach ($bad in @(@('headSha',('b'*40)), @('headBranch','other'), @('event','pull_request'), @('status','in_progress'), @('conclusion','failure'))) {
+            $savedValue = $script:actionsRun[$bad[0]]
+            $script:actionsRun[$bad[0]] = $bad[1]
+            Must-Fail { Assert-ActionsBuild 'test/repo' $testRoot } ('Untrusted build rejected: '+$bad[0])
+            $script:actionsRun[$bad[0]] = $savedValue
+        }
+    }
     $sourcePath=Join-Path (Split-Path $PSScriptRoot -Parent) 'dynamic-island-liquid-glass.wh.cpp'
     $sourceBytes=[IO.File]::ReadAllBytes($sourcePath)
     $version=[regex]::Match([IO.File]::ReadAllText($sourcePath),'(?m)^// @version\s+(\S+)').Groups[1].Value
@@ -117,7 +147,8 @@ try {
     Assert ($result -eq 'Already current.' -and $script:downloadIndex -eq 2) 'Current signed release skips source download'
     Assert ((Get-Item -LiteralPath $fixture.Storage).GetValue('UpdateAvailable',-1) -eq 0) 'No update clears the badge'
 
-    $newManifest=$manifest.PSObject.Copy(); $newManifest.version='1.4.6'; $newManifest.tag='v1.4.6'
+    $availableVersion = '{0}.{1}.{2}' -f ([version]$version).Major, ([version]$version).Minor, (([version]$version).Build+1)
+    $newManifest=$manifest.PSObject.Copy(); $newManifest.version=$availableVersion; $newManifest.tag='v'+$availableVersion
     $newBytes=$script:Utf8.GetBytes(($newManifest | ConvertTo-Json -Depth 10))
     $newSignature=$rsa.SignData($newBytes,'SHA256')
     $script:downloadIndex=0
@@ -128,7 +159,7 @@ try {
     Set-UpdateRequest $fixture 1
     $script:compileFails=$true
     $result=Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Auto'
-    Assert ($result -eq 'Update available: 1.4.6' -and $script:downloadIndex -eq 2) 'Three-hour check downloads only signed metadata'
+    Assert ($result -eq ('Update available: '+$availableVersion) -and $script:downloadIndex -eq 2) 'Three-hour check downloads only signed metadata'
     Assert ((Get-Item -LiteralPath $fixture.Storage).GetValue('UpdateAvailable',0) -eq 1) 'New signed version sets the badge'
     Assert ((Get-ModSnapshot $fixture).Version -eq $version -and (Get-FileDigest $fixture.Source) -ceq $oldHash) 'Background availability check preserves running code'
     Assert ((Get-Item -LiteralPath $fixture.Storage).GetValue('UpdateRequested',0) -eq 1) 'Background availability check does not alter active handoff'

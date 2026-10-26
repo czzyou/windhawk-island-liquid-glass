@@ -1,4 +1,5 @@
 int main() {
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
     CheckFileTrayDeletion();
     MediaContentPoint mediaPoint;
     mediaPoint.valid = true; mediaPoint.width = 380; mediaPoint.height = 184;
@@ -42,6 +43,7 @@ int main() {
     assert(MediaSessionHasContent(false,L"Paused song"));
     assert(MediaSessionHasContent(true,L""));
     g_stopEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr); assert(g_stopEvent);
+    CheckLyricsProviders();
     assert(LyricsAllowed(false,true,false,true));
     assert(!LyricsAllowed(true,false,true,true));
     assert(!LyricsAllowed(true,false,false,true));
@@ -184,4 +186,5 @@ int main() {
     HANDLE worker=CreateThread(nullptr,0,LookupThreadProc,nullptr,0,nullptr); assert(worker);
     SetEvent(g_stopEvent); assert(WaitForSingleObject(worker,1000)==WAIT_OBJECT_0);
     CloseHandle(worker); CloseHandle(g_lookupJobEvent); CloseHandle(g_stopEvent);
+    winrt::uninit_apartment();
 }

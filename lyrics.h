@@ -880,7 +880,8 @@ std::wstring NormalizeLyricsMatch(const std::wstring& in) {
     std::wstring out;
     bool space = false;
     for (wchar_t c : in) {
-        if (iswalnum(c)) {
+        WORD kind = 0;
+        if (GetStringTypeW(CT_CTYPE1, &c, 1, &kind) && (kind & (C1_ALPHA | C1_DIGIT))) {
             if (space && !out.empty()) out.push_back(L' ');
             space = false;
             out.push_back(static_cast<wchar_t>(towlower(c)));
@@ -976,7 +977,7 @@ void ConsiderLyricsBody(const std::string& body, const std::wstring& wantTitle,
         if (durDiff >= 0) score += durDiff <= 2 ? 40 : (durDiff <= 5 ? 25 : 5);
         if (synced) score += 20;
 
-        if (!best->found || score > best->score) {
+        if (!best->found || (synced && !best->synced) || (synced == best->synced && score > best->score)) {
             best->found = true;
             best->synced = synced;
             best->score = score;
@@ -1047,6 +1048,7 @@ bool FetchLyricsFromLrclib(const std::wstring& title, const std::wstring& artist
 }
 
 DWORD WINAPI LyricsThreadProc(void*) {
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
     std::wstring lastIdentity;
     double retryAtSec = 0;
     int failCount = 0;
@@ -1093,7 +1095,7 @@ DWORD WINAPI LyricsThreadProc(void*) {
         LyricsPick pick;
         bool definitive=true;
         const int duration=media.endTicks>0 ? static_cast<int>(media.endTicks/10000000.0+0.5) : 0;
-        FetchLyricsFromLrclib(media.title,media.artist,media.albumTitle,duration,&pick,&definitive);
+        FetchLyricsFromSources(media.title,media.artist,media.albumTitle,duration,&pick,&definitive);
         LyricsSnapshot result;
         result.trackIdentity=identity; result.matchedTitle=media.title; result.matchedArtist=media.artist;
         if (pick.found) {
@@ -1114,5 +1116,6 @@ DWORD WINAPI LyricsThreadProc(void*) {
         }
         g_layoutDirty=true;
     }
+    winrt::uninit_apartment();
     return 0;
 }

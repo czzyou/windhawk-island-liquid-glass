@@ -1,0 +1,66 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Extract pinned Windhawk toolchain
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'windhawk-1.7.3.exe'
+          Invoke-WebRequest 'https://github.com/ramensoftware/windhawk/releases/download/v1.7.3/windhawk_setup_offline.exe' -OutFile $installer
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash -ine '4d93016570f982326eebdfc9068e924ff21f6448534ea32672bb4c1d52a8193b') {
+            throw 'Windhawk installer checksum mismatch.'
+          }
+          $toolchain = Join-Path $env:RUNNER_TEMP 'windhawk'
+          $process = Start-Process $installer -ArgumentList '/S', '/PORTABLE', "/D=$toolchain" -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Windhawk extraction failed.' }
+          foreach ($file in @('Compiler/bin/clang++.exe', 'Engine/1.7.3/64/windhawk.lib', 'Engine/1.7.3/32/windhawk.lib')) {
+            if (-not (Test-Path (Join-Path $toolchain $file))) { throw "Missing toolchain file: $file" }
+          }
+          "WINDHAWK_PATH=$toolchain" >> $env:GITHUB_ENV
+      - name: Build x64 and x86 and run regression checks
+        run: python build.py --release
+      - name: Run release checks
+        run: python release-checks.py
+      - name: Run isolated updater and publishing checks
+        run: powershell -NoProfile -File updater/test.ps1
+      - name: Package build for first-user testing
+        shell: pwsh
+        run: |
+          $version = (Get-Content release.json -Raw | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Path build-artifact | Out-Null
+          Copy-Item dynamic-island-liquid-glass.wh.cpp build-artifact/
+          Copy-Item "local@dynamic-island-liquid-glass_$version.dll" build-artifact/64.dll
+          Copy-Item "32/local@dynamic-island-liquid-glass_$version.dll" build-artifact/32.dll
+          git diff --exit-code -- dynamic-island-liquid-glass.wh.cpp
+          if ($LASTEXITCODE -ne 0) { throw 'Generated release source differs from the committed source.' }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: island-build-${{ github.sha }}
+          path: build-artifact/
+          if-no-files-found: error
+          retention-days: 30

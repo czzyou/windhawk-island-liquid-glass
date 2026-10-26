@@ -1,5 +1,6 @@
 """Checks the emitted release helpers and actual dialog with in-memory storage."""
 from pathlib import Path
+import os
 import re
 import subprocess
 import sys
@@ -141,7 +142,7 @@ int main(int argc, char** argv) {
 '''
 cpp = root/'release-checks.cpp'
 cpp.write_text(test, encoding='utf-8')
-compiler = Path(r'C:\Program Files\Windhawk\Compiler')
+compiler = Path(os.environ.get('WINDHAWK_PATH', r'C:\Program Files\Windhawk'))/'Compiler'
 subprocess.run([str(compiler/'bin/clang++.exe'), '-std=c++23', '-static', '-DUNICODE', '-D_UNICODE', '-D_WIN32_WINNT=0x0A00',
                 str(cpp), '-luser32', '-lgdi32', '-lwinhttp', '-o', str(root/'release-checks.exe')], cwd=compiler, check=True)
 subprocess.run([str(root/'release-checks.exe'), *sys.argv[1:]], check=True, timeout=120 if '--preview' in sys.argv else 60)

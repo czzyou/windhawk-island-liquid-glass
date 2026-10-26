@@ -14,7 +14,7 @@ def apply_media_features(src):
     def header(name):
         return (root / name).read_text(encoding='utf-8')
 
-    change('#include <winrt/base.h>', '#include <memory>\n#include <uiautomation.h>\n#include <appmodel.h>\n#include <winrt/base.h>')
+    change('#include <winrt/base.h>', '#include <memory>\n#include <uiautomation.h>\n#include <appmodel.h>\n#include <winrt/base.h>\n#include <winrt/Windows.Data.Json.h>\n#include <winrt/Windows.Security.Cryptography.h>')
     change('    Idle,', '    Lookup,\n    Idle,')
     change('struct MediaSnapshot {', 'struct MediaSnapshot {\n    bool lyricsEligible = false;')
     change('struct Settings {', 'struct Settings {\n' + header('media-features-settings.h'))
@@ -36,7 +36,7 @@ def apply_media_features(src):
 
     settings_yaml = '''  - Lyrics: true
     $name: 实时歌词
-    $description: 通过 LRCLIB 匹配当前歌曲；展开后可切换到歌词页。
+    $description: 通过网易云、QQ、酷狗和 LRCLIB 匹配当前歌曲；展开后可切换到歌词页。
   - MediaTabLyrics: false
     $name: 媒体页内显示歌词
   - LyricsCache: true
@@ -187,6 +187,7 @@ def apply_media_features(src):
     change('            if (!reportedSuccess) {', '            if (!reportedSuccess && source.empty()) {')
 
     runtime = '\n'.join(header(name) for name in ('media-http.h', 'media-web-data.h', 'lyrics.h', 'quick-lookup.h', 'lookup-worker.h'))
+    runtime = runtime.replace('DWORD WINAPI LyricsThreadProc(', header('lyrics-providers.h') + '\nDWORD WINAPI LyricsThreadProc(')
     change('void ShowContextMenu(HWND hwnd, POINT screenPoint) {', dock_hit + runtime + '\nstd::vector<IslandKind> ChooseActivities(const SharedState&, const Settings&, double);\n' + header('media-features-menu.h') + '\nvoid ShowContextMenu(HWND hwnd, POINT screenPoint) {')
     change('    AppendMenuW(menu, MF_STRING, 40,',
            '    const auto sourceMenuItems = AppendMediaSources(menu);\n    AppendLyricsMenu(menu);\n    AppendMenuW(menu, MF_STRING, 40,')
