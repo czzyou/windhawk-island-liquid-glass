@@ -485,6 +485,11 @@ feature_test = r'''#include <windows.h>
 #include <dwrite_2.h>
 #include <wrl/client.h>
 #include <winhttp.h>
+#include <winrt/base.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Data.Json.h>
+#include <winrt/Windows.Security.Cryptography.h>
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -516,7 +521,7 @@ feature_test += r'''
 std::vector<HttpResult> replies;
 std::vector<std::wstring> hosts, requestPaths;
 size_t replyIndex=0;
-HttpResult HttpGetEx(const wchar_t* host,const wchar_t* path,bool,const wchar_t*) {
+HttpResult HttpGetEx(const wchar_t* host,const wchar_t* path,bool,const wchar_t*,const wchar_t* = nullptr,DWORD = 30000) {
     hosts.emplace_back(host); requestPaths.emplace_back(path);
     return replyIndex<replies.size() ? replies[replyIndex++] : HttpResult{};
 }
@@ -531,6 +536,8 @@ feature_test += (root/'lyrics-layout.h').read_text(encoding='utf-8')
 feature_test += (root/'media-web-data.h').read_text(encoding='utf-8')
 lyrics = (root/'lyrics.h').read_text(encoding='utf-8')
 feature_test += lyrics[:lyrics.index('DWORD WINAPI LyricsThreadProc(')]
+feature_test += (root/'lyrics-providers.h').read_text(encoding='utf-8')
+feature_test += (root/'lyrics-provider-checks.inc').read_text(encoding='utf-8')
 feature_test += r'''
 struct SharedState { LookupSnapshot lookup; std::vector<LookupRecent> lookupRecent; };
 SharedState g_state;
@@ -572,7 +579,7 @@ for marker, ending in [('namespace MediaLayout {', '\n}'),
     feature_test += '\n' + src[start:src.index(ending, start) + len(ending)] + '\n'
 feature_test += (root/'media-feature-checks.inc').read_text(encoding='utf-8')
 (root/'media-feature-checks.cpp').write_text(feature_test,encoding='utf-8')
-subprocess.run([str(clang),'-std=c++23','-static',str(root/'media-feature-checks.cpp'),'-ldwrite','-lole32','-loleaut32','-lshell32','-o',str(root/'media-feature-checks.exe')],cwd=compiler,check=True)
+subprocess.run([str(clang),'-std=c++23','-static',str(root/'media-feature-checks.cpp'),'-ldwrite','-lole32','-loleaut32','-lshell32','-lruntimeobject','-o',str(root/'media-feature-checks.exe')],cwd=compiler,check=True)
 subprocess.run([str(root/'media-feature-checks.exe')],check=True)
 print('Media feature checks passed: LRC precision, cache atomicity, source selection, lookup fallbacks, stale results and worker shutdown',flush=True)
 
