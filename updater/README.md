@@ -31,7 +31,7 @@
 
 ## 维护者
 
-发布配置在根目录 `release.json`。日常修改先本地编译和检查，备份后使用本地产物首轮体验，用户确认后再提交、推送；GitHub Actions 在推送后复核 x64/x86 编译和自动检查，试用包为可选产物，无需等待它才能本机试用。明确授权发布后，才通过 `updater/publish.ps1` 核对本地成功构建并签名发布正式版，无需等待 Actions。普通代码提交、试用产物、草稿和预发布不会推送给客户端。
+发布配置在根目录 `release.json`。日常修改先本地编译和检查，备份后使用本地产物首轮体验，用户确认后再提交、推送。GitHub Actions 只作后台检查和可选试用包；本机试用、签名和正式发布均不等待 Actions。明确授权发布后，通过 `updater/publish.ps1` 复用有效本地成功构建并签名发布正式版。普通代码提交、试用产物、草稿和预发布不会推送给客户端。
 
 首次执行 `powershell -NoProfile -File updater/publish.ps1 -InitializeKey` 创建签名密钥；私钥保存在当前用户 LOCALAPPDATA 的 `Windhawk-Island-Publisher/signing-key.dpapi`，使用 Windows DPAPI 绑定当前账号，不能提交到 GitHub。此文件单独拷贝到其他账号不能直接恢复，请另外做好原 Windows 用户配置/恢复凭据的离线备份；不要删除或覆盖密钥。
 

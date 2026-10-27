@@ -2,7 +2,7 @@
 
 基于 Himanshu / devcode90 的 Dynamic Island for Windows 修改，使用 Windhawk 运行，液态玻璃后端来自 hicccc77/electron-liquid-glass。保留原作者及第三方 MIT 许可证。
 
-**构建与测试声明：** 日常修改先在本机编译和检查，备份后使用本地产物首轮体验，确认后再提交、推送；GitHub Actions 在推送后后台复核并生成可选试用包。自动检查通过不代表界面、动画和交互已经实机验证；体验确认并明确授权发布后，才在本机签名并发布正式 Release。
+**构建与测试声明：** 发布依据本地成功构建和检查，不等待 GitHub Actions。日常修改先本机编译检查、备份切换并体验，确认后提交推送；明确授权发布后，本机签名并发布正式 Release。Actions 只作后台检查及可选试用包，不阻塞签名或发布。自动检查通过和启动正常均不代表界面、动画和交互已经实机验证。
 
 ## 安装
 
@@ -42,7 +42,7 @@
 
 参与开发请先阅读 [贡献指南](CONTRIBUTING.md)，其中说明了源码修改、Actions 检查和 PR 提交方式。
 
-GitHub Actions 在推送代码、提交 PR 或手动触发时自动运行两项检查：`Source check` 验证补丁合成、版本格式和设置 YAML；`Windows build` 使用固定 Windhawk 1.7.3 工具链编译 x64/x86、运行回归及发布检查，并生成保留 30 天的 `island-build-提交号` 试用包。维护者先进行实际体验；Actions 不签名、不自动发布。
+GitHub Actions 在推送代码、提交 PR 或手动触发时自动运行两项检查：`Source check` 验证补丁合成、版本格式和设置 YAML；`Windows build` 使用固定 Windhawk 1.7.3 工具链编译 x64/x86、运行回归及发布检查，并生成保留 30 天的 `island-build-提交号` 试用包。发布不等待这两项结果；Actions 不签名、不自动发布。
 
 固定操作见 [发布流程](发布流程.md)：本地编译、检查并试用，用户确认后再推送源码；Actions 仅作后台复核，明确授权发布后直接依据本地成功构建签名并发布正式 Release，无需等待云端结果。本机试用不需要等待 Actions；只 push 代码不会让使用者收到更新。
 
@@ -58,9 +58,9 @@ powershell -NoProfile -File updater/publish.ps1 -PublishPrepared -NotesFile RELE
 已有公钥对应的私钥只在原维护者 Windows 用户配置中存在；参与开发的人可以修改源码并提交 PR，无法冒用原维护者签名。发布新版本必须严格提高三段数字版本号。签名密钥不可丢失或替换；备份说明见 [更新器文档](updater/README.md)。
 
 ```powershell
+# 一次完成双架构编译、回归、发布和隔离更新器检查，记录成功构建
 python build.py --release
-powershell -NoProfile -File updater/test.ps1
-# 额外验证更新器实际调用本机编译器，输出仍在隔离目录
+# 仅修改更新器编译调用时，额外验证该调用；输出仍在隔离目录
 powershell -NoProfile -File updater/test.ps1 -Compile
 ```
 

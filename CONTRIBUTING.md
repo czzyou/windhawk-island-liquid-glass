@@ -22,7 +22,7 @@ python build.py --release --source-only
 
 `Windows build` 还会自动使用固定 Windhawk 1.7.3 工具链编译 x64/x86，并运行回归、发布和隔离更新器检查。通过后可在该次运行中下载 `island-build-提交号` 试用包；它包含源码和两种架构 DLL，保留 30 天。
 
-**日常开发先本地编译、先体验，推送后由 Actions 后台复核。** 本机安装 Windhawk 1.7.3 后运行：
+**日常开发先本地编译、先体验；正式发布不等待 Actions，推送后由其后台检查。** 本机安装 Windhawk 1.7.3 后运行：
 
 ```shell
 python build.py --release
