@@ -93,7 +93,8 @@ inline TomorrowBrief ParseTomorrowWeather(const std::string& script, const SYSTE
             const std::wstring description = index >= 0 && index < 32 ? descriptions[index] : L"霾";
             if (fahrenheit) { low = low * 1.8f + 32; high = high * 1.8f + 32; }
             wchar_t range[64]{};
-            swprintf_s(range, L"%.0f°～%.0f°%s", low, high, fahrenheit ? L"F" : L"C");
+            swprintf_s(range, L"%s°～%s°%s", WeatherTemperatureText(low).c_str(),
+                WeatherTemperatureText(high).c_str(), fahrenheit ? L"F" : L"C");
             result.date = BriefDateKey(target);
             result.title = std::wstring(showTomorrow ? L"明天天气 · " : L"今天天气 · ") + (city.empty() ? std::wstring(L"沈阳") : city);
             result.body = description + L"  " + range;

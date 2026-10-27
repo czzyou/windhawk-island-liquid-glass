@@ -45,7 +45,7 @@ def apply_weather_icons(src):
     end = src.index('\n        }', start)
     src = src[:start] + '''            const bool hasData = state.weather.hasData && (now - state.weather.lastUpdated < 3600.0);
             wchar_t label[32] = {};
-            if (hasData) swprintf_s(label, L"%.0f\\x00B0", state.weather.temperature);
+            if (hasData) swprintf_s(label, L"%s\\x00B0", WeatherTemperatureText(state.weather.temperature).c_str());
             else wcscpy_s(label, ARRAYSIZE(label), L"--\\x00B0");
             metrics.weatherWidth = 24.0f * settings.sizeScale +
                 MeasureTextWidthCached(WidestDigitForm(label), fmt, idleWeatherWidthCache_);''' + src[end:]
@@ -53,7 +53,7 @@ def apply_weather_icons(src):
     start = src.index('                wchar_t weatherLabel[32] = {};')
     end = src.index('\n            }', start)
     src = src[:start] + '''                wchar_t weatherLabel[32] = {};
-                if (hasWeather) swprintf_s(weatherLabel, L"%.0f\\x00B0", state.weather.temperature);
+                if (hasWeather) swprintf_s(weatherLabel, L"%s\\x00B0", WeatherTemperatureText(state.weather.temperature).c_str());
                 else wcscpy_s(weatherLabel, ARRAYSIZE(weatherLabel), L"--\\x00B0");
                 const float iconSlot = 24.0f * scale;
                 DrawWeatherIcon(D2D1::Point2F(slotX + 10.0f * scale, (rect.top + rect.bottom) * 0.5f),

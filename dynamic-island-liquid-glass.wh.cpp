@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.5.4
+// @version         1.5.5
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -86,7 +86,7 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
       - notch: macOS Notch (Top Edge Flush)
   - SizeScale: '1.0'
     $name: Size scale
-    $description: Makes the entire island and its contents larger or smaller.
+    $description: Scales the entire island and its contents. Small desktops automatically reduce the base size by up to 25%.
     $options:
       - '0.8': 0.8x
       - '1.0': 1.0x
@@ -5055,10 +5055,13 @@ bool IsForegroundFullscreen(HWND targetHwnd) {
     return false;
 }
 
-// Returns the DPI scale factor for the primary monitor (1.0 = 96 DPI = 100%)
-float GetPrimaryMonitorDpiScale() {
-    POINT pt = {0, 0};
-    HMONITOR monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+// Scale the island for the selected monitor and its usable desktop size.
+float SmallScreenScale(float width, float height) {
+    // Keep small desktops compact without reducing controls below 75% of their base size.
+    return std::clamp((std::min)(width / 1440.0f, height / 900.0f), 0.75f, 1.0f);
+}
+
+float GetMonitorDpiScale(HMONITOR monitor) {
     UINT dpiX = 96, dpiY = 96;
     using GetDpiForMonitor_t = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
     static auto pGetDpiForMonitor = reinterpret_cast<GetDpiForMonitor_t>(
@@ -5118,6 +5121,8 @@ void ApplyBackdropMaterial(HWND);           // forward declaration; defined afte
 void ApplyBackdropRegion(HWND, int, int);   // forward declaration; defined below PositionOverlayWindow
 void NotifyKeyboardThreadSettingChanged();  // forward declaration; defined with the keyboard hook
 
+RECT GetAnchorWorkRect(int targetMonitor);
+
 void LoadSettings() {
     Settings next;
     next.lyrics = Wh_GetIntSetting(L"Modules.Lyrics") != 0;
@@ -5176,11 +5181,6 @@ void LoadSettings() {
         }
     }
 
-    // Auto DPI scaling: multiply sizeScale by monitor DPI factor.
-    // On a 4K 200% display this doubles the island to the right physical size.
-    if (Wh_GetIntSetting(L"Appearance.AutoDpiScale") != 0) {
-        next.sizeScale *= GetPrimaryMonitorDpiScale();
-    }
 
     std::wstring fontSetting = GetStringSettingWithFallback(L"Themes.FontFamily", L"Appearance.FontFamily");
     size_t firstChar = fontSetting.find_first_not_of(L" \t\r\n\"'");
@@ -5401,6 +5401,11 @@ void LoadSettings() {
     if (mon == L"primary") next.targetMonitor = 0;
     else if (mon == L"follow") next.targetMonitor = -1;
     else next.targetMonitor = _wtoi(mon.c_str());
+
+    RECT work = GetAnchorWorkRect(next.targetMonitor);
+    const float dpi = GetMonitorDpiScale(MonitorFromRect(&work, MONITOR_DEFAULTTOPRIMARY));
+    next.sizeScale *= SmallScreenScale((work.right - work.left) / dpi, (work.bottom - work.top) / dpi);
+    if (next.autoDpiScale) next.sizeScale *= dpi;
 
     std::wstring shapeStr = GetStringSettingCopy(L"Appearance.ShapeStyle");
     static std::wstring s_lastConfiguredShape = L"";
@@ -5802,18 +5807,18 @@ BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC, LPRECT, LPARAM dwData) {
     return TRUE;
 }
 
-RECT GetAnchorWorkRect() {
+RECT GetAnchorWorkRect(int targetMonitor = g_settings.targetMonitor) {
     HMONITOR selectedMonitor = nullptr;
 
-    if (g_settings.targetMonitor == -1) {
+    if (targetMonitor == -1) {
         POINT pt = {0, 0};
         GetCursorPos(&pt);
         selectedMonitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-    } else if (g_settings.targetMonitor > 0) {
+    } else if (targetMonitor > 0) {
         MonitorEnumData data;
         EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, reinterpret_cast<LPARAM>(&data));
 
-        int index = g_settings.targetMonitor - 1;
+        int index = targetMonitor - 1;
         if (index >= 0 && index < static_cast<int>(data.monitors.size())) {
             selectedMonitor = data.monitors[index];
         }
@@ -8427,6 +8432,12 @@ void PushWaveformSample(float amplitude) {
 
 #include <winrt/Windows.Foundation.Collections.h>
 
+std::wstring WeatherTemperatureText(float value) {
+    wchar_t text[16]{};
+    swprintf_s(text, L"%.0f", value);
+    return wcscmp(text, L"-0") == 0 ? L"0" : text;
+}
+
 std::wstring ChinaWeatherCityCode(const std::wstring& city) {
     // A blank setting is resolved by the IP lookup, never a fixed city.
     if (city == L"沈阳" || city == L"Shenyang" || city == L"shenyang") return L"101070101";
@@ -8759,7 +8770,8 @@ inline TomorrowBrief ParseTomorrowWeather(const std::string& script, const SYSTE
             const std::wstring description = index >= 0 && index < 32 ? descriptions[index] : L"霾";
             if (fahrenheit) { low = low * 1.8f + 32; high = high * 1.8f + 32; }
             wchar_t range[64]{};
-            swprintf_s(range, L"%.0f°～%.0f°%s", low, high, fahrenheit ? L"F" : L"C");
+            swprintf_s(range, L"%s°～%s°%s", WeatherTemperatureText(low).c_str(),
+                WeatherTemperatureText(high).c_str(), fahrenheit ? L"F" : L"C");
             result.date = BriefDateKey(target);
             result.title = std::wstring(showTomorrow ? L"明天天气 · " : L"今天天气 · ") + (city.empty() ? std::wstring(L"自动定位") : city);
             result.body = description + L"  " + range;
@@ -14381,7 +14393,7 @@ class Renderer {
         if (metrics.hasWeather) {
             const bool hasData = state.weather.hasData && (now - state.weather.lastUpdated < 3600.0);
             wchar_t label[32] = {};
-            if (hasData) swprintf_s(label, L"%.0f\x00B0", state.weather.temperature);
+            if (hasData) swprintf_s(label, L"%s\x00B0", WeatherTemperatureText(state.weather.temperature).c_str());
             else wcscpy_s(label, ARRAYSIZE(label), L"--\x00B0");
             metrics.weatherWidth = 24.0f * settings.sizeScale +
                 MeasureTextWidthCached(WidestDigitForm(label), fmt, idleWeatherWidthCache_);
@@ -16083,14 +16095,15 @@ class Renderer {
 
     void DrawWeatherDashboard(const SharedState& state, D2D1_RECT_F rect, const Settings& settings, double now, float scale, bool hasWeather, const std::wstring& wIcon, const std::wstring& wText) {
         wchar_t wTemp[32] = {};
-        if (hasWeather) swprintf_s(wTemp, L"%.0f\x00B0", state.weather.temperature);
+        if (hasWeather) swprintf_s(wTemp, L"%s\x00B0", WeatherTemperatureText(state.weather.temperature).c_str());
         else wcscpy_s(wTemp, L"--\x00B0");
 
         std::wstring city = hasWeather ? state.weather.city : std::wstring(Loc(L"Locating..."));
         std::wstring desc = wText;
         if (hasWeather && state.weather.hasDailyRange) {
             wchar_t range[64]{};
-            swprintf_s(range, L"今日 %.0f°～%.0f°", state.weather.lowTemperature, state.weather.highTemperature);
+            swprintf_s(range, L"今日 %s°～%s°", WeatherTemperatureText(state.weather.lowTemperature).c_str(),
+                WeatherTemperatureText(state.weather.highTemperature).c_str());
             desc = std::wstring(range) + L"\n" + state.weather.weatherDesc;
         }
         if (hasWeather) city += L" · 中国天气网";
@@ -17205,7 +17218,7 @@ class Renderer {
                 slotX += (IdleStripLayout::kDividerWidth + IdleStripLayout::kSlotGap) * scale;
 
                 wchar_t weatherLabel[32] = {};
-                if (hasWeather) swprintf_s(weatherLabel, L"%.0f\x00B0", state.weather.temperature);
+                if (hasWeather) swprintf_s(weatherLabel, L"%s\x00B0", WeatherTemperatureText(state.weather.temperature).c_str());
                 else wcscpy_s(weatherLabel, ARRAYSIZE(weatherLabel), L"--\x00B0");
                 const float iconSlot = 24.0f * scale;
                 DrawWeatherIcon(D2D1::Point2F(slotX + 10.0f * scale, (rect.top + rect.bottom) * 0.5f),

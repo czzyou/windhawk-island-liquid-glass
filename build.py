@@ -13,6 +13,39 @@ def replace(old, new):
     assert src.count(old) == 1, (old[:90], src.count(old))
     src = src.replace(old, new, 1)
 
+small_screen_scale = '''float SmallScreenScale(float width, float height) {
+    // Keep small desktops compact without reducing controls below 75% of their base size.
+    return std::clamp((std::min)(width / 1440.0f, height / 900.0f), 0.75f, 1.0f);
+}
+
+'''
+replace('''float GetPrimaryMonitorDpiScale() {
+    POINT pt = {0, 0};
+    HMONITOR monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);''',
+        small_screen_scale + '''float GetMonitorDpiScale(HMONITOR monitor) {''')
+replace('// Returns the DPI scale factor for the primary monitor (1.0 = 96 DPI = 100%)',
+        '// Scale the island for the selected monitor and its usable desktop size.')
+replace('void LoadSettings() {', 'RECT GetAnchorWorkRect(int targetMonitor);\n\nvoid LoadSettings() {')
+replace('''    // Auto DPI scaling: multiply sizeScale by monitor DPI factor.
+    // On a 4K 200% display this doubles the island to the right physical size.
+    if (Wh_GetIntSetting(L"Appearance.AutoDpiScale") != 0) {
+        next.sizeScale *= GetPrimaryMonitorDpiScale();
+    }
+''', '')
+replace('''    else next.targetMonitor = _wtoi(mon.c_str());''', '''    else next.targetMonitor = _wtoi(mon.c_str());
+
+    RECT work = GetAnchorWorkRect(next.targetMonitor);
+    const float dpi = GetMonitorDpiScale(MonitorFromRect(&work, MONITOR_DEFAULTTOPRIMARY));
+    next.sizeScale *= SmallScreenScale((work.right - work.left) / dpi, (work.bottom - work.top) / dpi);
+    if (next.autoDpiScale) next.sizeScale *= dpi;''')
+anchor_start = src.index('RECT GetAnchorWorkRect() {')
+anchor_end = src.index('\n}', anchor_start) + 2
+anchor = src[anchor_start:anchor_end].replace('g_settings.targetMonitor', 'targetMonitor')
+anchor = anchor.replace('GetAnchorWorkRect()', 'GetAnchorWorkRect(int targetMonitor = g_settings.targetMonitor)')
+src = src[:anchor_start] + anchor + src[anchor_end:]
+replace('Makes the entire island and its contents larger or smaller.',
+        'Scales the entire island and its contents. Small desktops automatically reduce the base size by up to 25%.')
+
 replace('// @id              dynamic-island-for-windows', '// @id              dynamic-island-for-windows-yasb')
 replace('// @name            Dynamic Island for Windows', '// @name            Dynamic Island for Windows - YASB integration')
 replace('// @version         1.3.1', '// @version         1.3.1-local.60')
@@ -832,8 +865,14 @@ subprocess.run([str(root/'checks.exe')],check=True)
 print('57 anchor/hover and collapsed-dashboard assertions passed',flush=True)
 motion_test = '#include <algorithm>\n#include <atomic>\n#include <cmath>\n#include <cassert>\n' + dock_helpers[:dock_helpers.index('bool GetCaptionDockTarget')]
 motion_test += src[src.index('struct SpringValue {'):src.index('\nSettings g_settings;')]
-motion_test = '#include <string>\n' + motion_test + notification_route
+motion_test = '#include <string>\n' + motion_test + notification_route + small_screen_scale
 motion_test += '''int main() {
+ assert(SmallScreenScale(1920,1040)==1.0f);
+ assert(SmallScreenScale(3840/2.0f,2080/2.0f)==1.0f);
+ assert(std::abs(SmallScreenScale(1366,728)-728.0f/900)<0.0001f);
+ assert(std::abs(SmallScreenScale(1920/1.5f,1040/1.5f)-(1040/1.5f)/900)<0.0001f);
+ assert(SmallScreenScale(800,560)==0.75f);
+ assert(SmallScreenScale(1080,1920)==0.75f);
  assert(NotificationLaunchTarget(L"")==L"ms-actioncenter:");
  assert(NotificationLaunchTarget(L"Package_family!App")==L"shell:AppsFolder\\\\Package_family!App");
  assert(NotificationLaunchTarget(L"https://example.com")==L"ms-actioncenter:");
@@ -975,6 +1014,9 @@ weather_test = r'''#include <windows.h>
 weather_test += (root/'china-weather.h').read_text(encoding='utf-8')
 weather_test += r'''int main(int argc,char** argv) {
  winrt::init_apartment(); assert(argc==3);
+ for (float value : {-0.0f, -0.01f, -0.49f, 0.0f, 0.49f}) assert(WeatherTemperatureText(value)==L"0");
+ assert(WeatherTemperatureText(-0.51f)==L"-1" && WeatherTemperatureText(-1.6f)==L"-2");
+ assert(WeatherTemperatureText(0.51f)==L"1" && WeatherTemperatureText(32.0f)==L"32");
  std::ifstream a(argv[1]),b(argv[2]);
  std::string current((std::istreambuf_iterator<char>(a)),{}),forecast((std::istreambuf_iterator<char>(b)),{});
  SYSTEMTIME now{2026,10,5,16,12,0,0,0}; WeatherSnapshot result;

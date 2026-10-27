@@ -1,5 +1,11 @@
 #include <winrt/Windows.Foundation.Collections.h>
 
+std::wstring WeatherTemperatureText(float value) {
+    wchar_t text[16]{};
+    swprintf_s(text, L"%.0f", value);
+    return wcscmp(text, L"-0") == 0 ? L"0" : text;
+}
+
 std::wstring ChinaWeatherCityCode(const std::wstring& city) {
     // shortcut: name lookup covers Shenyang; use a 9-digit weather.com.cn code for other cities.
     if (city.empty() || city == L"沈阳" || city == L"Shenyang" || city == L"shenyang") return L"101070101";

@@ -22,10 +22,13 @@ def apply_weather(src):
         (root/'china-weather-thread.h').read_text(encoding='utf-8') + '\n' + src[end:]
     change('''    $description: Enter your city (e.g. London). Leave blank to use auto IP geolocation.''',
            '''    $description: '中国天气网城市：沈阳，或九位城市编号（沈阳 101070101）。其他城市请填写编号。' ''')
+    change('swprintf_s(wTemp, L"%.0f\\x00B0", state.weather.temperature);',
+           'swprintf_s(wTemp, L"%s\\x00B0", WeatherTemperatureText(state.weather.temperature).c_str());')
     change('''        std::wstring desc = wText;''', '''        std::wstring desc = wText;
         if (hasWeather && state.weather.hasDailyRange) {
             wchar_t range[64]{};
-            swprintf_s(range, L"今日 %.0f°～%.0f°", state.weather.lowTemperature, state.weather.highTemperature);
+            swprintf_s(range, L"今日 %s°～%s°", WeatherTemperatureText(state.weather.lowTemperature).c_str(),
+                WeatherTemperatureText(state.weather.highTemperature).c_str());
             desc = std::wstring(range) + L"\\n" + state.weather.weatherDesc;
         }
         if (hasWeather) city += L" · 中国天气网";''')
