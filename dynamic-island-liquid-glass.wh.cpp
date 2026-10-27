@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.5.3
+// @version         1.5.4
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -14171,10 +14171,7 @@ class Renderer {
         EnsureBrushes(settings, state, now);
         settingsOpacity_ = settings.pillOpacity;
 
-        const bool gameMetricsPresent = primary.kind == IslandKind::Idle &&
-            (settings.gameOverlay || Wh_GetIntValue(L"GameOverlayPinned", 0) != 0);
-        const float hoverScale = (settings.expandOnHover && ((hover && !gameMetricsPresent) || pinned)) ? 1.025f : 1.0f;
-        const float scale = settings.position == Position::TopCenter ? 1.0f : hoverScale;
+        const float scale = 1.0f;
 
         float top = (settings.notchStyle || settings.borderMergedMode) ? std::max(0.0f, nudge) : (kRenderPadY + nudge);
         float left = kRenderPadX;

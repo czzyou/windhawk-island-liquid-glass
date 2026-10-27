@@ -165,7 +165,10 @@ replace('''    y += ResolveOffsetY(static_cast<float>(height));
         }
     }
     SetWindowPos''')
-replace('''        const float scale = hoverScale;''', '''        const float scale = settings.position == Position::TopCenter ? 1.0f : hoverScale;''')
+replace('''        const bool gameMetricsPresent = primary.kind == IslandKind::Idle &&
+            (settings.gameOverlay || Wh_GetIntValue(L"GameOverlayPinned", 0) != 0);
+        const float hoverScale = (settings.expandOnHover && ((hover && !gameMetricsPresent) || pinned)) ? 1.025f : 1.0f;
+        const float scale = hoverScale;''', '''        const float scale = 1.0f;''')
 replace('''        const float top = (settings.notchStyle || settings.borderMergedMode) ? std::max(0.0f, nudge) : (kRenderPadY + nudge);
         const float left = kRenderPadX;''', '''        float top = (settings.notchStyle || settings.borderMergedMode) ? std::max(0.0f, nudge) : (kRenderPadY + nudge);
         float left = kRenderPadX;
