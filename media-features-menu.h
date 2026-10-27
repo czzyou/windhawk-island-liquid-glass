@@ -55,7 +55,6 @@ void AppendLyricsMenu(HMENU menu) {
     const auto settings=GetSettingsCopy();
     AppendMenuW(menu,MF_STRING|(settings.collapsedLyrics ? MF_CHECKED:0),2001,L"收起时显示歌词");
     AppendMenuW(menu,MF_STRING|(settings.lyricsPinnedFirst ? MF_CHECKED:0),2002,L"歌词页置顶");
-    AppendMenuW(menu,MF_STRING|(settings.mediaTabLyrics ? MF_CHECKED:0),2003,L"媒体页内显示歌词");
     AppendMenuW(menu,MF_STRING,2004,L"清除歌词缓存");
     HMENU sync=CreatePopupMenu();
     const bool bt=g_defaultOutputIsBluetooth.load();
@@ -76,10 +75,6 @@ bool HandleLyricsMenu(HWND hwnd,UINT cmd) {
         Wh_SetIntValue(L"CollapsedLyricsOverrideBase", Wh_GetIntSetting(L"Modules.CollapsedLyrics") != 0);
     }
     else if(cmd==2002) Wh_SetIntValue(L"LyricsPinnedFirst",!settings.lyricsPinnedFirst);
-    else if(cmd==2003) {
-        Wh_SetIntValue(L"MediaTabLyricsOverride",!settings.mediaTabLyrics);
-        Wh_SetIntValue(L"MediaTabLyricsOverrideBase",Wh_GetIntSetting(L"Modules.MediaTabLyrics")!=0);
-    }
     else if(cmd==2004) {g_lyricsCacheClearRequested=true; return true;}
     else if(cmd>=2010 && cmd<=2016) {
         const auto key=g_defaultOutputIsBluetooth.load() ? L"LyricsNudgeBtMs" : L"LyricsNudgeMs";

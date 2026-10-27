@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.5.1
+// @version         1.5.2
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -23,7 +23,7 @@
   暂不开启后不再弹窗；右键灵动岛 → NBA 主队设置，可随时重新选择。
   比分来自 ESPN，无直播时回到普通时钟。
 - 媒体来源：展开媒体页点击底部来源按钮临时切换；右键可锁定来源或自动跟随。
-- 歌词：展开后滚轮进入歌词页；右键可启用收起歌词、媒体页内歌词和歌词置顶。支持网易云、QQ、酷狗和 LRCLIB，中文歌优先国内来源；查询会向使用的来源发送歌名、歌手和时长，LRCLIB 还会收到专辑信息。默认本地缓存上限 25 MB，右键可清缓存、微调蓝牙和有线同步。
+- 歌词：展开后滚轮进入歌词页；右键可启用收起歌词和歌词置顶，媒体页内歌词可在模组设置中调整。支持网易云、QQ、酷狗和 LRCLIB，中文歌优先国内来源；查询会向使用的来源发送歌名、歌手和时长，LRCLIB 还会收到专辑信息。默认本地缓存上限 25 MB，右键可清缓存、微调蓝牙和有线同步。
 - 快捷查词：Alt+Space 打开输入框，提交后查询词典或百科，保留英文释义并通过 MyMemory 补充标注机译的中文译义；Esc 关闭。剪贴板仅作候选，最近查询仅存内存。快捷键可在设置中修改。
 - 重要日子：右键添加自己的生日、考试等日程；新安装没有预置个人日程。
 - 吃饭提醒：按本机时间提醒午饭和晚饭，可在设置中修改时间。
@@ -8721,14 +8721,18 @@ inline bool BriefPending(const TomorrowBrief& brief, int tomorrow, double now,
         now >= brief.fetchedAt && now - brief.fetchedAt < 3600;
 }
 
+inline bool BriefWeatherTomorrow(const SYSTEMTIME& local) { return local.wHour >= 18; }
+
 inline TomorrowBrief ParseTomorrowWeather(const std::string& script, const SYSTEMTIME& today,
                                          const std::wstring& city, bool fahrenheit) {
     using namespace winrt::Windows::Data::Json;
     TomorrowBrief result;
     const auto tomorrow = BriefTomorrow(today);
+    const bool showTomorrow = BriefWeatherTomorrow(today);
+    const auto target = showTomorrow ? tomorrow : today;
     wchar_t currentDate[8]{}, nextDate[8]{};
     swprintf_s(currentDate, L"%02u/%02u", today.wMonth, today.wDay);
-    swprintf_s(nextDate, L"%02u/%02u", tomorrow.wMonth, tomorrow.wDay);
+    swprintf_s(nextDate, L"%02u/%02u", target.wMonth, target.wDay);
     try {
         const auto object = JsonObject::Parse(winrt::to_hstring(ChinaWeatherObject(script, "fc")));
         const auto days = object.GetNamedArray(L"f");
@@ -8756,13 +8760,13 @@ inline TomorrowBrief ParseTomorrowWeather(const std::string& script, const SYSTE
             if (fahrenheit) { low = low * 1.8f + 32; high = high * 1.8f + 32; }
             wchar_t range[64]{};
             swprintf_s(range, L"%.0f°～%.0f°%s", low, high, fahrenheit ? L"F" : L"C");
-            result.date = BriefDateKey(tomorrow);
-            result.title = L"明天天气 · " + (city.empty() ? std::wstring(L"自动定位") : city);
+            result.date = BriefDateKey(target);
+            result.title = std::wstring(showTomorrow ? L"明天天气 · " : L"今天天气 · ") + (city.empty() ? std::wstring(L"自动定位") : city);
             result.body = description + L"  " + range;
             result.detail = std::wstring(item.GetNamedString(L"fe", L"")) + L" " +
                 std::wstring(item.GetNamedString(L"fg", L""));
             if (result.detail.size() > 80) return {};
-            result.key = std::to_wstring(result.date) + L":" + city;
+            result.key = (showTomorrow ? L"" : L"today:") + std::to_wstring(result.date) + L":" + city;
             return result;
         }
     } catch (const winrt::hresult_error&) {}
@@ -13556,7 +13560,6 @@ void AppendLyricsMenu(HMENU menu) {
     const auto settings=GetSettingsCopy();
     AppendMenuW(menu,MF_STRING|(settings.collapsedLyrics ? MF_CHECKED:0),2001,L"收起时显示歌词");
     AppendMenuW(menu,MF_STRING|(settings.lyricsPinnedFirst ? MF_CHECKED:0),2002,L"歌词页置顶");
-    AppendMenuW(menu,MF_STRING|(settings.mediaTabLyrics ? MF_CHECKED:0),2003,L"媒体页内显示歌词");
     AppendMenuW(menu,MF_STRING,2004,L"清除歌词缓存");
     HMENU sync=CreatePopupMenu();
     const bool bt=g_defaultOutputIsBluetooth.load();
@@ -13577,10 +13580,6 @@ bool HandleLyricsMenu(HWND hwnd,UINT cmd) {
         Wh_SetIntValue(L"CollapsedLyricsOverrideBase", Wh_GetIntSetting(L"Modules.CollapsedLyrics") != 0);
     }
     else if(cmd==2002) Wh_SetIntValue(L"LyricsPinnedFirst",!settings.lyricsPinnedFirst);
-    else if(cmd==2003) {
-        Wh_SetIntValue(L"MediaTabLyricsOverride",!settings.mediaTabLyrics);
-        Wh_SetIntValue(L"MediaTabLyricsOverrideBase",Wh_GetIntSetting(L"Modules.MediaTabLyrics")!=0);
-    }
     else if(cmd==2004) {g_lyricsCacheClearRequested=true; return true;}
     else if(cmd>=2010 && cmd<=2016) {
         const auto key=g_defaultOutputIsBluetooth.load() ? L"LyricsNudgeBtMs" : L"LyricsNudgeMs";
@@ -22930,18 +22929,22 @@ DWORD WINAPI TomorrowBriefThreadProc(void*) {
     Wh_SetIntValue(L"CalendarDaysThread",1);
     TomorrowBrief weather, nba, showing;
     double nextFetch = NowSeconds() + 20, nextShow = nextFetch;
-    int targetDate = 0, visibleSeconds = 0;
+    int targetDate = 0, weatherDate = 0, visibleSeconds = 0;
     Wh_SetIntValue(L"TomorrowBriefActive", 0);
     while (WaitForSingleObject(g_stopEvent, 1000) == WAIT_TIMEOUT) {
         SYSTEMTIME today{}; GetLocalTime(&today);
         const auto tomorrow = BriefTomorrow(today);
         const int target = BriefDateKey(tomorrow);
+        const bool weatherTomorrow = BriefWeatherTomorrow(today);
+        const int weatherTarget = BriefDateKey(weatherTomorrow ? tomorrow : today);
         auto settings = GetSettingsCopy();
         double now = NowSeconds();
         if (targetDate && target != targetDate) {weather = {}; nba = {}; nextFetch = now;}
         targetDate = target;
+        if (weatherDate && weatherTarget != weatherDate) {weather = {}; nextFetch = now;}
+        weatherDate = weatherTarget;
         const auto weatherCity = ResolvedWeatherCity(settings.weatherCity);
-        const auto weatherKey = std::to_wstring(target) + L":" + weatherCity;
+        const auto weatherKey = (weatherTomorrow ? L"" : L"today:") + std::to_wstring(weatherTarget) + L":" + weatherCity;
         const auto nbaKey = std::to_wstring(target) + L":" + settings.nbaTeam;
         if (!settings.weather || (!weather.key.empty() && weather.key != weatherKey)) weather = {};
         if (!settings.nbaScores || (!nba.key.empty() && nba.key != nbaKey)) nba = {};
@@ -22990,7 +22993,7 @@ DWORD WINAPI TomorrowBriefThreadProc(void*) {
                         today, weatherCity, settings.weatherFahrenheit);
                     std::wstring cityName;
                     { std::lock_guard lock(g_stateMutex); cityName = g_state.weather.city; }
-                    weather.title = L"明天天气 · " + (cityName.empty() ? weatherCity : cityName);
+                    weather.title = std::wstring(weatherTomorrow ? L"明天天气 · " : L"今天天气 · ") + (cityName.empty() ? weatherCity : cityName);
                     weather.fetchedAt = NowSeconds();
                 }
             }
@@ -23017,7 +23020,7 @@ DWORD WINAPI TomorrowBriefThreadProc(void*) {
             }
             now = NowSeconds();
             nextFetch = now + 1800;
-            Wh_SetIntValue(L"TomorrowWeatherReady", weather.date == target);
+            Wh_SetIntValue(L"TomorrowWeatherReady", weather.date == weatherTarget);
             Wh_SetIntValue(L"TomorrowNbaReady", nba.date == target);
             Wh_SetStringValue(L"TomorrowWeatherText", weather.body.c_str());
             Wh_SetStringValue(L"TomorrowNbaText", nba.body.c_str());
@@ -23035,7 +23038,8 @@ DWORD WINAPI TomorrowBriefThreadProc(void*) {
                 const bool enabled = showing.meal || showing.important || (showing.weatherCode ? settings.weather : settings.nbaScores);
                 const bool dateValid = showing.important
                     ? showing.date==BriefDateKey(today) && std::any_of(days.begin(),days.end(),[&](const auto& day){return day.id==showing.key;})
-                    : showing.meal ? Wh_GetIntSetting(L"Modules.MealReminders") && meal.key == showing.key && showing.date == BriefDateKey(today) : showing.date == target;
+                    : showing.meal ? Wh_GetIntSetting(L"Modules.MealReminders") && meal.key == showing.key && showing.date == BriefDateKey(today)
+                    : showing.date == (showing.weatherCode ? weatherTarget : target);
                 if (visibleSeconds >= 10 || !enabled || !dateValid ||
                     now - showing.fetchedAt >= 3600) {
                     if (visibleSeconds >= 10) {
@@ -23053,7 +23057,7 @@ DWORD WINAPI TomorrowBriefThreadProc(void*) {
                     (first == IslandKind::Timer && !g_state.timer.justFinished)) {
                     if (!meal.key.empty()) showing = meal;
                     else if (!important.key.empty()) showing = important;
-                    else if (BriefPending(weather, target, now, weatherShown)) showing = weather;
+                    else if (BriefPending(weather, weatherTarget, now, weatherShown)) showing = weather;
                     else if (BriefPending(nba, target, now, nbaShown)) showing = nba;
                     if (!showing.key.empty()) {
                         showing.active = true; visibleSeconds = 0;

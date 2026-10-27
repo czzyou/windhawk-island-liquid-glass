@@ -39,17 +39,21 @@ DWORD WINAPI TomorrowBriefThreadProc(void*) {
     Wh_SetIntValue(L"CalendarDaysThread",1);
     TomorrowBrief weather, nba, showing;
     double nextFetch = NowSeconds() + 20, nextShow = nextFetch;
-    int targetDate = 0, visibleSeconds = 0;
+    int targetDate = 0, weatherDate = 0, visibleSeconds = 0;
     Wh_SetIntValue(L"TomorrowBriefActive", 0);
     while (WaitForSingleObject(g_stopEvent, 1000) == WAIT_TIMEOUT) {
         SYSTEMTIME today{}; GetLocalTime(&today);
         const auto tomorrow = BriefTomorrow(today);
         const int target = BriefDateKey(tomorrow);
+        const bool weatherTomorrow = BriefWeatherTomorrow(today);
+        const int weatherTarget = BriefDateKey(weatherTomorrow ? tomorrow : today);
         auto settings = GetSettingsCopy();
         double now = NowSeconds();
         if (targetDate && target != targetDate) {weather = {}; nba = {}; nextFetch = now;}
         targetDate = target;
-        const auto weatherKey = std::to_wstring(target) + L":" + settings.weatherCity;
+        if (weatherDate && weatherTarget != weatherDate) {weather = {}; nextFetch = now;}
+        weatherDate = weatherTarget;
+        const auto weatherKey = (weatherTomorrow ? L"" : L"today:") + std::to_wstring(weatherTarget) + L":" + settings.weatherCity;
         const auto nbaKey = std::to_wstring(target) + L":" + settings.nbaTeam;
         if (!settings.weather || (!weather.key.empty() && weather.key != weatherKey)) weather = {};
         if (!settings.nbaScores || (!nba.key.empty() && nba.key != nbaKey)) nba = {};
@@ -105,7 +109,7 @@ DWORD WINAPI TomorrowBriefThreadProc(void*) {
             }
             now = NowSeconds();
             nextFetch = now + 1800;
-            Wh_SetIntValue(L"TomorrowWeatherReady", weather.date == target);
+            Wh_SetIntValue(L"TomorrowWeatherReady", weather.date == weatherTarget);
             Wh_SetIntValue(L"TomorrowNbaReady", nba.date == target);
             Wh_SetStringValue(L"TomorrowWeatherText", weather.body.c_str());
             Wh_SetStringValue(L"TomorrowNbaText", nba.body.c_str());
@@ -123,7 +127,8 @@ DWORD WINAPI TomorrowBriefThreadProc(void*) {
                 const bool enabled = showing.meal || showing.important || (showing.weatherCode ? settings.weather : settings.nbaScores);
                 const bool dateValid = showing.important
                     ? showing.date==BriefDateKey(today) && std::any_of(days.begin(),days.end(),[&](const auto& day){return day.id==showing.key;})
-                    : showing.meal ? showing.date == BriefDateKey(today) && MealReminderSlot(today) == showing.meal : showing.date == target;
+                    : showing.meal ? showing.date == BriefDateKey(today) && MealReminderSlot(today) == showing.meal
+                    : showing.date == (showing.weatherCode ? weatherTarget : target);
                 if (visibleSeconds >= 10 || !enabled || !dateValid ||
                     now - showing.fetchedAt >= 3600) {
                     if (visibleSeconds >= 10) {
@@ -141,7 +146,7 @@ DWORD WINAPI TomorrowBriefThreadProc(void*) {
                     (first == IslandKind::Timer && !g_state.timer.justFinished)) {
                     if (!meal.key.empty()) showing = meal;
                     else if (!important.key.empty()) showing = important;
-                    else if (BriefPending(weather, target, now, weatherShown)) showing = weather;
+                    else if (BriefPending(weather, weatherTarget, now, weatherShown)) showing = weather;
                     else if (BriefPending(nba, target, now, nbaShown)) showing = nba;
                     if (!showing.key.empty()) {
                         showing.active = true; visibleSeconds = 0;

@@ -6,6 +6,7 @@
 int main() {
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     SYSTEMTIME today{2026,10,0,20};
+    today.wHour=18;
     auto lunch=today; lunch.wHour=10; lunch.wMinute=49;
     assert(MakeMealReminder(lunch,0,0).key.empty());
     lunch.wMinute=50;
@@ -68,10 +69,23 @@ int main() {
     assert(BriefDateKey(BriefTomorrow(december)) == 20270101);
     assert(BriefDateKey(BriefTomorrow(leap)) == 20280229);
     const std::string fixture = R"(var fc={"f":[
-        {"fi":"10/20"},
+        {"fi":"10/20","fa":"01","fc":"17","fd":"5","fe":"东风","fg":"3级"},
         {"fi":"10/21","fa":"00","fc":"11","fd":"-2","fe":"西北风","fg":"4-5级"}]};)";
+    auto daytime = today; daytime.wHour = 17; daytime.wMinute = 59;
+    auto current = ParseTomorrowWeather(fixture,daytime,L"沈阳",false);
+    assert(current.date == 20261020 && current.title.find(L"今天天气") == 0);
+    assert(current.body.find(L"5°～17°C") != std::wstring::npos);
+    assert(!BriefWeatherTomorrow(daytime) && BriefWeatherTomorrow(today));
+    auto nextMorning = BriefTomorrow(today); nextMorning.wHour = 8;
+    auto nextCurrent = ParseTomorrowWeather(fixture,nextMorning,L"沈阳",false);
+    assert(!nextCurrent.key.empty());
     auto weather = ParseTomorrowWeather(fixture,today,L"沈阳",false);
-    assert(weather.date == 20261021 && weather.weatherCode == 113);
+    assert(weather.date == 20261021 && weather.weatherCode == 113 && weather.title.find(L"明天天气") == 0);
+    auto nextDayFixture = fixture;
+    nextDayFixture.replace(nextDayFixture.find("10/20"), 5, "10/21");
+    nextDayFixture.replace(nextDayFixture.rfind("10/21"), 5, "10/22");
+    nextCurrent = ParseTomorrowWeather(nextDayFixture,nextMorning,L"沈阳",false);
+    assert(!nextCurrent.key.empty() && nextCurrent.key != weather.key);
     assert(weather.body.find(L"-2°～11°C") != std::wstring::npos);
     weather.fetchedAt = 100;
     assert(BriefPending(weather,20261021,101,L""));

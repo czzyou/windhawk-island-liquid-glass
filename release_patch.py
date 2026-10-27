@@ -30,7 +30,7 @@ def apply_release(src, version, author):
   暂不开启后不再弹窗；右键灵动岛 → NBA 主队设置，可随时重新选择。
   比分来自 ESPN，无直播时回到普通时钟。
 - 媒体来源：展开媒体页点击底部来源按钮临时切换；右键可锁定来源或自动跟随。
-- 歌词：展开后滚轮进入歌词页；右键可启用收起歌词、媒体页内歌词和歌词置顶。支持网易云、QQ、酷狗和 LRCLIB，中文歌优先国内来源；查询会向使用的来源发送歌名、歌手和时长，LRCLIB 还会收到专辑信息。默认本地缓存上限 25 MB，右键可清缓存、微调蓝牙和有线同步。
+- 歌词：展开后滚轮进入歌词页；右键可启用收起歌词和歌词置顶，媒体页内歌词可在模组设置中调整。支持网易云、QQ、酷狗和 LRCLIB，中文歌优先国内来源；查询会向使用的来源发送歌名、歌手和时长，LRCLIB 还会收到专辑信息。默认本地缓存上限 25 MB，右键可清缓存、微调蓝牙和有线同步。
 - 快捷查词：Alt+Space 打开输入框，提交后查询词典或百科，保留英文释义并通过 MyMemory 补充标注机译的中文译义；Esc 关闭。剪贴板仅作候选，最近查询仅存内存。快捷键可在设置中修改。
 - 重要日子：右键添加自己的生日、考试等日程；新安装没有预置个人日程。
 - 吃饭提醒：按本机时间提醒午饭和晚饭，可在设置中修改时间。
@@ -84,13 +84,13 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
             nextIPLookup = NowSeconds() + (detected.empty() ? 300 : 21600);
         }
         const auto code = ResolvedWeatherCity(settings.weatherCity);''')
-    change('        const auto weatherKey = std::to_wstring(target) + L":" + settings.weatherCity;',
-           '        const auto weatherCity = ResolvedWeatherCity(settings.weatherCity);\n        const auto weatherKey = std::to_wstring(target) + L":" + weatherCity;')
+    change('        const auto weatherKey = (weatherTomorrow ? L"" : L"today:") + std::to_wstring(weatherTarget) + L":" + settings.weatherCity;',
+           '        const auto weatherCity = ResolvedWeatherCity(settings.weatherCity);\n        const auto weatherKey = (weatherTomorrow ? L"" : L"today:") + std::to_wstring(weatherTarget) + L":" + weatherCity;')
     change('                const auto city = ChinaWeatherCityCode(settings.weatherCity);', '                const auto city = weatherCity;')
     change('                        today, settings.weatherCity, settings.weatherFahrenheit);', '''                        today, weatherCity, settings.weatherFahrenheit);
                     std::wstring cityName;
                     { std::lock_guard lock(g_stateMutex); cityName = g_state.weather.city; }
-                    weather.title = L"明天天气 · " + (cityName.empty() ? weatherCity : cityName);''')
+                    weather.title = std::wstring(weatherTomorrow ? L"明天天气 · " : L"今天天气 · ") + (cityName.empty() ? weatherCity : cityName);''')
     change('(city.empty() ? std::wstring(L"沈阳") : city)', '(city.empty() ? std::wstring(L"自动定位") : city)')
 
     change('inline std::wstring NormalizeNbaTeams(std::wstring value) {', (root/'nba-teams.h').read_text(encoding='utf-8') + '\ninline std::wstring NormalizeNbaTeams(std::wstring value) {')

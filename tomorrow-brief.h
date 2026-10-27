@@ -55,14 +55,18 @@ inline bool BriefPending(const TomorrowBrief& brief, int tomorrow, double now,
         now >= brief.fetchedAt && now - brief.fetchedAt < 3600;
 }
 
+inline bool BriefWeatherTomorrow(const SYSTEMTIME& local) { return local.wHour >= 18; }
+
 inline TomorrowBrief ParseTomorrowWeather(const std::string& script, const SYSTEMTIME& today,
                                          const std::wstring& city, bool fahrenheit) {
     using namespace winrt::Windows::Data::Json;
     TomorrowBrief result;
     const auto tomorrow = BriefTomorrow(today);
+    const bool showTomorrow = BriefWeatherTomorrow(today);
+    const auto target = showTomorrow ? tomorrow : today;
     wchar_t currentDate[8]{}, nextDate[8]{};
     swprintf_s(currentDate, L"%02u/%02u", today.wMonth, today.wDay);
-    swprintf_s(nextDate, L"%02u/%02u", tomorrow.wMonth, tomorrow.wDay);
+    swprintf_s(nextDate, L"%02u/%02u", target.wMonth, target.wDay);
     try {
         const auto object = JsonObject::Parse(winrt::to_hstring(ChinaWeatherObject(script, "fc")));
         const auto days = object.GetNamedArray(L"f");
@@ -90,13 +94,13 @@ inline TomorrowBrief ParseTomorrowWeather(const std::string& script, const SYSTE
             if (fahrenheit) { low = low * 1.8f + 32; high = high * 1.8f + 32; }
             wchar_t range[64]{};
             swprintf_s(range, L"%.0f°～%.0f°%s", low, high, fahrenheit ? L"F" : L"C");
-            result.date = BriefDateKey(tomorrow);
-            result.title = L"明天天气 · " + (city.empty() ? std::wstring(L"沈阳") : city);
+            result.date = BriefDateKey(target);
+            result.title = std::wstring(showTomorrow ? L"明天天气 · " : L"今天天气 · ") + (city.empty() ? std::wstring(L"沈阳") : city);
             result.body = description + L"  " + range;
             result.detail = std::wstring(item.GetNamedString(L"fe", L"")) + L" " +
                 std::wstring(item.GetNamedString(L"fg", L""));
             if (result.detail.size() > 80) return {};
-            result.key = std::to_wstring(result.date) + L":" + city;
+            result.key = (showTomorrow ? L"" : L"today:") + std::to_wstring(result.date) + L":" + city;
             return result;
         }
     } catch (const winrt::hresult_error&) {}
