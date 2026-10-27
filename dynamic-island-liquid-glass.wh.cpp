@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.5.2
+// @version         1.5.3
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -20905,7 +20905,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (g_settings.fileTrayModule && NormalizedTabIndex(g_settings) == FileTrayTabIndex(g_settings)) {
                     {
                         std::lock_guard lock(g_stateMutex);
-                        const auto point = MediaContentFromClient(xPos, yPos);
+                        const auto point = MediaContentFromClient(xPos, yPos, true);
                         const int row = FileTrayRowAtContentPoint(point,
                             static_cast<int>(g_state.fileTrayItems.size()));
                         if (row >= 0) {
@@ -21107,7 +21107,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     std::lock_guard lock(g_stateMutex);
                     trayCount = g_state.fileTrayItems.size();
                 }
-                hoveredRow = FileTrayRowAtContentPoint(MediaContentFromClient(xPos, yPos),
+                hoveredRow = FileTrayRowAtContentPoint(MediaContentFromClient(xPos, yPos, true),
                                                        static_cast<int>(trayCount));
             }
             if (g_hoveredFileTrayRow.exchange(hoveredRow) != hoveredRow) {
@@ -21150,7 +21150,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 ReleaseCapture();
                 s_touchStartTime = 0;
                 if (fileTrayRemovePressed) {
-                    const auto point = MediaContentFromClient(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+                    const auto point = MediaContentFromClient(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), true);
                     bool remove = false;
                     {
                         std::lock_guard lock(g_stateMutex);

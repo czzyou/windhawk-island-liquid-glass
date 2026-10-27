@@ -32,7 +32,7 @@ def apply_file_tray(src):
                 if (g_settings.fileTrayModule && NormalizedTabIndex(g_settings) == FileTrayTabIndex(g_settings)) {
                     {
                         std::lock_guard lock(g_stateMutex);
-                        const auto point = MediaContentFromClient(xPos, yPos);
+                        const auto point = MediaContentFromClient(xPos, yPos, true);
                         const int row = FileTrayRowAtContentPoint(point,
                             static_cast<int>(g_state.fileTrayItems.size()));
                         if (row >= 0) {
@@ -70,7 +70,7 @@ def apply_file_tray(src):
                 ReleaseCapture();
                 s_touchStartTime = 0;
                 if (fileTrayRemovePressed) {
-                    const auto point = MediaContentFromClient(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+                    const auto point = MediaContentFromClient(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), true);
                     bool remove = false;
                     {
                         std::lock_guard lock(g_stateMutex);
@@ -97,6 +97,8 @@ def apply_file_tray(src):
             }''')
     change('        case WM_CAPTURECHANGED:', '''        case WM_CAPTURECHANGED:
             fileTrayPressed.clear();''')
+    change('hoveredRow = FileTrayRowAtContentPoint(MediaContentFromClient(xPos, yPos),',
+           'hoveredRow = FileTrayRowAtContentPoint(MediaContentFromClient(xPos, yPos, true),')
     change('const wchar_t* title = Loc(L"File Tray");',
            'const wchar_t* title = L"文件托盘 · × 后7天删原文件";')
     change('            const float sizeW = 66.0f * scale;', '''            const float removeW = kFileTrayRemoveWidth * scale;
