@@ -1230,11 +1230,21 @@ subprocess.run([str(root/'timer-ui-checks.exe')],check=True)
 print('Timer panel checks passed: centered two-button geometry, hit rejection and companion target',flush=True)
 glass_test = '#include <windows.h>\n#include <d2d1.h>\n#include <d3dcompiler.h>\n#include <algorithm>\n#include <cstdio>\n#include <array>\n#include <cassert>\n'
 glass_test += (root/'liquid-glass-rim.h').read_text(encoding='utf-8')
+glass_contrast = (root/'native-island-glass.h').read_text(encoding='utf-8')
+glass_test += glass_contrast[glass_contrast.index('bool GlassNeedsDarkText('):glass_contrast.index('class NativeIslandGlass')]
 glass_renderer = (root/'native-glass/src/renderer.cc').read_text(encoding='utf-8')
 glass_test += glass_renderer[glass_renderer.index('const char kShaderSource[]'):glass_renderer.index('\nstruct ShaderParams {')]
 glass_profile = glass_renderer[glass_renderer.index('    float u = saturate('):glass_renderer.index('    disp = nrm')]
 glass_test += 'float saturate(float x) { return std::clamp(x, 0.0f, 1.0f); }\nfloat GlassRimProfile(float t) { float bump = 0;\n' + glass_profile + '\nreturn bump; }\n'
 glass_test += '''int main() {
+ assert(GlassNeedsDarkText(255,255,255,false));
+ assert(!GlassNeedsDarkText(0,0,0,true));
+ assert(!GlassNeedsDarkText(155,155,155,false));
+ assert(GlassNeedsDarkText(155,155,155,true));
+ assert(GlassNeedsDarkText(170,170,170,false));
+ assert(!GlassNeedsDarkText(139,139,139,true));
+ assert(GlassNeedsDarkText(240,235,220,false));
+ assert(!GlassNeedsDarkText(40,50,60,false));
  for(const char* entry : {"VSMain", "PSBlur", "PSLens"}) {
    ID3DBlob *code=nullptr, *errors=nullptr;
    const HRESULT hr=D3DCompile(kShaderSource, sizeof(kShaderSource)-1, nullptr, nullptr, nullptr,

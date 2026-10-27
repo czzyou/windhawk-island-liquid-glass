@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.5.6
+// @version         1.5.7
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -2318,9 +2318,17 @@ void GlassSession::SampleLuma(int panelId, PanelEntry& entry) {
 #include <cmath>
 #include <memory>
 
+bool GlassNeedsDarkText(float r, float g, float b, bool wasDark) {
+    const float luma = (54 * r + 183 * g + 19 * b) / 256.0f;
+    // Separate thresholds keep small backdrop changes from flickering the text.
+    return luma >= (wasDark ? 140.0f : 170.0f);
+}
+
 class NativeIslandGlass {
     struct State {
         std::atomic<bool> dirty{false}, failed{false};
+        std::atomic<bool> darkText{false};
+        std::atomic<int> primaryPanel{0};
         std::array<std::atomic<bool>, 2> ready{};
     };
     struct Slot {
@@ -2353,6 +2361,13 @@ public:
             return;
         }
         active_ = true;
+        auto state = state_;
+        GlassSession::Instance().SetLumaCallback([state](int id, std::vector<LumaBandStats> bands) {
+            if (id != state->primaryPanel.load() || bands.empty()) return;
+            const auto& sample = bands.front();
+            const bool dark = GlassNeedsDarkText(sample.r, sample.g, sample.b, state->darkText.load());
+            if (state->darkText.exchange(dark) != dark) state->dirty = true;
+        });
     }
 
     void Sync(float left, float top, float right, float bottom, float radius, float dpr, float opacity) {
@@ -2386,9 +2401,13 @@ public:
                 state->dirty = true;
             };
             slot.id = session.CreatePanel(config);
+            if (index == 0) state_->primaryPanel = slot.id;
         } else {
             if (!EqualRect(&bounds, &slot.bounds)) session.SetPanelBounds(slot.id, bounds);
             if (slot.radius != radius || slot.opacity != opacity) session.SetPanelParams(slot.id, params);
+        }
+        if (index == 0 && !EqualRect(&bounds, &slot.bounds)) {
+            session.SetLumaBands(slot.id, {{0, {0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top}}});
         }
         slot.bounds = bounds; slot.radius = radius; slot.opacity = opacity;
         if (!slot.shown) { session.ShowPanel(slot.id, 0); slot.shown = true; }
@@ -2410,6 +2429,7 @@ public:
         }
     }
     bool Ready() const { return active_ && state_->ready[0].load() && !state_->failed.load(); }
+    bool DarkText() const { return Ready() && state_->darkText.load(); }
     bool Changed() { return state_->dirty.exchange(false); }
     void Stop() {
         if (!active_) return;
@@ -2420,6 +2440,8 @@ public:
         }
         if (IsWindow(host_)) ExcludeGlassFromDesktopDuplication(host_, false);
         active_ = false;
+        state_->primaryPanel = 0;
+        state_->darkText = false;
         for (auto& ready : state_->ready) ready = false;
         state_->dirty = true;
     }
@@ -14143,15 +14165,16 @@ class Renderer {
     bool NativeGlassChanged() {
         if (!nativeGlass_.Changed()) return false;
         Wh_SetIntValue(L"NativeGlassReady", nativeGlass_.Ready());
-        Wh_SetIntValue(L"NativeGlassDarkText", 0);
+        Wh_SetIntValue(L"NativeGlassDarkText", nativeGlass_.DarkText());
         return true;
     }
     void ApplyGlassTheme(Settings& settings) const {
         if (!UsesNativeGlass(settings) || !nativeGlass_.Ready()) return;
         const float alpha = settings.pillBgColor.a;
-        settings.pillBgColor = D2D1::ColorF(0x101014, alpha);
-        settings.textPrimaryColor = D2D1::ColorF(0xF2F2F7);
-        settings.textSecondaryColor = D2D1::ColorF(0xD1D1D6);
+        const bool darkText = nativeGlass_.DarkText();
+        settings.pillBgColor = D2D1::ColorF(darkText ? 0xF5F6F8 : 0x101014, alpha);
+        settings.textPrimaryColor = D2D1::ColorF(darkText ? 0x202126 : 0xF2F2F7);
+        settings.textSecondaryColor = D2D1::ColorF(darkText ? 0x454952 : 0xD1D1D6);
         settings.tintOpacity = 0;
     }
 

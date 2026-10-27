@@ -5,9 +5,17 @@
 #include <memory>
 #include "native-glass/src/session.h"
 
+bool GlassNeedsDarkText(float r, float g, float b, bool wasDark) {
+    const float luma = (54 * r + 183 * g + 19 * b) / 256.0f;
+    // Separate thresholds keep small backdrop changes from flickering the text.
+    return luma >= (wasDark ? 140.0f : 170.0f);
+}
+
 class NativeIslandGlass {
     struct State {
         std::atomic<bool> dirty{false}, failed{false};
+        std::atomic<bool> darkText{false};
+        std::atomic<int> primaryPanel{0};
         std::array<std::atomic<bool>, 2> ready{};
     };
     struct Slot {
@@ -40,6 +48,13 @@ public:
             return;
         }
         active_ = true;
+        auto state = state_;
+        GlassSession::Instance().SetLumaCallback([state](int id, std::vector<LumaBandStats> bands) {
+            if (id != state->primaryPanel.load() || bands.empty()) return;
+            const auto& sample = bands.front();
+            const bool dark = GlassNeedsDarkText(sample.r, sample.g, sample.b, state->darkText.load());
+            if (state->darkText.exchange(dark) != dark) state->dirty = true;
+        });
     }
 
     void Sync(float left, float top, float right, float bottom, float radius, float dpr, float opacity) {
@@ -73,9 +88,13 @@ public:
                 state->dirty = true;
             };
             slot.id = session.CreatePanel(config);
+            if (index == 0) state_->primaryPanel = slot.id;
         } else {
             if (!EqualRect(&bounds, &slot.bounds)) session.SetPanelBounds(slot.id, bounds);
             if (slot.radius != radius || slot.opacity != opacity) session.SetPanelParams(slot.id, params);
+        }
+        if (index == 0 && !EqualRect(&bounds, &slot.bounds)) {
+            session.SetLumaBands(slot.id, {{0, {0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top}}});
         }
         slot.bounds = bounds; slot.radius = radius; slot.opacity = opacity;
         if (!slot.shown) { session.ShowPanel(slot.id, 0); slot.shown = true; }
@@ -97,6 +116,7 @@ public:
         }
     }
     bool Ready() const { return active_ && state_->ready[0].load() && !state_->failed.load(); }
+    bool DarkText() const { return Ready() && state_->darkText.load(); }
     bool Changed() { return state_->dirty.exchange(false); }
     void Stop() {
         if (!active_) return;
@@ -107,6 +127,8 @@ public:
         }
         if (IsWindow(host_)) ExcludeGlassFromDesktopDuplication(host_, false);
         active_ = false;
+        state_->primaryPanel = 0;
+        state_->darkText = false;
         for (auto& ready : state_->ready) ready = false;
         state_->dirty = true;
     }

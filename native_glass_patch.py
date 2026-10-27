@@ -41,15 +41,16 @@ def apply_native_glass(src):
     bool NativeGlassChanged() {
         if (!nativeGlass_.Changed()) return false;
         Wh_SetIntValue(L"NativeGlassReady", nativeGlass_.Ready());
-        Wh_SetIntValue(L"NativeGlassDarkText", 0);
+        Wh_SetIntValue(L"NativeGlassDarkText", nativeGlass_.DarkText());
         return true;
     }
     void ApplyGlassTheme(Settings& settings) const {
         if (!UsesNativeGlass(settings) || !nativeGlass_.Ready()) return;
         const float alpha = settings.pillBgColor.a;
-        settings.pillBgColor = D2D1::ColorF(0x101014, alpha);
-        settings.textPrimaryColor = D2D1::ColorF(0xF2F2F7);
-        settings.textSecondaryColor = D2D1::ColorF(0xD1D1D6);
+        const bool darkText = nativeGlass_.DarkText();
+        settings.pillBgColor = D2D1::ColorF(darkText ? 0xF5F6F8 : 0x101014, alpha);
+        settings.textPrimaryColor = D2D1::ColorF(darkText ? 0x202126 : 0xF2F2F7);
+        settings.textSecondaryColor = D2D1::ColorF(darkText ? 0x454952 : 0xD1D1D6);
         settings.tintOpacity = 0;
     }
 
