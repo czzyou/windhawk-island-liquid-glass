@@ -1,67 +1,62 @@
+from pathlib import Path
+
+
 def apply_weather_icons(src):
     def change(old, new):
         nonlocal src
         assert src.count(old) == 1, (old[:100], src.count(old))
         src = src.replace(old, new, 1)
 
-    start = src.index('    void DrawWeatherIcon(')
+    change('struct MarqueeLayoutCache {',
+           Path(__file__).with_name('weather-emoji.h').read_text(encoding='utf-8') + '\nstruct MarqueeLayoutCache {')
+    start = src.index('    void DrawCloudShape(')
     end = src.index('    // Small vector glyphs', start)
-    icon = src[start:end]
-    icon = icon.replace('        switch (visual) {', '''        // Opaque cloud stops keep overlapping primitives free of internal seams.
-        auto gradient = [&](UINT32 top, UINT32 bottom) {
-            D2D1_GRADIENT_STOP stops[] = {
-                {0.0f, D2D1::ColorF(top)}, {1.0f, D2D1::ColorF(bottom)}};
-            ComPtr<ID2D1GradientStopCollection> collection;
-            ComPtr<ID2D1LinearGradientBrush> brush;
-            if (SUCCEEDED(target_->CreateGradientStopCollection(stops, 2, &collection))) {
-                target_->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties(
-                    D2D1::Point2F(center.x, center.y - 0.5f * s),
-                    D2D1::Point2F(center.x, center.y + 0.5f * s)), collection.Get(), &brush);
-            }
-            if (brush) brush->SetOpacity(settingsOpacity_);
-            return brush;
-        };
-        auto cloud = gradient(0xFFFFFF, 0xCDD9ED);
-        auto shade = gradient(0xC5D0E2, 0x98ABC7);
-        auto sun = gradient(0xFFE578, 0xFFAA32);
-        auto rain = gradient(0x9CDEFF, 0x55B4F6);
-        if (cloud) strong = cloud.Get();
-        if (shade) soft = shade.Get();
-        ID2D1Brush* warm = sun ? sun.Get() : strong;
-        ID2D1Brush* cool = rain ? rain.Get() : soft;
+    src = src[:start] + '''    void DrawWeatherIcon(D2D1_POINT_2F center, float size, WeatherVisual visual,
+                         ID2D1Brush* strong, ID2D1Brush* soft, bool night = false,
+                         float temperature = NAN, bool fahrenheit = false) {
+        const auto emoji = WeatherEmoji(visual, night, temperature, fahrenheit);
+        const auto count = std::count_if(emoji.begin(), emoji.end(), [](wchar_t c) {
+            return c != 0xFE0F && (c < 0xDC00 || c > 0xDFFF);
+        });
+        const float fontSize = size / static_cast<float>(std::max<ptrdiff_t>(1, count));
+        if (!weatherEmojiFormat_ || weatherEmojiFontSize_ != fontSize) {
+            weatherEmojiFormat_.Reset();
+            if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI Emoji", nullptr,
+                    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                    fontSize, L"", &weatherEmojiFormat_))) return;
+            weatherEmojiFontSize_ = fontSize;
+            weatherEmojiFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            weatherEmojiFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            weatherEmojiFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
+        target_->DrawTextW(emoji.c_str(), static_cast<UINT32>(emoji.size()), weatherEmojiFormat_.Get(),
+            D2D1::RectF(center.x - size * 0.6f, center.y - size * 0.6f,
+                        center.x + size * 0.6f, center.y + size * 0.6f),
+            strong, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+    }
 
-        switch (visual) {''', 1)
-    icon = icon.replace('DrawSunShape(center, s, strong, 0.28f)',
-                        'DrawSunShape(center, s, warm, 0.28f)')
-    icon = icon.replace('s * 0.62f, soft, 0.30f)', 's * 0.62f, warm, 0.30f)')
-    icon = icon.replace('DrawLightningShape(center, s, strong)', 'DrawLightningShape(center, s, warm)')
-    icon = icon.replace('y + 0.26f * s), soft, stroke)', 'y + 0.26f * s), cool, stroke)')
-    icon = icon.replace('soft, std::max(1.0f, 0.035f * s)', 'strong, std::max(1.0f, 0.035f * s)')
-    src = src[:start] + icon + src[end:]
-    change('(coreRadius + 0.09f) * s', '(coreRadius + 0.07f) * s')
-    change('(coreRadius + 0.21f) * s', '(coreRadius + 0.15f) * s')
+''' + src[end:]
+    change('    ComPtr<IDWriteTextFormat> weatherDescFormat_;', '''    ComPtr<IDWriteTextFormat> weatherEmojiFormat_;
+    float weatherEmojiFontSize_ = -1.0f;
+    ComPtr<IDWriteTextFormat> weatherDescFormat_;''')
+    change('WeatherVisualFromCode(page == 0 ? state.weather.weatherCode : forecast.weatherCode),\n                            iconStrong.Get(), iconSoft.Get());',
+           'WeatherVisualFromCode(page == 0 ? state.weather.weatherCode : forecast.weatherCode),\n                            iconStrong.Get(), iconSoft.Get(), page == 0 && ChinaWeatherNight(ChinaWeatherClock().wHour),\n                            page == 0 ? state.weather.temperature : forecast.high, settings.weatherFahrenheit);')
 
     start = src.index('            // Mirrors the label DrawIdleDashboard builds')
     end = src.index('\n        }', start)
     src = src[:start] + '''            const bool hasData = state.weather.hasData && (now - state.weather.lastUpdated < 3600.0);
-            wchar_t label[32] = {};
-            if (hasData) swprintf_s(label, L"%s\\x00B0", WeatherTemperatureText(state.weather.temperature).c_str());
-            else wcscpy_s(label, ARRAYSIZE(label), L"--\\x00B0");
-            metrics.weatherWidth = 24.0f * settings.sizeScale +
-                MeasureTextWidthCached(WidestDigitForm(label), fmt, idleWeatherWidthCache_);''' + src[end:]
+            const auto emoji = WeatherEmoji(hasData ? WeatherVisualFromCode(state.weather.weatherCode) : WeatherVisual::Unknown,
+                ChinaWeatherNight(ChinaWeatherClock().wHour), hasData ? state.weather.temperature : NAN, settings.weatherFahrenheit);
+            const auto label = emoji + L" " + (hasData ? WeatherTemperatureText(state.weather.temperature) : L"--") + L"°";
+            metrics.weatherWidth = MeasureTextWidthCached(WidestDigitForm(label), fmt, idleWeatherWidthCache_);''' + src[end:]
 
     start = src.index('                wchar_t weatherLabel[32] = {};')
     end = src.index('\n            }', start)
-    src = src[:start] + '''                wchar_t weatherLabel[32] = {};
-                if (hasWeather) swprintf_s(weatherLabel, L"%s\\x00B0", WeatherTemperatureText(state.weather.temperature).c_str());
-                else wcscpy_s(weatherLabel, ARRAYSIZE(weatherLabel), L"--\\x00B0");
-                const float iconSlot = 24.0f * scale;
-                DrawWeatherIcon(D2D1::Point2F(slotX + 10.0f * scale, (rect.top + rect.bottom) * 0.5f),
-                                20.0f * scale,
-                                hasWeather ? WeatherVisualFromCode(state.weather.weatherCode) : WeatherVisual::Unknown,
-                                textBrush_.Get(), textBrush_.Get());
+    src = src[:start] + '''                const auto emoji = WeatherEmoji(hasWeather ? WeatherVisualFromCode(state.weather.weatherCode) : WeatherVisual::Unknown,
+                    ChinaWeatherNight(ChinaWeatherClock().wHour), hasWeather ? state.weather.temperature : NAN, settings.weatherFahrenheit);
+                const auto weatherLabel = emoji + L" " + (hasWeather ? WeatherTemperatureText(state.weather.temperature) : L"--") + L"°";
                 const D2D1_RECT_F wRect =
-                    D2D1::RectF(slotX + iconSlot, rect.top, slotX + idleMetrics.weatherWidth, rect.bottom);
-                target_->DrawTextW(weatherLabel, static_cast<UINT32>(wcslen(weatherLabel)), idleFmt,
-                                   wRect, textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);''' + src[end:]
+                    D2D1::RectF(slotX, rect.top, slotX + idleMetrics.weatherWidth, rect.bottom);
+                target_->DrawTextW(weatherLabel.c_str(), static_cast<UINT32>(weatherLabel.size()), idleFmt,
+                                   wRect, textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);''' + src[end:]
     return src

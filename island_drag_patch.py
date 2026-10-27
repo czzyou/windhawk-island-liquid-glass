@@ -42,10 +42,10 @@ int YasbDockY(int screenTop) {''')
                 top = monitor.rcMonitor.top + 8 + g_compactInsetY.load() - window.top + nudge;''', '''                    (work.left + work.right - width) * 0.5f + settings.offsetX + shift) + g_islandDragX.load();
                 left = screenLeft - window.left;
                 top = monitor.rcMonitor.top + 8 + g_compactInsetY.load() - window.top + nudge + g_islandDragY.load();''')
-    change('            SetTimer(hwnd, 0x449, 45000, nullptr);', '''            g_islandManuallyPlaced = Wh_GetIntValue(L"IslandManuallyPlaced", 0) != 0;
+    change('            AddClipboardFormatListener(hwnd);', '''            g_islandManuallyPlaced = Wh_GetIntValue(L"IslandManuallyPlaced", 0) != 0;
             g_islandDragX = g_islandManuallyPlaced ? Wh_GetIntValue(L"IslandDragX", 0) : 0;
             g_islandDragY = g_islandManuallyPlaced ? Wh_GetIntValue(L"IslandDragY", 0) : 0;
-            SetTimer(hwnd, 0x449, 45000, nullptr);''')
+            AddClipboardFormatListener(hwnd);''')
     change('''        case WM_LBUTTONDOWN:
             {''', '''        case WM_LBUTTONDOWN:
             {

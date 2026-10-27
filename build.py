@@ -593,10 +593,10 @@ feature_test += lyrics[:lyrics.index('DWORD WINAPI LyricsThreadProc(')]
 feature_test += (root/'lyrics-providers.h').read_text(encoding='utf-8')
 feature_test += (root/'lyrics-provider-checks.inc').read_text(encoding='utf-8')
 feature_test += r'''
-struct SharedState { LookupSnapshot lookup; std::vector<LookupRecent> lookupRecent; };
+struct SharedState { LookupSnapshot lookup; std::vector<LookupRecent> lookupRecent, lookupSuggestions; };
 SharedState g_state;
 std::mutex g_stateMutex, g_lookupJobMutex, g_mediaSourceMutex;
-struct LookupJob { uint64_t id=0; std::wstring query,key; };
+struct LookupJob { uint64_t id=0; std::wstring query,key; bool suggestions=false; };
 LookupJob g_lookupJob;
 std::wstring g_dockOverrideAumid;
 std::atomic<unsigned> g_dockOverrideRev{0};
@@ -606,7 +606,7 @@ feature_test += sources[sources.index('struct MediaSourceTracker {'):sources.ind
 feature_test += sources[sources.index('std::wstring ChooseMediaSourceAumid('):]
 globals_ = (root/'media-features-globals.h').read_text(encoding='utf-8')
 feature_test += globals_[globals_.index('int MediaSourceDockHit('):globals_.index('void UpdateLyricsOutputDevice(')]
-lookup = (root/'quick-lookup.h').read_text(encoding='utf-8')
+lookup = (root/'quick-lookup.h').read_text(encoding='utf-8').replace('// LOOKUP_DICTIONARY', (root/'lookup-dictionary.h').read_text(encoding='utf-8'))
 feature_test += lookup[:lookup.index('uint64_t PublishNewLookup(')]
 feature_test += (root/'lookup-worker.h').read_text(encoding='utf-8')
 feature_test += '\n#include <shlobj.h>\n' + (root/'file-tray-drag.h').read_text(encoding='utf-8')
@@ -1012,8 +1012,20 @@ weather_test = r'''#include <windows.h>
 #include <string>
 ''' + src[src.index('struct WeatherSnapshot {'):src.index('struct DoNotDisturbSnapshot {')]
 weather_test += (root/'china-weather.h').read_text(encoding='utf-8')
+weather_test += src[src.index('enum class WeatherVisual {'):src.index('struct MarqueeLayoutCache {')]
 weather_test += r'''int main(int argc,char** argv) {
  winrt::init_apartment(); assert(argc==3);
+ assert(WeatherEmoji(WeatherVisual::Clear,true,-3)==L"🌙🥶");
+ assert(WeatherEmoji(WeatherVisual::Clear,false,20)==L"☀️");
+ assert(WeatherEmoji(WeatherVisual::PartlyCloudy,true,0)==L"🌙☁️🥶");
+ assert(WeatherEmoji(WeatherVisual::Rain,true,-3)==L"🌧️🥶");
+ assert(WeatherEmoji(WeatherVisual::Snow,true,-3)==L"🌨️🥶");
+ assert(WeatherEmoji(WeatherVisual::Clear,false,35)==L"☀️🥵");
+ assert(WeatherEmoji(WeatherVisual::Clear,true,32,true)==L"🌙🥶");
+ assert(WeatherEmoji(WeatherVisual::Clear,false,95,true)==L"☀️🥵");
+ assert(WeatherEmoji(WeatherVisual::Clear,true,0.1f)==L"🌙");
+ assert(WeatherEmoji(WeatherVisual::Unknown,true,-3)==L"🌡️");
+ assert(ChinaWeatherNight(0) && ChinaWeatherNight(5) && !ChinaWeatherNight(6) && !ChinaWeatherNight(17) && ChinaWeatherNight(18) && ChinaWeatherNight(23));
  for (float value : {-0.0f, -0.01f, -0.49f, 0.0f, 0.49f}) assert(WeatherTemperatureText(value)==L"0");
  assert(WeatherTemperatureText(-0.51f)==L"-1" && WeatherTemperatureText(-1.6f)==L"-2");
  assert(WeatherTemperatureText(0.51f)==L"1" && WeatherTemperatureText(32.0f)==L"32");

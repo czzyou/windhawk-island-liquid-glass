@@ -21,7 +21,7 @@ HANDLE g_lookupThread = nullptr, g_lookupJobEvent = nullptr;
 constexpr int ID_LOOKUP_HOTKEY = 2;
 constexpr UINT kMediaSourceMenuBase = 1000, kMediaSourceMenuLimit = 2000;
 std::mutex g_lookupJobMutex;
-struct LookupJob { uint64_t id = 0; std::wstring query, key; };
+struct LookupJob { uint64_t id = 0; std::wstring query, key; bool suggestions = false; };
 LookupJob g_lookupJob;
 
 std::wstring GetPreferredMediaSource() {

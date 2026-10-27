@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.5.7
+// @version         1.5.8
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -19,12 +19,12 @@
 - 天气：留空城市时，向中国天气网查询公网 IP 所在城市；不需要密钥。
   代理或 VPN 可能改变定位结果。可以在设置中填写九位中国天气网城市编号覆盖自动定位。
   数据源覆盖中国天气网支持的地区，定位或网络失败时不会假装显示沈阳天气。
-- NBA：首次启动选择主队；支持全部 30 支球队、多主队及优先顺序。
-  暂不开启后不再弹窗；右键灵动岛 → NBA 主队设置，可随时重新选择。
+- NBA：默认关闭，启动时不询问球队。需要时先在模组设置中开启 NBA 总开关，
+  再右键灵动岛 → NBA 主队设置；支持全部 30 支球队、多主队及优先顺序。
   比分来自 ESPN，无直播时回到普通时钟。
 - 媒体来源：展开媒体页点击底部来源按钮临时切换；右键可锁定来源或自动跟随。
 - 歌词：展开后滚轮进入歌词页；右键可启用收起歌词和歌词置顶，媒体页内歌词可在模组设置中调整。支持网易云、QQ、酷狗和 LRCLIB，中文歌优先国内来源；查询会向使用的来源发送歌名、歌手和时长，LRCLIB 还会收到专辑信息。默认本地缓存上限 25 MB，右键可清缓存、微调蓝牙和有线同步。
-- 快捷查词：Alt+Space 打开输入框，提交后查询词典或百科，保留英文释义并通过 MyMemory 补充标注机译的中文译义；Esc 关闭。剪贴板仅作候选，最近查询仅存内存。快捷键可在设置中修改。
+- 快捷查词：Alt+Space 打开输入框，支持英中、中英词典；输入停顿后向有道请求候选及拼写建议，Enter 或点击候选查询词典释义；Esc 关闭。剪贴板仅作候选，最近查询仅存内存。快捷键可在设置中修改。
 - 重要日子：右键添加自己的生日、考试等日程；新安装没有预置个人日程。
 - 吃饭提醒：按本机时间提醒午饭和晚饭，可在设置中修改时间。
 - 液态玻璃默认参数已内置。英文、数字默认使用 SF Pro Text，中文优先使用苹方；字体由用户手动安装，公开安装包不包含字体文件，缺少字体时使用系统回退。
@@ -298,9 +298,9 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
   - TimerModule: true
     $name: Focus Timer module
     $description: Enables a Pomodoro-style focus/break timer, startable from the island's right-click menu.
-  - NBAScores: true
+  - NBAScores: false
     $name: NBA live scores
-    $description: 首次启动选择主队，之后可从右键菜单修改。此项是 NBA 总开关；无直播时显示普通时钟。
+    $description: 默认关闭，启动时不询问球队。启用此总开关后，从右键菜单打开 NBA 主队设置并选择开启；无直播时显示普通时钟。
   - Clipboard: true
     $name: Clipboard module
     $description: Shows a quick preview of the text or images you just copied.
@@ -397,7 +397,7 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
     $name: 歌词偏移（蓝牙，毫秒）
   - QuickLookup: true
     $name: 快捷查词
-    $description: 打开搜索框，提交后查询英文词典或百科；最近记录仅存内存。
+    $description: 英中、中英词典；输入停顿后向有道请求候选及拼写建议，Enter 查询。最近记录仅存内存。
   - FileTrayModule: true
     $name: File Tray (drag & drop shelf)
     $description: 拖入文件可暂存路径，单击打开、按住拖出。点击 × 后，本机普通文件会在 7 天后永久删除原文件（不进回收站）；七天内重新拖入可取消。文件被修改或替换时取消删除。退出期间不执行，下次启动补查。文件夹仅移除入口；右键清空也仅移除入口。
@@ -3824,7 +3824,7 @@ struct SharedState {
     std::vector<MediaSourceInfo> mediaSources;
     LyricsSnapshot lyrics;
     LookupSnapshot lookup;
-    std::vector<LookupRecent> lookupRecent;
+    std::vector<LookupRecent> lookupRecent, lookupSuggestions;
     std::vector<ImportantDay> importantDays;
     TomorrowBrief tomorrowBrief;
     HourlyClockSnapshot hourlyClock;
@@ -4158,7 +4158,7 @@ HANDLE g_lookupThread = nullptr, g_lookupJobEvent = nullptr;
 constexpr int ID_LOOKUP_HOTKEY = 2;
 constexpr UINT kMediaSourceMenuBase = 1000, kMediaSourceMenuLimit = 2000;
 std::mutex g_lookupJobMutex;
-struct LookupJob { uint64_t id = 0; std::wstring query, key; };
+struct LookupJob { uint64_t id = 0; std::wstring query, key; bool suggestions = false; };
 LookupJob g_lookupJob;
 
 std::wstring GetPreferredMediaSource() {
@@ -8530,6 +8530,9 @@ SYSTEMTIME ChinaWeatherClock() {
     return result;
 }
 
+// shortcut: 18:00–06:00 approximates night; use city sunrise and sunset when available.
+bool ChinaWeatherNight(unsigned hour) { return hour >= 18 || hour < 6; }
+
 bool ChinaWeatherTemperature(const std::wstring& text, float& value) {
     if (text.empty()) return false;
     wchar_t* end = nullptr;
@@ -12275,7 +12278,7 @@ DWORD WINAPI LyricsThreadProc(void*) {
 // ── Quick Lookup panel: rows + hit testing ───────────────────────────────────
 // Shared by the renderer (what to draw) and the window procedure (what a click or
 // Enter means) so the two can never disagree about which row is which.
-enum class LookupRowKind { Typed, Clipboard, Recent };
+enum class LookupRowKind { Typed, Clipboard, Recent, Suggestion };
 
 struct LookupRow {
     LookupRowKind kind = LookupRowKind::Recent;
@@ -12294,7 +12297,7 @@ std::wstring LookupTypedQuery(const LookupUiState& ui) {
 }
 
 std::vector<LookupRow> BuildLookupRows(const std::vector<LookupRecent>& recents,
-                                       const LookupUiState& ui) {
+                                       const LookupUiState& ui, const std::vector<LookupRecent>& suggestions = {}) {
     std::vector<LookupRow> rows;
     const size_t cap = static_cast<size_t>(LookupLayout::kMaxRows);
     const std::wstring typed = LookupTypedQuery(ui);
@@ -12314,12 +12317,18 @@ std::vector<LookupRow> BuildLookupRows(const std::vector<LookupRecent>& recents,
         return rows;
     }
 
-    rows.push_back({LookupRowKind::Typed, typed, typed, std::wstring()});
+    for (const auto& suggestion : suggestions) {
+        if (rows.size() >= cap) break;
+        rows.push_back({LookupRowKind::Suggestion, suggestion.query, suggestion.title, suggestion.detail});
+    }
+    const auto typedKey = ToLowerCopy(typed);
+    if (rows.size() < cap && std::none_of(rows.begin(), rows.end(), [&](const auto& row) { return ToLowerCopy(row.query) == typedKey; }))
+        rows.push_back({LookupRowKind::Typed, typed, typed, std::wstring()});
     const std::wstring needle = ToLowerCopy(typed);
     for (const LookupRecent& r : recents) {
         if (rows.size() >= cap) break;
         const std::wstring q = ToLowerCopy(r.query);
-        if (q == needle) continue;  // the Typed row already covers it
+        if (q == needle || std::any_of(rows.begin(), rows.end(), [&](const auto& row) { return ToLowerCopy(row.query) == q; })) continue;
         if (q.find(needle) == std::wstring::npos &&
             ToLowerCopy(r.title).find(needle) == std::wstring::npos) {
             continue;
@@ -12370,29 +12379,13 @@ int LookupRowAtContentPoint(const MediaContentPoint& pt, int rowCount, bool head
     return index;
 }
 
-// ── Quick Lookup ─────────────────────────────────────────────────────────────
-// Press the Quick Lookup hotkey to look up whatever text is on the clipboard.
+// Quick Lookup: opening only reads clipboard suggestions locally. After an edit,
+// a 250 ms pause sends the typed text to Youdao for dictionary/spelling candidates.
+// Enter or a candidate click requests its bilingual definition. Queries stay off disk and logs.
 
-// ── Quick Lookup ─────────────────────────────────────────────────────────────
-// Press the Quick Lookup hotkey to look up whatever text is on the clipboard.
-//
-//   hotkey (render thread) -> StartQuickLookup()
-//        1. read + normalise the clipboard text
-//        2. in-memory cache hit?  -> publish the result at once
-//        3. otherwise publish a "Looking up..." card and spawn ONE worker thread
-//   worker thread          -> LookupText() -> publish the result if still wanted
-//
-// Privacy: nothing is looked up when the clipboard changes. Text is only sent over
-// the network when the hotkey is pressed, only if it is a short word or phrase, and
-// it is never written to the log or to disk.
-//
-// Adding a source later = write one function with the signature
-//     Outcome LookupXxx(const std::wstring& query, Result* out)
-// and add one line to LookupText().
-
-// Wikimedia asks API clients to send a descriptive User-Agent with contact info.
+// Identify this client without sending personal data.
 constexpr wchar_t kLookupUserAgent[] =
-    L"DynamicIslandForWindows/" WH_MOD_VERSION L" (https://github.com/devcode90/Dynamic-Island-for-Windows) QuickLookup";
+    L"WindhawkIsland/" WH_MOD_VERSION L" (https://github.com/czzyou/windhawk-island-liquid-glass) QuickLookup";
 
 // Bumped for every new request AND when the card is dismissed. A worker only
 // publishes if its id is still current, so a slow reply can never resurrect a card
@@ -12409,8 +12402,6 @@ constexpr size_t kRecentCapacity = 12;
 constexpr double kLoadingTimeoutSeconds = 30.0;  // upper bound for "Looking up..."
 constexpr size_t kMaxQueryChars = 80;            // longer text is never sent anywhere
 constexpr size_t kMaxBodyChars = 360;            // pre-cap on a definition
-constexpr size_t kMaxExtractSentences = 3;
-constexpr size_t kMaxExtractChars = 320;
 constexpr size_t kCacheCapacity = 40;
 
 struct Result {
@@ -12490,136 +12481,6 @@ std::wstring ClipToChars(std::wstring text, size_t maxChars) {
     return text;
 }
 
-std::wstring TitleCase(std::wstring text) {
-    bool wordStart = true;
-    for (wchar_t& c : text) {
-        if (c == L' ') {
-            wordStart = true;
-        } else {
-            if (wordStart) {
-                c = static_cast<wchar_t>(towupper(c));
-            }
-            wordStart = false;
-        }
-    }
-    return text;
-}
-
-bool IsSentenceCloser(wchar_t c) {
-    return c == L'"' || c == L'\'' || c == L')' || c == L'\u201d' || c == L'\u2019';
-}
-
-// A '.', '!' or '?' ends a sentence only when whitespace and then a capital, digit
-// or opening quote follow, and (for '.') the word before it isn't an initial or a
-// common abbreviation. Good enough for encyclopedia text, not a full tokenizer.
-bool IsSentenceEnd(const std::wstring& t, size_t i) {
-    const wchar_t c = t[i];
-    if (c != L'.' && c != L'!' && c != L'?') {
-        return false;
-    }
-    size_t j = i + 1;
-    while (j < t.size() && IsSentenceCloser(t[j])) {
-        ++j;
-    }
-    if (j >= t.size()) {
-        return true;
-    }
-    if (!iswspace(t[j])) {
-        return false;
-    }
-    while (j < t.size() && iswspace(t[j])) {
-        ++j;
-    }
-    if (j >= t.size()) {
-        return true;
-    }
-    if (!(iswupper(t[j]) || iswdigit(t[j]) || t[j] == L'"' || t[j] == L'\u201c' || t[j] == L'(')) {
-        return false;
-    }
-    if (c != L'.') {
-        return true;
-    }
-
-    size_t s = i;
-    while (s > 0 && iswalpha(t[s - 1])) {
-        --s;
-    }
-    const std::wstring word = ToLowerCopy(t.substr(s, i - s));
-    if (word.size() == 1) {
-        return false;  // initials: "J. R. R. Tolkien"
-    }
-    static const wchar_t* const kAbbrev[] = {
-        L"mr", L"mrs", L"ms", L"dr", L"prof", L"st", L"jr", L"sr", L"vs", L"inc", L"ltd",
-        L"co", L"no", L"ca", L"approx", L"mt", L"gen", L"col", L"lt", L"sgt", L"rev", L"fig", L"vol"};
-    for (const wchar_t* abbrev : kAbbrev) {
-        if (word == abbrev) {
-            return false;
-        }
-    }
-    return true;
-}
-
-// First `maxSentences` sentences, but stops early rather than exceed maxChars
-// (the first sentence is always kept, clipped if it alone is too long).
-std::wstring FirstSentences(const std::wstring& text, size_t maxSentences, size_t maxChars) {
-    size_t sentences = 0;
-    size_t acceptedEnd = 0;
-    for (size_t i = 0; i < text.size() && sentences < maxSentences; ++i) {
-        if (!IsSentenceEnd(text, i)) {
-            continue;
-        }
-        size_t end = i + 1;
-        while (end < text.size() && IsSentenceCloser(text[end])) {
-            ++end;
-        }
-        if (sentences > 0 && end > maxChars) {
-            break;
-        }
-        acceptedEnd = end;
-        ++sentences;
-        i = end - 1;
-    }
-    if (acceptedEnd == 0) {
-        acceptedEnd = text.size();  // no sentence boundary found: use it all, clipped
-    }
-    std::wstring out = text.substr(0, acceptedEnd);
-    while (!out.empty() && iswspace(out.back())) {
-        out.pop_back();
-    }
-    return ClipToChars(out, maxChars);
-}
-
-// ---- JSON helper (same string-find style as the lyrics code) --------------------
-// Returns the balanced {...} object that starts at `open`, string- and escape-aware.
-std::string BalancedObjectAt(const std::string& json, size_t open) {
-    int depth = 0;
-    bool inString = false;
-    bool escaped = false;
-    for (size_t i = open; i < json.size(); ++i) {
-        const char c = json[i];
-        if (inString) {
-            if (escaped) {
-                escaped = false;
-            } else if (c == '\\') {
-                escaped = true;
-            } else if (c == '"') {
-                inString = false;
-            }
-            continue;
-        }
-        if (c == '"') {
-            inString = true;
-        } else if (c == '{') {
-            ++depth;
-        } else if (c == '}') {
-            if (--depth == 0) {
-                return json.substr(open, i - open + 1);
-            }
-        }
-    }
-    return std::string();
-}
-
 // ---- in-memory cache (session only, MRU at the back) ----------------------------
 struct CacheEntry {
     std::wstring key;
@@ -12665,383 +12526,94 @@ void CacheStore(const std::wstring& key, bool found, const Result& result) {
     }
 }
 
-// ---- source 1: dictionary (single words) ----------------------------------------
-// https://api.dictionaryapi.dev/api/v2/entries/en/<word>
-// Shape: [{"word":..,"phonetic":..,"phonetics":[{"text":..}],
-//          "meanings":[{"partOfSpeech":..,"definitions":[{"definition":..,"example":..}]}]}]
-Outcome LookupDictionary(const std::wstring& word, Result* out) {
-    const std::wstring path =
-        L"/api/v2/entries/en/" + AsciiToWide(UrlEncodeComponent(ToLowerCopy(word)));
-    const HttpResult res = HttpGetEx(L"api.dictionaryapi.dev", path.c_str(), true, kLookupUserAgent);
-    if (!res.IsDefinitive()) {
-        return Outcome::Failed;
-    }
-    if (res.status != 200) {
-        return Outcome::NotFound;
-    }
-
-    const std::vector<std::string> entries = SplitJsonObjectArray(res.body);
-    if (entries.empty()) {
-        return Outcome::NotFound;
-    }
-    const std::string& entry = entries.front();
-
-    std::string wordRaw, phoneticRaw;
-    ExtractJsonStringField(entry, "word", &wordRaw);
-    if (!ExtractJsonStringField(entry, "phonetic", &phoneticRaw) || phoneticRaw.empty()) {
-        phoneticRaw.clear();
-        ExtractJsonStringField(entry, "text", &phoneticRaw);  // first phonetics[].text
-    }
-
-    // First meaning's part of speech, then the first definition object after it.
-    const size_t meaningsPos = entry.find("\"meanings\":[");
-    if (meaningsPos == std::string::npos) {
-        return Outcome::NotFound;
-    }
-    std::string posRaw;
-    const size_t posKey = entry.find("\"partOfSpeech\":\"", meaningsPos);
-    if (posKey != std::string::npos) {
-        ExtractJsonStringField(entry.substr(posKey), "partOfSpeech", &posRaw);
-    }
-    const size_t defKey =
-        entry.find("\"definition\":\"", posKey != std::string::npos ? posKey : meaningsPos);
-    if (defKey == std::string::npos) {
-        return Outcome::NotFound;
-    }
-
-    // Bound the search to this one definition object so a later definition's
-    // "example" is never attributed to the first one.
-    const size_t defOpen = entry.rfind('{', defKey);
-    const std::string defObject = defOpen != std::string::npos ? BalancedObjectAt(entry, defOpen)
-                                                               : entry.substr(defKey);
-    std::string defRaw, exampleRaw;
-    ExtractJsonStringField(defObject, "definition", &defRaw);
-    ExtractJsonStringField(defObject, "example", &exampleRaw);
-
-    const std::wstring definition = CollapseWhitespace(JsonStringUnescape(defRaw));
-    if (definition.empty()) {
-        return Outcome::NotFound;
-    }
-
-    Result r;
-    r.title = CollapseWhitespace(JsonStringUnescape(wordRaw));
-    if (r.title.empty()) {
-        r.title = word;
-    }
-    r.subtitle = CollapseWhitespace(JsonStringUnescape(phoneticRaw));
-    const std::wstring pos = CollapseWhitespace(JsonStringUnescape(posRaw));
-    if (!pos.empty()) {
-        if (!r.subtitle.empty()) {
-            r.subtitle += L"  \u00b7  ";
+// shortcut: Youdao's public web endpoints have no versioned contract; update if its response schema changes.
+Outcome LookupSuggestions(const std::wstring& query, std::vector<LookupRecent>* out) {
+    const auto path = L"/suggest?doctype=json&num=3&q=" + AsciiToWide(UrlEncodeComponent(query));
+    const auto response = HttpGetEx(L"dict.youdao.com", path.c_str(), true, kLookupUserAgent, nullptr, 1500);
+    if (!response.IsDefinitive()) return Outcome::Failed;
+    if (response.status == 404) return Outcome::NotFound;
+    try {
+        using namespace winrt::Windows::Data::Json;
+        const auto root = JsonObject::Parse(winrt::to_hstring(response.body));
+        if (root.GetNamedObject(L"result").GetNamedNumber(L"code") != 200) return Outcome::Failed;
+        std::vector<LookupRecent> entries;
+        for (const auto& value : root.GetNamedObject(L"data").GetNamedArray(L"entries")) {
+            const auto row = value.GetObject();
+            const auto word = NormalizeQuery(std::wstring(row.GetNamedString(L"entry", L"")));
+            if (word.empty() || word.size() > kMaxQueryChars ||
+                std::any_of(entries.begin(), entries.end(), [&](const auto& item) { return item.query == word; })) continue;
+            entries.push_back({word, word, ClipToChars(CollapseWhitespace(std::wstring(row.GetNamedString(L"explain", L""))), 100), L"有道词典"});
+            if (entries.size() == 3) break;
         }
-        r.subtitle += pos;
-    }
-    r.body = ClipToChars(definition, kMaxBodyChars);
-    const std::wstring example = CollapseWhitespace(JsonStringUnescape(exampleRaw));
-    if (!example.empty()) {
-        r.example = L"\u201c" + ClipToChars(example, 200) + L"\u201d";
-    }
-    r.source = L"Dictionary";
-    *out = std::move(r);
-    return Outcome::Found;
+        *out = std::move(entries);
+        return out->empty() ? Outcome::NotFound : Outcome::Found;
+    } catch (...) { return Outcome::Failed; }
 }
 
-// ---- source 2: Wikipedia summary (phrases, or words the dictionary lacks) ---------
-// https://en.wikipedia.org/api/rest_v1/page/summary/<title>
-// Titles are case-sensitive after the first letter, so a miss is retried once in
-// Title Case ("machine learning" -> "Machine Learning").
-Outcome LookupWikipedia(const std::wstring& query, Result* out) {
-    const std::wstring candidates[2] = {query, TitleCase(query)};
-    Outcome outcome = Outcome::NotFound;
-
-    for (int i = 0; i < 2; ++i) {
-        if (i == 1 && candidates[1] == candidates[0]) {
-            break;
-        }
-        std::wstring title = candidates[i];
-        std::replace(title.begin(), title.end(), L' ', L'_');
-        const std::wstring path =
-            L"/api/rest_v1/page/summary/" + AsciiToWide(UrlEncodeComponent(title));
-
-        const HttpResult res = HttpGetEx(L"en.wikipedia.org", path.c_str(), true, kLookupUserAgent);
-        if (!res.IsDefinitive()) {
-            return Outcome::Failed;
-        }
-        if (res.status != 200) {
-            continue;  // 404: try the next spelling
-        }
-
-        std::string extractRaw, titleRaw, descRaw;
-        if (!ExtractJsonStringField(res.body, "extract", &extractRaw) || extractRaw.empty()) {
-            continue;
-        }
-        ExtractJsonStringField(res.body, "title", &titleRaw);
-        ExtractJsonStringField(res.body, "description", &descRaw);
-
-        const std::wstring extract = CollapseWhitespace(JsonStringUnescape(extractRaw));
-        if (extract.empty()) {
-            continue;
-        }
-
-        Result r;
-        r.title = CollapseWhitespace(JsonStringUnescape(titleRaw));
-        if (r.title.empty()) {
-            r.title = query;
-        }
-        r.subtitle = CollapseWhitespace(JsonStringUnescape(descRaw));
-        r.body = FirstSentences(extract, kMaxExtractSentences, kMaxExtractChars);
-        r.source = L"Wikipedia";
-        *out = std::move(r);
-        return Outcome::Found;
-    }
-    return outcome;
-}
-
-// ---- source 3: Wiktionary (primary dictionary) --------------------------------------
-// https://en.wiktionary.org/api/rest_v1/page/definition/<word>
-// Shape: {"en":[{"partOfSpeech":"Noun","language":"English","definitions":[
-//          {"definition":"<html>","parsedExamples":[{"example":"<html>"}]}, ...]}, ...],
-//         "fr":[...], ...}
-// Definitions come back as HTML, so tags are stripped and entities decoded.
-
-// Removes <tags>, decodes common HTML entities, collapses whitespace.
-std::wstring StripHtml(const std::wstring& in) {
-    std::wstring noTags;
-    noTags.reserve(in.size());
-    bool inTag = false;
-    for (wchar_t c : in) {
-        if (c == L'<') {
-            inTag = true;
-            continue;
-        }
-        if (c == L'>' && inTag) {
-            inTag = false;
-            continue;
-        }
-        if (!inTag) {
-            noTags.push_back(c);
-        }
-    }
-
-    std::wstring decoded;
-    decoded.reserve(noTags.size());
-    for (size_t i = 0; i < noTags.size(); ++i) {
-        if (noTags[i] == L'&') {
-            const size_t semi = noTags.find(L';', i);
-            if (semi != std::wstring::npos && semi - i <= 9) {
-                const std::wstring ent = noTags.substr(i + 1, semi - i - 1);
-                wchar_t rep = 0;
-                if (ent == L"amp") rep = L'&';
-                else if (ent == L"lt") rep = L'<';
-                else if (ent == L"gt") rep = L'>';
-                else if (ent == L"quot") rep = L'"';
-                else if (ent == L"apos") rep = L'\'';
-                else if (ent == L"nbsp") rep = L' ';
-                else if (ent.size() > 1 && ent[0] == L'#') {
-                    const unsigned long code =
-                        (ent[1] == L'x' || ent[1] == L'X')
-                            ? wcstoul(ent.c_str() + 2, nullptr, 16)
-                            : wcstoul(ent.c_str() + 1, nullptr, 10);
-                    if (code > 0 && code < 0x10000 && !(code >= 0xD800 && code <= 0xDFFF)) {
-                        rep = static_cast<wchar_t>(code);
-                    }
-                }
-                if (rep) {
-                    decoded.push_back(rep);
-                    i = semi;
-                    continue;
-                }
-            }
-        }
-        decoded.push_back(noTags[i]);
-    }
-    return CollapseWhitespace(decoded);
-}
-
-// Reads the "en" section of a Wiktionary definition response.
-bool ParseWiktionaryEnglish(const std::string& body, const std::wstring& title, Result* out) {
-    size_t enKey = body.find("\"en\"");
-    if (enKey == std::string::npos) return false;
-    enKey = body.find(':', enKey + 4);
-    if (enKey == std::string::npos) return false;
-    enKey = body.find_first_not_of(" \t\r\n", enKey + 1);
-    if (enKey == std::string::npos || body[enKey] != '[') return false;
-
-    auto skipSeparators = [](const std::string& s, size_t p) {
-        while (p < s.size() && (s[p] == ' ' || s[p] == ',' || s[p] == '\n' ||
-                                s[p] == '\r' || s[p] == '\t')) {
-            ++p;
-        }
-        return p;
-    };
-
-    std::vector<std::wstring> partsOfSpeech;
-    std::vector<std::wstring> definitions;
-    std::wstring example;
-
-    size_t p = enKey + 1;
-    while (p < body.size()) {
-        p = skipSeparators(body, p);
-        if (p >= body.size() || body[p] != '{') {
-            break;
-        }
-        const std::string block = BalancedObjectAt(body, p);
-        if (block.empty()) {
-            break;
-        }
-        p += block.size();
-
-        std::string posRaw;
-        ExtractJsonStringField(block, "partOfSpeech", &posRaw);
-        const std::wstring pos = ToLowerCopy(CollapseWhitespace(JsonStringUnescape(posRaw)));
-        if (!pos.empty() && partsOfSpeech.size() < 3 &&
-            std::find(partsOfSpeech.begin(), partsOfSpeech.end(), pos) == partsOfSpeech.end()) {
-            partsOfSpeech.push_back(pos);
-        }
-
-        // Definitions are taken from the first part of speech only.
-        if (!definitions.empty()) {
-            continue;
-        }
-        const size_t defsKey = block.find("\"definitions\":[");
-        if (defsKey == std::string::npos) {
-            continue;
-        }
-        size_t q = defsKey + 15;  // just past  "definitions":[
-        while (q < block.size() && definitions.size() < 3) {
-            q = skipSeparators(block, q);
-            if (q >= block.size() || block[q] != '{') {
-                break;
-            }
-            const std::string defObj = BalancedObjectAt(block, q);
-            if (defObj.empty()) {
-                break;
-            }
-            q += defObj.size();
-
-            std::string defRaw;
-            if (!ExtractJsonStringField(defObj, "definition", &defRaw)) {
-                continue;
-            }
-            const std::wstring text = StripHtml(JsonStringUnescape(defRaw));
-            if (text.empty()) {
-                continue;
-            }
-            definitions.push_back(text);
-
-            // Only the first definition's example is shown.
-            if (definitions.size() == 1) {
-                std::string exRaw;
-                if (ExtractJsonStringField(defObj, "example", &exRaw)) {
-                    example = StripHtml(JsonStringUnescape(exRaw));
-                }
-            }
-        }
-    }
-
-    if (definitions.empty()) {
-        return false;
-    }
-
-    Result r;
-    r.title = title;
-    for (size_t i = 0; i < partsOfSpeech.size(); ++i) {
-        if (i > 0) {
-            r.subtitle += L"  \u00b7  ";
-        }
-        r.subtitle += partsOfSpeech[i];
-    }
-
-    std::wstring bodyText;
-    for (size_t i = 0; i < definitions.size(); ++i) {
-        if (i > 0) {
-            bodyText += L"\n";
-        }
-        if (definitions.size() > 1) {
-            bodyText += std::to_wstring(i + 1) + L". ";
-        }
-        bodyText += ClipToChars(definitions[i], 170);
-    }
-    r.body = ClipToChars(bodyText, kMaxBodyChars);
-
-    if (!example.empty()) {
-        r.example = L"\u201c" + ClipToChars(example, 200) + L"\u201d";
-    }
-    r.source = L"Wiktionary";
-    *out = std::move(r);
-    return true;
-}
-
-// Titles are case-sensitive, so lowercase is tried first, then the text as typed.
-Outcome LookupWiktionary(const std::wstring& word, Result* out) {
-    const std::wstring lower = ToLowerCopy(word);
-    const std::wstring candidates[2] = {lower, word};
-
-    for (int i = 0; i < 2; ++i) {
-        if (i == 1 && candidates[1] == candidates[0]) {
-            break;
-        }
-        const std::wstring path = L"/api/rest_v1/page/definition/" +
-                                  AsciiToWide(UrlEncodeComponent(candidates[i]));
-        const HttpResult res = HttpGetEx(L"en.wiktionary.org", path.c_str(), true, kLookupUserAgent);
-        if (!res.IsDefinitive()) {
-            return Outcome::Failed;  // timeout / 429 / 5xx: never cached as "not found"
-        }
-        if (res.status != 200) {
-            continue;  // 404: try the next spelling
-        }
-        if (ParseWiktionaryEnglish(res.body, candidates[i], out)) {
-            return Outcome::Found;
-        }
-    }
-    return Outcome::NotFound;
-}
-
-// ---- router -----------------------------------------------------------------------
-// Single words:  Wiktionary -> dictionaryapi.dev (backup) -> Wikipedia
-// Phrases:       Wikipedia  -> Wiktionary (idioms like "kick the bucket")
-// To add a source: write LookupXxx() above and add one attempt() line below.
-Outcome LookupEnglishText(const std::wstring& query, Result* out) {
-    const bool singleWord = query.find(L' ') == std::wstring::npos;
-
-    bool anyFailed = false;
-    auto attempt = [&](Outcome outcome) -> bool {
-        if (outcome == Outcome::Found) return true;
-        if (outcome == Outcome::Failed) anyFailed = true;
-        return false;
-    };
-
-    if (singleWord) {
-        if (attempt(LookupWiktionary(query, out))) return Outcome::Found;
-        if (attempt(LookupDictionary(query, out))) return Outcome::Found;
-        if (attempt(LookupWikipedia(query, out))) return Outcome::Found;
-    } else {
-        if (attempt(LookupWikipedia(query, out))) return Outcome::Found;
-        if (attempt(LookupWiktionary(query, out))) return Outcome::Found;
-    }
-
-    // "Nothing there" is only cacheable if every source gave a definite answer.
-    return anyFailed ? Outcome::Failed : Outcome::NotFound;
-}
-
-// Keep the dictionary definition and add its Chinese translation, never replace it with a guessed meaning.
 Outcome LookupText(const std::wstring& query, Result* out) {
-    const auto outcome=LookupEnglishText(query,out);
-    if (outcome!=Outcome::Found) return outcome;
-    const std::wstring english=out->body;
-    std::wstring segment=ClipToChars(CollapseWhitespace(english),240);
-    if (LyricsCache::WideToUtf8(segment).size()>500) segment=query;
-    const auto path=L"/get?q="+AsciiToWide(UrlEncodeComponent(segment))+L"&langpair=en%7Czh-CN";
-    const auto response=HttpGetEx(L"api.mymemory.translated.net",path.c_str(),true,kLookupUserAgent);
-    std::wstring chinese;
-    double status=0;
-    std::string raw;
-    if (response.ok && response.status==200 && ExtractJsonNumberField(response.body,"responseStatus",&status) && status==200 &&
-        ExtractJsonStringField(response.body,"translatedText",&raw))
-        chinese=ClipToChars(CollapseWhitespace(JsonStringUnescape(raw)),180);
-    out->body=L"中文（MyMemory 机译）："+(chinese.empty() ? std::wstring(L"暂不可用，可稍后重试") : chinese)+L"\n英文："+english;
-    return outcome;
+    const auto path = L"/jsonapi?jsonversion=2&dicts=%7B%22count%22%3A2%2C%22dicts%22%3A%5B%5B%22ec%22%2C%22ce%22%5D%5D%7D&q=" +
+        AsciiToWide(UrlEncodeComponent(query));
+    const auto response = HttpGetEx(L"dict.youdao.com", path.c_str(), true, kLookupUserAgent, nullptr, 5000);
+    if (!response.IsDefinitive()) return Outcome::Failed;
+    if (response.status == 404) return Outcome::NotFound;
+    try {
+        using namespace winrt::Windows::Data::Json;
+        const auto root = JsonObject::Parse(winrt::to_hstring(response.body));
+        const bool english = root.HasKey(L"ec");
+        if (!english && !root.HasKey(L"ce")) return Outcome::NotFound;
+        const auto words = root.GetNamedObject(english ? L"ec" : L"ce").GetNamedArray(L"word");
+        if (words.Size() == 0) return Outcome::NotFound;
+        const auto word = words.GetAt(0).GetObject();
+        Result result;
+        result.title = query;
+        result.source = L"有道词典";
+        result.subtitle = english ? L"英 → 中" : L"中 → 英";
+        for (const auto* key : {L"ukphone", L"usphone"}) {
+            const std::wstring phone(word.GetNamedString(key, L""));
+            if (!phone.empty()) result.subtitle += std::wstring(key[0] == L'u' && key[1] == L'k' ? L"  英 /" : L"  美 /") + phone + L"/";
+        }
+        for (const auto& value : word.GetNamedArray(L"trs")) {
+            for (const auto& translation : value.GetObject().GetNamedArray(L"tr")) {
+                const auto label = translation.GetObject().GetNamedObject(L"l");
+                std::wstring text;
+                for (const auto& item : label.GetNamedArray(L"i")) {
+                    const std::wstring part(item.ValueType() == JsonValueType::String ? item.GetString() :
+                        item.GetObject().GetNamedString(L"#text", L""));
+                    if (part.empty()) continue;
+                    if (!text.empty()) text += L"; ";
+                    text += part;
+                }
+                if (!english) {
+                    const std::wstring detail(label.GetNamedString(L"#tran", L""));
+                    if (!detail.empty()) text += L" — " + detail;
+                }
+                text = CollapseWhitespace(text);
+                if (text.empty()) continue;
+                if (!result.body.empty()) result.body += L"\n";
+                result.body += text;
+                if (result.body.size() >= kMaxBodyChars) break;
+            }
+            if (result.body.size() >= kMaxBodyChars) break;
+        }
+        if (result.body.empty()) return Outcome::NotFound;
+        result.body = ClipToChars(result.body, kMaxBodyChars);
+        *out = std::move(result);
+        return Outcome::Found;
+    } catch (...) { return Outcome::Failed; }
 }
+
+void ApplySuggestions(uint64_t id, std::vector<LookupRecent> entries, bool returnToSearch = false) {
+    std::lock_guard lock(g_stateMutex);
+    if (id != g_lookupRequestSeq.load() || !g_state.lookup.active ||
+        (!returnToSearch && g_state.lookup.status != LookupStatus::Search)) return;
+    g_state.lookupSuggestions = std::move(entries);
+    if (returnToSearch) {
+        g_state.lookup.status = LookupStatus::Search;
+        g_state.lookup.expiresAt = NowSeconds() + kPanelIdleSeconds;
+    }
+    g_layoutDirty = true;
+}
+
 
 // ---- publishing ---------------------------------------------------------------------
 void FillSnapshot(LookupSnapshot& lk, const std::wstring& query, bool found, const Result* r,
@@ -13116,6 +12688,7 @@ uint64_t PublishNewLookup(const LookupSnapshot& snap, bool nudge = true) {
     {
         std::lock_guard lock(g_stateMutex);
         g_state.lookup = snap;
+        g_state.lookupSuggestions.clear();
         id = ++g_lookupRequestSeq;
     }
     g_layoutDirty = true;
@@ -13141,7 +12714,7 @@ void TouchLookupPanel() {
 std::vector<LookupRow> CurrentLookupRows(LookupStatus* status) {
     std::lock_guard lock(g_stateMutex);
     if (status) *status = g_state.lookup.status;
-    return BuildLookupRows(g_state.lookupRecent, g_lookupUi);
+    return BuildLookupRows(g_state.lookupRecent, g_lookupUi, g_state.lookupSuggestions);
 }
 
 void ForceForeground(HWND hwnd) {
@@ -13259,19 +12832,18 @@ void LookupUiEdited() {
     ui.selectAll = false;
     ui.caretResetAt = now;
 
-    bool leaveResult = false;
-    {
-        std::lock_guard lock(g_stateMutex);
-        leaveResult = g_state.lookup.active && g_state.lookup.status != LookupStatus::Search;
-    }
-    if (leaveResult) {
-        LookupSnapshot snap;
-        snap.active = true;
-        snap.status = LookupStatus::Search;
-        snap.expiresAt = now + QuickLookup::kPanelIdleSeconds;
-        PublishNewLookup(snap, false);
-    } else {
-        TouchLookupPanel();
+    LookupSnapshot snap;
+    snap.active = true;
+    snap.status = LookupStatus::Search;
+    snap.expiresAt = now + QuickLookup::kPanelIdleSeconds;
+    const auto id = PublishNewLookup(snap, false);
+    const auto query = QuickLookup::NormalizeQuery(ui.text);
+    if (!query.empty() && query.size() <= QuickLookup::kMaxQueryChars) {
+        {
+            std::lock_guard lock(g_lookupJobMutex);
+            g_lookupJob = {id, query, ToLowerCopy(query), true};
+        }
+        SetEvent(g_lookupJobEvent);
     }
     g_layoutDirty = true;
 }
@@ -13563,15 +13135,38 @@ void ApplyLookupHotkey() {
 }
 
 DWORD WINAPI LookupThreadProc(void*) {
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
     HANDLE events[] = {g_stopEvent, g_lookupJobEvent};
     while (WaitForMultipleObjects(2, events, FALSE, INFINITE) == WAIT_OBJECT_0 + 1) {
         LookupJob job;
         { std::lock_guard lock(g_lookupJobMutex); job = std::move(g_lookupJob); }
+        // Coalesce typing on this worker; the render thread never waits for the network.
+        while (job.suggestions) {
+            const auto event = WaitForMultipleObjects(2, events, FALSE, 250);
+            if (event != WAIT_OBJECT_0 + 1) break;
+            std::lock_guard lock(g_lookupJobMutex);
+            job = std::move(g_lookupJob);
+        }
+        if (WaitForSingleObject(g_stopEvent, 0) != WAIT_TIMEOUT) break;
         if (!job.id || job.id != g_lookupRequestSeq.load()) continue;
         try {
+            if (job.suggestions) {
+                std::vector<LookupRecent> entries;
+                if (QuickLookup::LookupSuggestions(job.query, &entries) != QuickLookup::Outcome::Failed)
+                    QuickLookup::ApplySuggestions(job.id, std::move(entries));
+                continue;
+            }
             QuickLookup::Result result;
             const auto outcome = QuickLookup::LookupText(job.query, &result);
             if (WaitForSingleObject(g_stopEvent, 0) != WAIT_TIMEOUT) break;
+            if (job.id != g_lookupRequestSeq.load()) continue;
+            if (outcome == QuickLookup::Outcome::NotFound) {
+                std::vector<LookupRecent> entries;
+                if (QuickLookup::LookupSuggestions(job.query, &entries) == QuickLookup::Outcome::Found) {
+                    QuickLookup::ApplySuggestions(job.id, std::move(entries), true);
+                    continue;
+                }
+            }
             if (outcome != QuickLookup::Outcome::Failed)
                 QuickLookup::CacheStore(job.key, outcome == QuickLookup::Outcome::Found, result);
             QuickLookup::ApplyResult(job.id, job.query, outcome == QuickLookup::Outcome::Found, result);
@@ -13581,6 +13176,7 @@ DWORD WINAPI LookupThreadProc(void*) {
                     g_state.lookup.status = LookupStatus::Failed;
             }
         } catch (...) {
+            if (job.suggestions) continue;
             std::lock_guard lock(g_stateMutex);
             if (job.id == g_lookupRequestSeq.load() && g_state.lookup.active)
                 g_state.lookup.status = LookupStatus::Failed;
@@ -13588,6 +13184,7 @@ DWORD WINAPI LookupThreadProc(void*) {
             Wh_Log(L"Quick Lookup: request failed.");
         }
     }
+    winrt::uninit_apartment();
     return 0;
 }
 
@@ -14076,6 +13673,24 @@ WeatherVisual WeatherVisualFromCode(int code) {
     }
 }
 
+std::wstring WeatherEmoji(WeatherVisual visual, bool night, float temperature = NAN, bool fahrenheit = false) {
+    std::wstring emoji;
+    switch (visual) {
+        case WeatherVisual::Clear: emoji = night ? L"🌙" : L"☀️"; break;
+        case WeatherVisual::PartlyCloudy: emoji = night ? L"🌙☁️" : L"⛅"; break;
+        case WeatherVisual::Cloudy: emoji = L"☁️"; break;
+        case WeatherVisual::Fog: emoji = L"🌫️"; break;
+        case WeatherVisual::Storm: emoji = L"⛈️"; break;
+        case WeatherVisual::Rain: emoji = L"🌧️"; break;
+        case WeatherVisual::Snow: emoji = L"🌨️"; break;
+        default: return L"🌡️";
+    }
+    const float celsius = fahrenheit ? (temperature - 32.0f) / 1.8f : temperature;
+    if (celsius <= 0.0f) emoji += L"🥶";
+    else if (celsius >= 35.0f) emoji += L"🥵";
+    return emoji;
+}
+
 struct MarqueeLayoutCache {
     std::wstring text;
     IDWriteTextFormat* format = nullptr;
@@ -14470,11 +14085,10 @@ class Renderer {
         metrics.hasWeather = settings.weather;
         if (metrics.hasWeather) {
             const bool hasData = state.weather.hasData && (now - state.weather.lastUpdated < 3600.0);
-            wchar_t label[32] = {};
-            if (hasData) swprintf_s(label, L"%s\x00B0", WeatherTemperatureText(state.weather.temperature).c_str());
-            else wcscpy_s(label, ARRAYSIZE(label), L"--\x00B0");
-            metrics.weatherWidth = 24.0f * settings.sizeScale +
-                MeasureTextWidthCached(WidestDigitForm(label), fmt, idleWeatherWidthCache_);
+            const auto emoji = WeatherEmoji(hasData ? WeatherVisualFromCode(state.weather.weatherCode) : WeatherVisual::Unknown,
+                ChinaWeatherNight(ChinaWeatherClock().wHour), hasData ? state.weather.temperature : NAN, settings.weatherFahrenheit);
+            const auto label = emoji + L" " + (hasData ? WeatherTemperatureText(state.weather.temperature) : L"--") + L"°";
+            metrics.weatherWidth = MeasureTextWidthCached(WidestDigitForm(label), fmt, idleWeatherWidthCache_);
         }
 
         metrics.hasMic =
@@ -15878,154 +15492,28 @@ class Renderer {
     // rather than path geometry wherever possible, to keep per-frame allocation
     // down.
 
-    void DrawCloudShape(D2D1_POINT_2F c, float s, ID2D1Brush* brush) {
-        const D2D1_RECT_F base = D2D1::RectF(c.x - 0.44f * s, c.y + 0.02f * s,
-                                             c.x + 0.44f * s, c.y + 0.21f * s);
-        target_->FillRoundedRectangle(D2D1::RoundedRect(base, 0.10f * s, 0.10f * s), brush);
-        target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(c.x - 0.24f * s, c.y + 0.02f * s), 0.18f * s, 0.18f * s), brush);
-        target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(c.x - 0.01f * s, c.y - 0.10f * s), 0.24f * s, 0.24f * s), brush);
-        target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(c.x + 0.25f * s, c.y + 0.03f * s), 0.17f * s, 0.17f * s), brush);
-    }
-
-    void DrawSunShape(D2D1_POINT_2F c, float s, ID2D1Brush* brush, float coreRadius = 0.26f) {
-        target_->FillEllipse(D2D1::Ellipse(c, coreRadius * s, coreRadius * s), brush);
-
-        const float inner = (coreRadius + 0.07f) * s;
-        const float outer = (coreRadius + 0.15f) * s;
-        for (int i = 0; i < 8; ++i) {
-            const float a = static_cast<float>(i) * 3.14159265f / 4.0f;
-            const float ca = std::cos(a);
-            const float sa = std::sin(a);
-            target_->DrawLine(D2D1::Point2F(c.x + ca * inner, c.y + sa * inner),
-                              D2D1::Point2F(c.x + ca * outer, c.y + sa * outer),
-                              brush, std::max(1.2f, 0.055f * s));
-        }
-    }
-
-    void DrawLightningShape(D2D1_POINT_2F c, float s, ID2D1Brush* brush) {
-        ComPtr<ID2D1PathGeometry> bolt;
-        if (FAILED(d2dFactory_->CreatePathGeometry(&bolt)) || !bolt) {
-            return;
-        }
-        ComPtr<ID2D1GeometrySink> sink;
-        if (FAILED(bolt->Open(&sink)) || !sink) {
-            return;
-        }
-        sink->BeginFigure(D2D1::Point2F(c.x + 0.07f * s, c.y + 0.16f * s), D2D1_FIGURE_BEGIN_FILLED);
-        sink->AddLine(D2D1::Point2F(c.x - 0.11f * s, c.y + 0.44f * s));
-        sink->AddLine(D2D1::Point2F(c.x + 0.00f * s, c.y + 0.44f * s));
-        sink->AddLine(D2D1::Point2F(c.x - 0.06f * s, c.y + 0.66f * s));
-        sink->AddLine(D2D1::Point2F(c.x + 0.15f * s, c.y + 0.36f * s));
-        sink->AddLine(D2D1::Point2F(c.x + 0.03f * s, c.y + 0.36f * s));
-        sink->AddLine(D2D1::Point2F(c.x + 0.12f * s, c.y + 0.16f * s));
-        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-        sink->Close();
-        target_->FillGeometry(bolt.Get(), brush);
-    }
-
     void DrawWeatherIcon(D2D1_POINT_2F center, float size, WeatherVisual visual,
-                         ID2D1Brush* strong, ID2D1Brush* soft) {
-        const float s = size;
-        const float stroke = std::max(1.3f, 0.06f * s);
-
-        // Opaque cloud stops keep overlapping primitives free of internal seams.
-        auto gradient = [&](UINT32 top, UINT32 bottom) {
-            D2D1_GRADIENT_STOP stops[] = {
-                {0.0f, D2D1::ColorF(top)}, {1.0f, D2D1::ColorF(bottom)}};
-            ComPtr<ID2D1GradientStopCollection> collection;
-            ComPtr<ID2D1LinearGradientBrush> brush;
-            if (SUCCEEDED(target_->CreateGradientStopCollection(stops, 2, &collection))) {
-                target_->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties(
-                    D2D1::Point2F(center.x, center.y - 0.5f * s),
-                    D2D1::Point2F(center.x, center.y + 0.5f * s)), collection.Get(), &brush);
-            }
-            if (brush) brush->SetOpacity(settingsOpacity_);
-            return brush;
-        };
-        auto cloud = gradient(0xFFFFFF, 0xCDD9ED);
-        auto shade = gradient(0xC5D0E2, 0x98ABC7);
-        auto sun = gradient(0xFFE578, 0xFFAA32);
-        auto rain = gradient(0x9CDEFF, 0x55B4F6);
-        if (cloud) strong = cloud.Get();
-        if (shade) soft = shade.Get();
-        ID2D1Brush* warm = sun ? sun.Get() : strong;
-        ID2D1Brush* cool = rain ? rain.Get() : soft;
-
-        switch (visual) {
-            case WeatherVisual::Clear:
-                DrawSunShape(center, s, warm, 0.28f);
-                break;
-
-            case WeatherVisual::PartlyCloudy: {
-                // Sun peeking out behind the cloud's upper-left.
-                DrawSunShape(D2D1::Point2F(center.x - 0.20f * s, center.y - 0.20f * s), s * 0.62f, warm, 0.30f);
-                DrawCloudShape(D2D1::Point2F(center.x + 0.05f * s, center.y + 0.06f * s), s * 0.92f, strong);
-                break;
-            }
-
-            case WeatherVisual::Cloudy:
-                DrawCloudShape(D2D1::Point2F(center.x, center.y - 0.06f * s), s, soft);
-                DrawCloudShape(D2D1::Point2F(center.x + 0.04f * s, center.y + 0.06f * s), s * 0.86f, strong);
-                break;
-
-            case WeatherVisual::Fog: {
-                DrawCloudShape(D2D1::Point2F(center.x, center.y - 0.16f * s), s * 0.92f, strong);
-                for (int i = 0; i < 3; ++i) {
-                    const float y = center.y + (0.24f + 0.15f * static_cast<float>(i)) * s;
-                    const float half = (0.34f - 0.05f * static_cast<float>(i)) * s;
-                    target_->DrawLine(D2D1::Point2F(center.x - half, y),
-                                      D2D1::Point2F(center.x + half, y), soft, stroke);
-                }
-                break;
-            }
-
-            case WeatherVisual::Storm:
-                DrawCloudShape(D2D1::Point2F(center.x, center.y - 0.20f * s), s * 0.92f, soft);
-                DrawLightningShape(center, s, warm);
-                break;
-
-            case WeatherVisual::Rain: {
-                DrawCloudShape(D2D1::Point2F(center.x, center.y - 0.18f * s), s * 0.92f, strong);
-                for (int i = 0; i < 3; ++i) {
-                    const float x = center.x + (-0.22f + 0.22f * static_cast<float>(i)) * s;
-                    const float y = center.y + 0.24f * s;
-                    target_->DrawLine(D2D1::Point2F(x + 0.05f * s, y),
-                                      D2D1::Point2F(x - 0.03f * s, y + 0.26f * s), cool, stroke);
-                }
-                break;
-            }
-
-            case WeatherVisual::Snow: {
-                DrawCloudShape(D2D1::Point2F(center.x, center.y - 0.18f * s), s * 0.92f, strong);
-                for (int i = 0; i < 3; ++i) {
-                    const D2D1_POINT_2F f = D2D1::Point2F(
-                        center.x + (-0.22f + 0.22f * static_cast<float>(i)) * s,
-                        center.y + (0.34f + (i == 1 ? 0.06f : 0.0f)) * s);
-                    const float r = 0.075f * s;
-                    for (int k = 0; k < 3; ++k) {
-                        const float a = static_cast<float>(k) * 3.14159265f / 3.0f;
-                        target_->DrawLine(D2D1::Point2F(f.x - std::cos(a) * r, f.y - std::sin(a) * r),
-                                          D2D1::Point2F(f.x + std::cos(a) * r, f.y + std::sin(a) * r),
-                                          strong, std::max(1.0f, 0.035f * s));
-                    }
-                }
-                break;
-            }
-
-            case WeatherVisual::Unknown:
-            default: {
-                // Thermometer: stem, bulb, and a couple of gradation ticks.
-                const float stemW = 0.11f * s;
-                const D2D1_RECT_F stem = D2D1::RectF(center.x - stemW, center.y - 0.40f * s,
-                                                     center.x + stemW, center.y + 0.18f * s);
-                target_->FillRoundedRectangle(D2D1::RoundedRect(stem, stemW, stemW), soft);
-                target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(center.x, center.y + 0.26f * s), 0.19f * s, 0.19f * s), strong);
-                const D2D1_RECT_F mercury = D2D1::RectF(center.x - stemW * 0.55f, center.y - 0.12f * s,
-                                                        center.x + stemW * 0.55f, center.y + 0.20f * s);
-                target_->FillRoundedRectangle(D2D1::RoundedRect(mercury, stemW * 0.55f, stemW * 0.55f), strong);
-                break;
-            }
+                         ID2D1Brush* strong, ID2D1Brush* soft, bool night = false,
+                         float temperature = NAN, bool fahrenheit = false) {
+        const auto emoji = WeatherEmoji(visual, night, temperature, fahrenheit);
+        const auto count = std::count_if(emoji.begin(), emoji.end(), [](wchar_t c) {
+            return c != 0xFE0F && (c < 0xDC00 || c > 0xDFFF);
+        });
+        const float fontSize = size / static_cast<float>(std::max<ptrdiff_t>(1, count));
+        if (!weatherEmojiFormat_ || weatherEmojiFontSize_ != fontSize) {
+            weatherEmojiFormat_.Reset();
+            if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI Emoji", nullptr,
+                    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                    fontSize, L"", &weatherEmojiFormat_))) return;
+            weatherEmojiFontSize_ = fontSize;
+            weatherEmojiFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            weatherEmojiFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            weatherEmojiFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         }
+        target_->DrawTextW(emoji.c_str(), static_cast<UINT32>(emoji.size()), weatherEmojiFormat_.Get(),
+            D2D1::RectF(center.x - size * 0.6f, center.y - size * 0.6f,
+                        center.x + size * 0.6f, center.y + size * 0.6f),
+            strong, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
     }
 
     // Small vector glyphs shared by the weather, hardware and game-overlay cards.
@@ -16244,7 +15732,8 @@ class Renderer {
         if (hasReading && iconStrong && iconSoft) {
             DrawWeatherIcon(D2D1::Point2F(heroLeft + 22.0f * scale, readingCenterY), 44.0f * scale,
                             WeatherVisualFromCode(page == 0 ? state.weather.weatherCode : forecast.weatherCode),
-                            iconStrong.Get(), iconSoft.Get());
+                            iconStrong.Get(), iconSoft.Get(), page == 0 && ChinaWeatherNight(ChinaWeatherClock().wHour),
+                            page == 0 ? state.weather.temperature : forecast.high, settings.weatherFahrenheit);
         } else if (iconStrong && iconSoft) {
             DrawWeatherIcon(D2D1::Point2F(heroLeft + 22.0f * scale, readingCenterY), 44.0f * scale,
                             WeatherVisual::Unknown, iconStrong.Get(), iconSoft.Get());
@@ -17318,18 +16807,13 @@ class Renderer {
                 }
                 slotX += (IdleStripLayout::kDividerWidth + IdleStripLayout::kSlotGap) * scale;
 
-                wchar_t weatherLabel[32] = {};
-                if (hasWeather) swprintf_s(weatherLabel, L"%s\x00B0", WeatherTemperatureText(state.weather.temperature).c_str());
-                else wcscpy_s(weatherLabel, ARRAYSIZE(weatherLabel), L"--\x00B0");
-                const float iconSlot = 24.0f * scale;
-                DrawWeatherIcon(D2D1::Point2F(slotX + 10.0f * scale, (rect.top + rect.bottom) * 0.5f),
-                                20.0f * scale,
-                                hasWeather ? WeatherVisualFromCode(state.weather.weatherCode) : WeatherVisual::Unknown,
-                                textBrush_.Get(), textBrush_.Get());
+                const auto emoji = WeatherEmoji(hasWeather ? WeatherVisualFromCode(state.weather.weatherCode) : WeatherVisual::Unknown,
+                    ChinaWeatherNight(ChinaWeatherClock().wHour), hasWeather ? state.weather.temperature : NAN, settings.weatherFahrenheit);
+                const auto weatherLabel = emoji + L" " + (hasWeather ? WeatherTemperatureText(state.weather.temperature) : L"--") + L"°";
                 const D2D1_RECT_F wRect =
-                    D2D1::RectF(slotX + iconSlot, rect.top, slotX + idleMetrics.weatherWidth, rect.bottom);
-                target_->DrawTextW(weatherLabel, static_cast<UINT32>(wcslen(weatherLabel)), idleFmt,
-                                   wRect, textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
+                    D2D1::RectF(slotX, rect.top, slotX + idleMetrics.weatherWidth, rect.bottom);
+                target_->DrawTextW(weatherLabel.c_str(), static_cast<UINT32>(weatherLabel.size()), idleFmt,
+                                   wRect, textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
             }
             textBrush_->SetOpacity(1.0f);
 
@@ -17836,7 +17320,7 @@ public:
     float MeasureLookupCard(const SharedState& state, const Settings& settings) {
         const LookupSnapshot& lk = state.lookup;
         if (lk.status == LookupStatus::Search) {
-            const std::vector<LookupRow> rows = BuildLookupRows(state.lookupRecent, g_lookupUi);
+            const std::vector<LookupRow> rows = BuildLookupRows(state.lookupRecent, g_lookupUi, state.lookupSuggestions);
             return LookupLayout::SearchHeight(static_cast<int>(rows.size()),
                                               LookupHasHeader(g_lookupUi, rows));
         }
@@ -18140,7 +17624,7 @@ public:
                                      D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         DWRITE_TEXT_METRICS tm{};
         if (ui.text.empty()) {
-            auto hint = MakeLineLayout(L"输入单词或短语", textFormat_.Get(), 4096.0f, &tm);
+            auto hint = MakeLineLayout(L"输入英文或中文，支持拼写候选", textFormat_.Get(), 4096.0f, &tm);
             if (hint) {
                 mutedBrush_->SetOpacity(0.50f);
                 target_->DrawTextLayout(D2D1::Point2F(areaLeft + 6.0f, midY - tm.height * 0.5f),
@@ -18227,7 +17711,7 @@ public:
                 DrawCard(rr, 10.0f, false);
             }
 
-            const int glyph = row.kind == LookupRowKind::Typed ? 0
+            const int glyph = (row.kind == LookupRowKind::Typed || row.kind == LookupRowKind::Suggestion) ? 0
                               : row.kind == LookupRowKind::Clipboard ? 2 : 1;
             ID2D1SolidColorBrush* glyphBrush = (row.kind == LookupRowKind::Recent) ? mutedBrush_.Get()
                                                                                     : accentBrush_.Get();
@@ -18389,7 +17873,7 @@ public:
         DrawLookupField(rect, now);
 
         if (lk.status == LookupStatus::Search) {
-            const std::vector<LookupRow> rows = BuildLookupRows(state.lookupRecent, g_lookupUi);
+            const std::vector<LookupRow> rows = BuildLookupRows(state.lookupRecent, g_lookupUi, state.lookupSuggestions);
             DrawLookupRows(rect, rows, LookupHasHeader(g_lookupUi, rows));
         } else if (lk.status == LookupStatus::Found) {
             DrawLookupResult(state, rect, settings);
@@ -20276,6 +19760,8 @@ public:
     SYSTEMTIME calendarCachedDate_{};
     std::wstring calendarCachedMonthName_;
     std::wstring calendarCachedWeekdayName_;
+    ComPtr<IDWriteTextFormat> weatherEmojiFormat_;
+    float weatherEmojiFontSize_ = -1.0f;
     ComPtr<IDWriteTextFormat> weatherDescFormat_;
     float weatherDescFormatSize_ = -1.0f;
     uint64_t notificationIconGeneration_ = 0;
@@ -20687,16 +20173,8 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         case WM_KILLFOCUS:
             if (g_lookupUi.open) CloseLookupPanel(hwnd);
             break;
-        case WM_APP + 0x449:
-            if (ReadNbaSetup() == L"pending") ShowNbaSetup(hwnd, true);
-            return 0;
         case WM_TIMER:
             if (wParam == 0x44A) { ProcessFileTrayDeletes(); return 0; }
-            if (wParam == 0x449) {
-                KillTimer(hwnd, 0x449);
-                PostMessageW(hwnd, WM_APP + 0x449, 0, 0);
-                return 0;
-            }
             break;
         case WM_CREATE:
             LoadFileTrayDeletes();
@@ -20705,7 +20183,6 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g_islandManuallyPlaced = Wh_GetIntValue(L"IslandManuallyPlaced", 0) != 0;
             g_islandDragX = g_islandManuallyPlaced ? Wh_GetIntValue(L"IslandDragX", 0) : 0;
             g_islandDragY = g_islandManuallyPlaced ? Wh_GetIntValue(L"IslandDragY", 0) : 0;
-            SetTimer(hwnd, 0x449, 45000, nullptr);
             AddClipboardFormatListener(hwnd);
             if (g_shellHookMessage == 0) g_shellHookMessage = RegisterWindowMessageW(L"SHELLHOOK");
             if (g_taskbarCreatedMessage == 0) g_taskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");

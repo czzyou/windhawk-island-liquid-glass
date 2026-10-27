@@ -45,6 +45,9 @@ SYSTEMTIME ChinaWeatherClock() {
     return result;
 }
 
+// shortcut: 18:00–06:00 approximates night; use city sunrise and sunset when available.
+bool ChinaWeatherNight(unsigned hour) { return hour >= 18 || hour < 6; }
+
 bool ChinaWeatherTemperature(const std::wstring& text, float& value) {
     if (text.empty()) return false;
     wchar_t* end = nullptr;

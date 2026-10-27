@@ -51,17 +51,6 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {''')
         if marker not in src and marker.startswith('void ShowImportantDays'):
             marker = 'void ShowImportantDays(HWND hwnd) {'
         change(marker, marker + '\n    if (Wh_GetIntValue(L"UpdateRequested", 0)) return;')
-    # Let the first installation finish its startup check before the modal setup dialog.
-    change('            PostMessageW(hwnd, WM_APP + 0x449, 0, 0);',
-           '            SetTimer(hwnd, 0x449, 45000, nullptr);')
-    change('        case WM_CREATE:', '''        case WM_TIMER:
-            if (wParam == 0x449) {
-                KillTimer(hwnd, 0x449);
-                PostMessageW(hwnd, WM_APP + 0x449, 0, 0);
-                return 0;
-            }
-            break;
-        case WM_CREATE:''')
     badge = (Path(__file__).parent / 'update-badge.h').read_text(encoding='utf-8')
     change('class Renderer {', badge + '\nclass Renderer {')
     change('    ComPtr<ID2D1SolidColorBrush> scratchColorBrush_;',

@@ -13,7 +13,7 @@ assert re.search(r'^// @version\s+' + re.escape(release['version']) + r'$', sour
 assert re.search(r'^// @id\s+dynamic-island-liquid-glass$', source, re.M)
 assert 'Wh_SetIntValue(L"UpdateHeartbeat"' in source
 assert 'Wh_SetIntValue(L"UpdateReady"' in source
-assert 'SetTimer(hwnd, 0x449, 45000, nullptr)' in source
+assert 'SetTimer(hwnd, 0x449, 45000, nullptr)' not in source
 assert 'AppendMenuW(menu, MF_STRING, 49, g_updateAvailable.load() ? L"安装可用更新…" : L"检查更新…")' in source
 assert 'case 49: CheckIslandUpdates(hwnd); break;' in source
 assert not re.search(r'#include\s+"', source), 'Release must be self contained'
@@ -21,6 +21,10 @@ assert '-lcomctl32' in source.split('// ==/WindhawkMod==')[0]
 assert '  - LiquidGlass: true' in source and '  - ThemePreset: custom' in source
 assert '  - PillBgColor: "#10101024"' in source
 assert '  - WeatherCity: ""' in source
+assert '  - NBAScores: false' in source
+assert 'PostMessageW(hwnd, WM_APP + 0x449' not in source
+assert 'ShowNbaSetup(hwnd, true)' not in source
+assert 'case 48: ShowNbaSetup(hwnd); break;' in source
 assert not re.search(r'(?:CzzY|D:\\\\CzzY|E:\\\\math)', source)
 
 test = r'''#include <windows.h>

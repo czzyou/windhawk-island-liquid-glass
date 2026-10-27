@@ -13,13 +13,13 @@ def apply_file_tray(src):
     helpers = '\n'.join(Path(__file__).with_name(name).read_text(encoding='utf-8')
                         for name in ('file-tray-drag.h', 'file-tray-delete.h'))
     src = src.replace(marker, helpers + '\n' + marker)
-    change('        case WM_CREATE:\n', '''        case WM_CREATE:
+    change('        case WM_CREATE:\n', '''        case WM_TIMER:
+            if (wParam == 0x44A) { ProcessFileTrayDeletes(); return 0; }
+            break;
+        case WM_CREATE:
             LoadFileTrayDeletes();
             SetTimer(hwnd, 0x44A, 60000, nullptr);
             PostMessageW(hwnd, WM_TIMER, 0x44A, 0);
-''')
-    change('        case WM_TIMER:\n', '''        case WM_TIMER:
-            if (wParam == 0x44A) { ProcessFileTrayDeletes(); return 0; }
 ''')
     change('                added.push_back(std::move(item));', '''                if (!CancelFileTrayDelete(item.path)) {
                     MessageBoxW(hwnd, L"无法取消待删除计划，文件未重新加入托盘。", L"文件托盘", MB_OK | MB_ICONERROR);

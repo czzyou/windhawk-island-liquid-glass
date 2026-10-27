@@ -4,7 +4,7 @@ public:
     float MeasureLookupCard(const SharedState& state, const Settings& settings) {
         const LookupSnapshot& lk = state.lookup;
         if (lk.status == LookupStatus::Search) {
-            const std::vector<LookupRow> rows = BuildLookupRows(state.lookupRecent, g_lookupUi);
+            const std::vector<LookupRow> rows = BuildLookupRows(state.lookupRecent, g_lookupUi, state.lookupSuggestions);
             return LookupLayout::SearchHeight(static_cast<int>(rows.size()),
                                               LookupHasHeader(g_lookupUi, rows));
         }
@@ -308,7 +308,7 @@ public:
                                      D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         DWRITE_TEXT_METRICS tm{};
         if (ui.text.empty()) {
-            auto hint = MakeLineLayout(L"输入单词或短语", textFormat_.Get(), 4096.0f, &tm);
+            auto hint = MakeLineLayout(L"输入英文或中文，支持拼写候选", textFormat_.Get(), 4096.0f, &tm);
             if (hint) {
                 mutedBrush_->SetOpacity(0.50f);
                 target_->DrawTextLayout(D2D1::Point2F(areaLeft + 6.0f, midY - tm.height * 0.5f),
@@ -395,7 +395,7 @@ public:
                 DrawCard(rr, 10.0f, false);
             }
 
-            const int glyph = row.kind == LookupRowKind::Typed ? 0
+            const int glyph = (row.kind == LookupRowKind::Typed || row.kind == LookupRowKind::Suggestion) ? 0
                               : row.kind == LookupRowKind::Clipboard ? 2 : 1;
             ID2D1SolidColorBrush* glyphBrush = (row.kind == LookupRowKind::Recent) ? mutedBrush_.Get()
                                                                                     : accentBrush_.Get();
@@ -557,7 +557,7 @@ public:
         DrawLookupField(rect, now);
 
         if (lk.status == LookupStatus::Search) {
-            const std::vector<LookupRow> rows = BuildLookupRows(state.lookupRecent, g_lookupUi);
+            const std::vector<LookupRow> rows = BuildLookupRows(state.lookupRecent, g_lookupUi, state.lookupSuggestions);
             DrawLookupRows(rect, rows, LookupHasHeader(g_lookupUi, rows));
         } else if (lk.status == LookupStatus::Found) {
             DrawLookupResult(state, rect, settings);

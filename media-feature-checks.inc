@@ -198,19 +198,43 @@ int main() {
     assert(QuickLookup::NormalizeQuery(L"  “hello,” \n")==L"hello");
     assert(QuickLookup::NormalizeQuery(std::wstring(100,L'a')).size()>QuickLookup::kMaxQueryChars);
     QuickLookup::Result result;
-    const std::string definition=R"({"en":[{"partOfSpeech":"noun","definitions":[{"definition":"A <b>greeting</b> &amp; welcome."}]}]})";
-    assert(QuickLookup::ParseWiktionaryEnglish(definition,L"hello",&result));
-    assert(QuickLookup::ParseWiktionaryEnglish("{\"en\" : "+definition.substr(6),L"hello",&result));
-    assert(result.body.find(L"greeting")!=std::wstring::npos && result.body.find(L"<b>")==std::wstring::npos);
-    replies={{true,404,""},{true,200,R"([{"word":"hello","meanings":[{"partOfSpeech":"interjection","definitions":[{"definition":"A greeting.","example":"Hello, friend!"}]}]}])"},{true,200,R"({"responseStatus":200,"responseData":{"translatedText":"一句问候。"}})"}};
-    hosts.clear(); replyIndex=0;
+    const std::string englishDictionary=R"({"ec":{"word":[{"ukphone":"həˈləʊ","trs":[{"tr":[{"l":{"i":["int. 你好；喂"]}}]}]}]}})";
+    const std::string chineseDictionary=R"({"ce": {"word": [{"trs": [{"tr": [{"l": {"i": ["", {"#text": "apple"}], "#tran": "苹果；苹果树"}}]}]}]}})";
+    const std::string typoCandidates=R"({"result":{"code":200},"data":{"entries":[{"entry":"apple","explain":"n. 苹果"},{"entry":"applet","explain":"n. 小程序"},{"entry":"apple","explain":"duplicate"}]}})";
+    replies={{true,200,englishDictionary}}; hosts.clear(); replyIndex=0;
     assert(QuickLookup::LookupText(L"hello",&result)==QuickLookup::Outcome::Found);
-    assert(hosts.size()==3 && hosts[0]==L"en.wiktionary.org" && hosts[1]==L"api.dictionaryapi.dev" && hosts[2]==L"api.mymemory.translated.net");
-    assert(result.body.find(L"一句问候")!=std::wstring::npos && result.body.find(L"A greeting.")!=std::wstring::npos);
-    replies={{false,0,""},{false,0,""},{false,0,""}}; replyIndex=0;
+    assert(hosts.size()==1 && hosts[0]==L"dict.youdao.com");
+    assert(result.body.find(L"你好")!=std::wstring::npos && result.subtitle.find(L"英 → 中")!=std::wstring::npos);
+    replies={{true,200,chineseDictionary}}; replyIndex=0;
+    assert(QuickLookup::LookupText(L"苹果",&result)==QuickLookup::Outcome::Found);
+    assert(result.body.find(L"apple")!=std::wstring::npos && result.subtitle==L"中 → 英");
+    replies={{false,0,""}}; replyIndex=0;
     assert(QuickLookup::LookupText(L"hello",&result)==QuickLookup::Outcome::Failed);
-    replies={{true,404,""},{true,404,""},{true,404,""},{true,404,""}}; replyIndex=0;
+    replies={{true,200,"<html>bad gateway</html>"}}; replyIndex=0;
+    assert(QuickLookup::LookupText(L"hello",&result)==QuickLookup::Outcome::Failed);
+    replies={{true,404,""}}; replyIndex=0;
     assert(QuickLookup::LookupText(L"hello",&result)==QuickLookup::Outcome::NotFound);
+    replies={{true,200,R"({"typos":{"typo":[{"word":"apple"}]}})"}}; replyIndex=0;
+    assert(QuickLookup::LookupText(L"appple",&result)==QuickLookup::Outcome::NotFound);
+    std::vector<LookupRecent> suggestions;
+    replies={{true,200,typoCandidates}}; replyIndex=0;
+    assert(QuickLookup::LookupSuggestions(L"appple",&suggestions)==QuickLookup::Outcome::Found);
+    assert(suggestions.size()==2 && suggestions[0].query==L"apple" && suggestions[0].detail==L"n. 苹果");
+    LookupUiState typedUi; typedUi.text=L"appple";
+    const auto candidateRows=BuildLookupRows({},typedUi,suggestions);
+    assert(candidateRows.size()==3 && candidateRows[0].kind==LookupRowKind::Suggestion && candidateRows[0].query==L"apple");
+    assert(candidateRows.back().kind==LookupRowKind::Typed && candidateRows.back().query==L"appple");
+    typedUi.text=L"apple";
+    const auto exactRows=BuildLookupRows({},typedUi,suggestions);
+    assert(exactRows.size()==2 && exactRows[0].query==L"apple");
+    g_lookupRequestSeq=4; g_state.lookup.active=true; g_state.lookup.status=LookupStatus::Search;
+    QuickLookup::ApplySuggestions(3,suggestions); assert(g_state.lookupSuggestions.empty());
+    QuickLookup::ApplySuggestions(4,suggestions); assert(g_state.lookupSuggestions.size()==2);
+    g_state.lookup.status=LookupStatus::Found;
+    QuickLookup::ApplySuggestions(4,{}); assert(g_state.lookupSuggestions.size()==2);
+    g_state.lookup.status=LookupStatus::Loading;
+    QuickLookup::ApplySuggestions(4,suggestions,true); assert(g_state.lookup.status==LookupStatus::Search);
+    g_state.lookupSuggestions.clear();
     bool found=false;
     assert(!QuickLookup::CacheLookup(L"unsubmitted",&found,&result));
     QuickLookup::CacheStore(L"hello",true,result); assert(QuickLookup::CacheLookup(L"hello",&found,&result) && found);
@@ -227,6 +251,22 @@ int main() {
     assert(LookupRowAtContentPoint({true,40,10,380,184},static_cast<int>(rows.size()),true)==-1);
     g_lookupJobEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr); assert(g_lookupJobEvent);
     HANDLE worker=CreateThread(nullptr,0,LookupThreadProc,nullptr,0,nullptr); assert(worker);
+    // Queue a typo lookup directly: even an immediate Enter returns spelling choices.
+    replies={{true,200,R"({"input":"appple"})"},{true,200,typoCandidates}}; replyIndex=0;
+    { std::lock_guard lock(g_stateMutex); g_lookupRequestSeq=10; g_state.lookup.active=true; g_state.lookup.status=LookupStatus::Loading; }
+    { std::lock_guard lock(g_lookupJobMutex); g_lookupJob={10,L"appple",L"appple",false}; }
+    SetEvent(g_lookupJobEvent);
+    bool choicesReady=false;
+    for(int attempt=0;attempt<100 && !choicesReady;++attempt) {
+        Sleep(10);
+        std::lock_guard lock(g_stateMutex);
+        choicesReady=g_state.lookup.status==LookupStatus::Search && g_state.lookupSuggestions.size()==2;
+    }
+    assert(choicesReady);
+    // Closing while a debounced suggestion is queued cannot reopen the card.
+    { std::lock_guard lock(g_stateMutex); ++g_lookupRequestSeq; g_state.lookup.active=false; }
+    { std::lock_guard lock(g_lookupJobMutex); g_lookupJob={10,L"old",L"old",true}; }
+    SetEvent(g_lookupJobEvent);
     SetEvent(g_stopEvent); assert(WaitForSingleObject(worker,1000)==WAIT_OBJECT_0);
     CloseHandle(worker); CloseHandle(g_lookupJobEvent); CloseHandle(g_stopEvent);
     winrt::uninit_apartment();

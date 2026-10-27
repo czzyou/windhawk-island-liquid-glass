@@ -23,7 +23,7 @@ def apply_media_features(src):
     bool playing = false;
     BitmapPixels icon;
 };
-''' + header('media-features-types.h') + '\nstruct SharedState {\n    std::vector<MediaSourceInfo> mediaSources;\n    LyricsSnapshot lyrics;\n    LookupSnapshot lookup;\n    std::vector<LookupRecent> lookupRecent;')
+''' + header('media-features-types.h') + '\nstruct SharedState {\n    std::vector<MediaSourceInfo> mediaSources;\n    LyricsSnapshot lyrics;\n    LookupSnapshot lookup;\n    std::vector<LookupRecent> lookupRecent, lookupSuggestions;')
     # Hit-test helpers need MediaContentPoint, which is declared after tab arithmetic.
     globals_ = header('media-features-globals.h')
     a = globals_.index('int MediaSourceDockHit(')
@@ -58,7 +58,7 @@ def apply_media_features(src):
     $name: 歌词偏移（蓝牙，毫秒）
   - QuickLookup: true
     $name: 快捷查词
-    $description: 打开搜索框，提交后查询英文词典或百科；最近记录仅存内存。
+    $description: 英中、中英词典；输入停顿后向有道请求候选及拼写建议，Enter 查询。最近记录仅存内存。
 '''
     change('  - FileTrayModule: false', settings_yaml + '  - FileTrayModule: false')
     change('  - HideShowKey:', '''  - LookupModifiers: alt
@@ -199,6 +199,7 @@ def apply_media_features(src):
     change('            if (!reportedSuccess) {', '            if (!reportedSuccess && source.empty()) {')
 
     runtime = '\n'.join(header(name) for name in ('media-http.h', 'media-web-data.h', 'lyrics.h', 'quick-lookup.h', 'lookup-worker.h'))
+    runtime = runtime.replace('// LOOKUP_DICTIONARY', header('lookup-dictionary.h'))
     runtime = runtime.replace('DWORD WINAPI LyricsThreadProc(', header('lyrics-providers.h') + '\nDWORD WINAPI LyricsThreadProc(')
     change('void ShowContextMenu(HWND hwnd, POINT screenPoint) {', dock_hit + runtime + '\nstd::vector<IslandKind> ChooseActivities(const SharedState&, const Settings&, double);\n' + header('media-features-menu.h') + '\nvoid ShowContextMenu(HWND hwnd, POINT screenPoint) {')
     change('    AppendMenuW(menu, MF_STRING, 40,',

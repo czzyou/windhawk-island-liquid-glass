@@ -26,12 +26,12 @@ def apply_release(src, version, author):
 - 天气：留空城市时，向中国天气网查询公网 IP 所在城市；不需要密钥。
   代理或 VPN 可能改变定位结果。可以在设置中填写九位中国天气网城市编号覆盖自动定位。
   数据源覆盖中国天气网支持的地区，定位或网络失败时不会假装显示沈阳天气。
-- NBA：首次启动选择主队；支持全部 30 支球队、多主队及优先顺序。
-  暂不开启后不再弹窗；右键灵动岛 → NBA 主队设置，可随时重新选择。
+- NBA：默认关闭，启动时不询问球队。需要时先在模组设置中开启 NBA 总开关，
+  再右键灵动岛 → NBA 主队设置；支持全部 30 支球队、多主队及优先顺序。
   比分来自 ESPN，无直播时回到普通时钟。
 - 媒体来源：展开媒体页点击底部来源按钮临时切换；右键可锁定来源或自动跟随。
 - 歌词：展开后滚轮进入歌词页；右键可启用收起歌词和歌词置顶，媒体页内歌词可在模组设置中调整。支持网易云、QQ、酷狗和 LRCLIB，中文歌优先国内来源；查询会向使用的来源发送歌名、歌手和时长，LRCLIB 还会收到专辑信息。默认本地缓存上限 25 MB，右键可清缓存、微调蓝牙和有线同步。
-- 快捷查词：Alt+Space 打开输入框，提交后查询词典或百科，保留英文释义并通过 MyMemory 补充标注机译的中文译义；Esc 关闭。剪贴板仅作候选，最近查询仅存内存。快捷键可在设置中修改。
+- 快捷查词：Alt+Space 打开输入框，支持英中、中英词典；输入停顿后向有道请求候选及拼写建议，Enter 或点击候选查询词典释义；Esc 关闭。剪贴板仅作候选，最近查询仅存内存。快捷键可在设置中修改。
 - 重要日子：右键添加自己的生日、考试等日程；新安装没有预置个人日程。
 - 吃饭提醒：按本机时间提醒午饭和晚饭，可在设置中修改时间。
 - 液态玻璃默认参数已内置。英文、数字默认使用 SF Pro Text，中文优先使用苹方；字体由用户手动安装，公开安装包不包含字体文件，缺少字体时使用系统回退。
@@ -52,7 +52,7 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
         'ClockAccentGlow': 'false', 'FontFamily': '"SF Pro Text"',
         'ContourBorderHex': '"#E0E0E069"', 'PillBgColor': '"#10101024"',
         'TextPrimaryColor': '"#F2F2F7"', 'TextSecondaryColor': '"#D1D1D6"',
-        'NBAScores': 'true', 'FileTrayModule': 'true',
+        'NBAScores': 'false', 'FileTrayModule': 'true',
     }
     import re
     for key, value in defaults.items():
@@ -65,7 +65,7 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
     $description: 多支球队用逗号分隔，例如 CLE,PHI（骑士、76人）；只显示这些球队的实时比赛，同时比赛时按填写顺序选择。留空自动显示直播。
 ''', '')
     change('    $description: ESPN 比分每10秒刷新，默认收起；主队没有直播时隐藏。右键菜单可查看本地今日赛程统计。',
-           '    $description: 首次启动选择主队，之后可从右键菜单修改。此项是 NBA 总开关；无直播时显示普通时钟。')
+           '    $description: 默认关闭，启动时不询问球队。启用此总开关后，从右键菜单打开 NBA 主队设置并选择开启；无直播时显示普通时钟。')
     change('    $name: Weather City (Optional)', '    $name: 天气城市（留空按公网 IP 定位）')
     change("    $description: '中国天气网城市：沈阳，或九位城市编号（沈阳 101070101）。其他城市请填写编号。' ",
            "    $description: '留空自动定位；代理或 VPN 可能影响结果。手动覆盖可填九位中国天气网城市编号，例如北京 101010100。'")
@@ -135,13 +135,6 @@ std::wstring ReadNbaSetup() {
     change('void ShowContextMenu(HWND hwnd, POINT screenPoint) {', (root/'nba-setup-ui.h').read_text(encoding='utf-8') + '\nvoid ShowContextMenu(HWND hwnd, POINT screenPoint) {')
     change('    AppendMenuW(menu, MF_STRING, 46, L"重要日子…");', '    AppendMenuW(menu, MF_STRING, 46, L"重要日子…");\n    AppendMenuW(menu, MF_STRING, 48, L"NBA 主队设置…");')
     change('        case 46: ShowImportantDays(hwnd); break;', '        case 48: ShowNbaSetup(hwnd); break;\n        case 46: ShowImportantDays(hwnd); break;')
-    change('''        case WM_CREATE:
-            AddClipboardFormatListener(hwnd);''', '''        case WM_APP + 0x449:
-            if (ReadNbaSetup() == L"pending") ShowNbaSetup(hwnd, true);
-            return 0;
-        case WM_CREATE:
-            PostMessageW(hwnd, WM_APP + 0x449, 0, 0);
-            AddClipboardFormatListener(hwnd);''')
 
     # Keep optional personal reminders configurable without exporting user data.
     change('  - WeatherFahrenheit: false', '''  - MealReminders: true
