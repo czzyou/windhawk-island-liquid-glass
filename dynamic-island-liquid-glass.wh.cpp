@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.5.5
+// @version         1.5.6
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -375,7 +375,7 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
     $description: Swap the idle dashboard so the date is the headline and the time sits beneath it.
   - Lyrics: true
     $name: 实时歌词
-    $description: 通过网易云、QQ、酷狗和 LRCLIB 匹配当前歌曲；展开后可切换到歌词页。
+    $description: 仅网易云音乐、QQ 音乐、酷狗、酷我、Spotify、Apple Music 客户端支持歌词；浏览器不显示歌词。歌词通过网易云、QQ、酷狗和 LRCLIB 匹配。
   - CollapsedLyrics: true
     $name: 收起时显示歌词
     $description: 播放音乐且胶囊收起时，平滑自适应显示当前句歌词；右键菜单亦可随时切换。
@@ -3592,6 +3592,13 @@ struct Activity {
 };
 
 struct WeatherSnapshot {
+    struct ForecastDay {
+        bool available = false;
+        int date = 0, weatherCode = 0;
+        float low = 0, high = 0;
+        std::wstring description, wind;
+    };
+    ForecastDay forecast[3];
     bool hasDailyRange = false;
     float lowTemperature = 0.0f;
     float highTemperature = 0.0f;
@@ -3982,9 +3989,19 @@ int ClampInt(int v, int lo, int hi) {
 // renderer, the scroll handler and the hit tests can all share this. That
 // arithmetic used to be copy-pasted in seven places, which is exactly how they
 // drifted out of sync.
-bool LyricsAllowed(bool browser, bool music, bool video, bool hasArtist) {
-    if (video) return false;
-    return music || (!browser && hasArtist);
+bool LyricsAllowed(std::wstring source, bool music, bool video, bool hasArtist) {
+    if (video || (!music && !hasArtist)) return false;
+    for (auto& c : source) c = static_cast<wchar_t>(towlower(c));
+    const auto slash = source.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) source.erase(0, slash + 1);
+    // Match player identities, never song titles or browser-reported Music metadata.
+    for (const auto* player : {L"cloudmusic", L"cloudmusic.exe", L"qqmusic", L"qqmusic.exe",
+        L"kugou", L"kugou.exe", L"kwmusic", L"kwmusic.exe", L"spotify", L"spotify.exe",
+        L"applemusic", L"applemusic.exe", L"spotifyab.spotifymusic_zpdnekdrzrea0!spotify",
+        L"appleinc.applemusicwin_nzyj5cx40ttqa!app"}) {
+        if (source == player) return true;
+    }
+    return false;
 }
 bool LyricsResultReady(const LyricsSnapshot& lyrics, const std::wstring& identity) {
     return lyrics.trackIdentity == identity && (lyrics.hasData || lyrics.notFound || lyrics.failed);
@@ -4564,6 +4581,20 @@ float MediaScrubFractionUnbounded(const MediaContentPoint& pt) {
 
 // Index of the File Tray row under a content-space point, or -1. Rows are drawn
 // newest-first, so index 0 is the most recently dropped file.
+std::atomic<int> g_weatherPage{0};
+
+int NextWeatherPage(int page) { return (page + 1) % 3; }
+
+D2D1_RECT_F WeatherPageButtonBounds(float width) {
+    return D2D1::RectF(width - 132.0f, 14.0f, width - 24.0f, 42.0f);
+}
+
+bool WeatherPageButtonHit(const MediaContentPoint& point) {
+    if (!point.valid || point.width < 280.0f || point.height < 160.0f) return false;
+    const auto box = WeatherPageButtonBounds(point.width);
+    return point.x >= box.left && point.x <= box.right && point.y >= box.top && point.y <= box.bottom;
+}
+
 bool FileTrayDragThreshold(POINT start, POINT now, int width, int height) {
     return std::abs(now.x - start.x) >= std::max(1, width) ||
            std::abs(now.y - start.y) >= std::max(1, height);
@@ -7394,7 +7425,7 @@ DWORD WINAPI MediaThreadProc(void*) {
                     const auto playbackType=properties.PlaybackType();
                     const bool music=playbackType && playbackType.Value()==winrt::Windows::Media::MediaPlaybackType::Music;
                     const bool video=playbackType && playbackType.Value()==winrt::Windows::Media::MediaPlaybackType::Video;
-                    next.lyricsEligible=LyricsAllowed(IsBrowserMediaSource(next.sourceAppUserModelId),music,video,!next.artist.empty());
+                    next.lyricsEligible=LyricsAllowed(next.sourceAppUserModelId,music,video,!next.artist.empty());
 
                     if (timeline) {
                         int64_t age = 0;
@@ -8486,6 +8517,36 @@ bool ChinaWeatherTemperature(const std::wstring& text, float& value) {
     return true;
 }
 
+SYSTEMTIME ChinaWeatherDay(SYSTEMTIME today, int offset) {
+    today.wHour = today.wMinute = today.wSecond = today.wMilliseconds = 0;
+    FILETIME file{};
+    if (!SystemTimeToFileTime(&today, &file)) return {};
+    ULARGE_INTEGER ticks{};
+    ticks.LowPart = file.dwLowDateTime; ticks.HighPart = file.dwHighDateTime;
+    ticks.QuadPart += offset * 864000000000ULL;
+    file = {ticks.LowPart, ticks.HighPart};
+    SYSTEMTIME result{};
+    FileTimeToSystemTime(&file, &result);
+    return result;
+}
+
+int ChinaWeatherDateKey(const SYSTEMTIME& day) {
+    return day.wYear * 10000 + day.wMonth * 100 + day.wDay;
+}
+
+std::wstring ChinaWeatherDescription(const std::wstring& code) {
+    const wchar_t* descriptions[] = {L"晴", L"多云", L"阴", L"阵雨", L"雷阵雨", L"雷阵雨伴冰雹",
+        L"雨夹雪", L"小雨", L"中雨", L"大雨", L"暴雨", L"大暴雨", L"特大暴雨",
+        L"阵雪", L"小雪", L"中雪", L"大雪", L"暴雪", L"雾", L"冻雨", L"沙尘暴",
+        L"小到中雨", L"中到大雨", L"大到暴雨", L"暴雨到大暴雨", L"大暴雨到特大暴雨",
+        L"小到中雪", L"中到大雪", L"大到暴雪", L"浮尘", L"扬沙", L"强沙尘暴"};
+    if (code == L"53") return L"霾";
+    if (code == L"301") return L"雨";
+    if (code.empty() || !std::all_of(code.begin(), code.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; })) return L"未知";
+    const int index = _wtoi(code.c_str());
+    return index >= 0 && index < 32 ? descriptions[index] : L"未知";
+}
+
 int ChinaWeatherVisualCode(const std::wstring& code) {
     if (code.size() < 2) return 0;
     const std::wstring digits = (code[0] == L'd' || code[0] == L'n') ? code.substr(1) : code;
@@ -8535,22 +8596,31 @@ bool ParseChinaWeather(const std::string& currentScript, const std::string& fore
         parsed.windDir = field(current, L"wde");
         parsed.humidity = field(current, L"SD");
         if (!parsed.humidity.empty() && parsed.humidity.back() == L'%') parsed.humidity.pop_back();
-        wchar_t day[8]{}; swprintf_s(day, L"%02d/%02d", now.wMonth, now.wDay);
         const auto days = forecast.GetNamedArray(L"f");
-        for (const auto& value : days) {
-            const auto item = value.GetObject();
-            if (field(item, L"fi") != day) continue;
-            if (!ChinaWeatherTemperature(field(item, L"fd"), parsed.lowTemperature) ||
-                !ChinaWeatherTemperature(field(item, L"fc"), parsed.highTemperature) ||
-                parsed.lowTemperature > parsed.highTemperature) return false;
-            parsed.hasDailyRange = true;
-            break;
+        for (int page = 0; page < 3; ++page) {
+            const auto target = ChinaWeatherDay(now, page);
+            wchar_t day[8]{}; swprintf_s(day, L"%02u/%02u", target.wMonth, target.wDay);
+            auto& daily = parsed.forecast[page];
+            for (const auto& value : days) {
+                const auto item = value.GetObject();
+                if (field(item, L"fi") != day) continue;
+                if (!ChinaWeatherTemperature(field(item, L"fd"), daily.low) ||
+                    !ChinaWeatherTemperature(field(item, L"fc"), daily.high) || daily.low > daily.high) break;
+                daily.date = ChinaWeatherDateKey(target);
+                daily.weatherCode = ChinaWeatherVisualCode(field(item, L"fa"));
+                daily.description = ChinaWeatherDescription(field(item, L"fa"));
+                daily.wind = field(item, L"fe") + L" " + field(item, L"fg");
+                if (fahrenheit) { daily.low = daily.low * 1.8f + 32; daily.high = daily.high * 1.8f + 32; }
+                daily.available = true;
+                break;
+            }
         }
-        if (!parsed.hasDailyRange) return false;
+        if (!parsed.forecast[0].available) return false;
+        parsed.hasDailyRange = true;
+        parsed.lowTemperature = parsed.forecast[0].low;
+        parsed.highTemperature = parsed.forecast[0].high;
         if (fahrenheit) {
             parsed.temperature = parsed.temperature * 1.8f + 32;
-            parsed.lowTemperature = parsed.lowTemperature * 1.8f + 32;
-            parsed.highTemperature = parsed.highTemperature * 1.8f + 32;
             const float mph = _wtof(parsed.windSpeed.c_str()) / 1.609344f;
             wchar_t speed[16]{}; swprintf_s(speed, L"%.0f", mph); parsed.windSpeed = speed;
         }
@@ -8714,16 +8784,7 @@ inline TomorrowBrief MakeMealReminder(const SYSTEMTIME& local, int lunchShown, i
 }
 
 inline SYSTEMTIME BriefTomorrow(SYSTEMTIME today) {
-    today.wHour = today.wMinute = today.wSecond = today.wMilliseconds = 0;
-    FILETIME file{};
-    if (!SystemTimeToFileTime(&today, &file)) return {};
-    ULARGE_INTEGER ticks{};
-    ticks.LowPart = file.dwLowDateTime; ticks.HighPart = file.dwHighDateTime;
-    ticks.QuadPart += 864000000000ULL;
-    file = {ticks.LowPart, ticks.HighPart};
-    SYSTEMTIME result{};
-    FileTimeToSystemTime(&file, &result);
-    return result;
+    return ChinaWeatherDay(today, 1);
 }
 
 inline bool BriefPending(const TomorrowBrief& brief, int tomorrow, double now,
@@ -8761,13 +8822,7 @@ inline TomorrowBrief ParseTomorrowWeather(const std::string& script, const SYSTE
             const std::wstring code = item.GetNamedString(L"fa", L"").c_str();
             result.weatherCode = ChinaWeatherVisualCode(code);
             if (!result.weatherCode) return {};
-            const wchar_t* descriptions[] = {L"晴", L"多云", L"阴", L"阵雨", L"雷阵雨", L"雷阵雨伴冰雹",
-                L"雨夹雪", L"小雨", L"中雨", L"大雨", L"暴雨", L"大暴雨", L"特大暴雨",
-                L"阵雪", L"小雪", L"中雪", L"大雪", L"暴雪", L"雾", L"冻雨", L"沙尘暴",
-                L"小到中雨", L"中到大雨", L"大到暴雨", L"暴雨到大暴雨", L"大暴雨到特大暴雨",
-                L"小到中雪", L"中到大雪", L"大到暴雪", L"浮尘", L"扬沙", L"强沙尘暴"};
-            const int index = _wtoi(code.c_str());
-            const std::wstring description = index >= 0 && index < 32 ? descriptions[index] : L"霾";
+            const std::wstring description = ChinaWeatherDescription(code);
             if (fahrenheit) { low = low * 1.8f + 32; high = high * 1.8f + 32; }
             wchar_t range[64]{};
             swprintf_s(range, L"%s°～%s°%s", WeatherTemperatureText(low).c_str(),
@@ -16094,8 +16149,15 @@ class Renderer {
     }
 
     void DrawWeatherDashboard(const SharedState& state, D2D1_RECT_F rect, const Settings& settings, double now, float scale, bool hasWeather, const std::wstring& wIcon, const std::wstring& wText) {
+        const int page = g_weatherPage.load();
+        const auto target = ChinaWeatherDay(ChinaWeatherClock(), page);
+        const auto& forecast = state.weather.forecast[page];
+        const bool hasForecast = hasWeather && forecast.available && forecast.date == ChinaWeatherDateKey(target);
+        const bool hasReading = hasWeather && (page == 0 || hasForecast);
+        const wchar_t* dayLabels[] = {L"今天", L"明天", L"后天"};
+        wchar_t date[16]{}; swprintf_s(date, L"%02u/%02u", target.wMonth, target.wDay);
         wchar_t wTemp[32] = {};
-        if (hasWeather) swprintf_s(wTemp, L"%s\x00B0", WeatherTemperatureText(state.weather.temperature).c_str());
+        if (hasReading) swprintf_s(wTemp, L"%s\x00B0", WeatherTemperatureText(page == 0 ? state.weather.temperature : forecast.high).c_str());
         else wcscpy_s(wTemp, L"--\x00B0");
 
         std::wstring city = hasWeather ? state.weather.city : std::wstring(Loc(L"Locating..."));
@@ -16106,7 +16168,23 @@ class Renderer {
                 WeatherTemperatureText(state.weather.highTemperature).c_str());
             desc = std::wstring(range) + L"\n" + state.weather.weatherDesc;
         }
-        if (hasWeather) city += L" · 中国天气网";
+        if (page > 0) {
+            desc = hasForecast ? forecast.description + L"\n" + WeatherTemperatureText(forecast.low) + L"°～" +
+                WeatherTemperatureText(forecast.high) + L"°" : std::wstring(L"暂无预报");
+        }
+        if (hasWeather) city += L" · " + std::wstring(dayLabels[page]) + (page > 0 ? L"最高" : L"");
+        const auto button = WeatherPageButtonBounds((rect.right - rect.left) / scale);
+        const auto buttonRect = D2D1::RectF(rect.left + button.left * scale, rect.top + button.top * scale,
+            rect.left + button.right * scale, rect.top + button.bottom * scale);
+        DrawCard(buttonRect, 10.0f * scale);
+        const auto buttonText = std::wstring(dayLabels[page]) + L"  ›";
+        if (smallTextFormat_) {
+            textBrush_->SetOpacity(0.9f);
+            smallTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            target_->DrawTextW(buttonText.c_str(), static_cast<UINT32>(buttonText.size()), smallTextFormat_.Get(),
+                buttonRect, textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            smallTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        }
 
         // ── Layout ───────────────────────────────────────────────────────────
         // Left is an editorial hero block (place / reading / condition), left
@@ -16140,9 +16218,9 @@ class Renderer {
         // Icon and temperature share one band and sit adjacent, so they read as
         // a single unit instead of two centred items.
         const float readingCenterY = rect.top + 82.0f * scale;
-        if (hasWeather && iconStrong && iconSoft) {
+        if (hasReading && iconStrong && iconSoft) {
             DrawWeatherIcon(D2D1::Point2F(heroLeft + 22.0f * scale, readingCenterY), 44.0f * scale,
-                            WeatherVisualFromCode(state.weather.weatherCode),
+                            WeatherVisualFromCode(page == 0 ? state.weather.weatherCode : forecast.weatherCode),
                             iconStrong.Get(), iconSoft.Get());
         } else if (iconStrong && iconSoft) {
             DrawWeatherIcon(D2D1::Point2F(heroLeft + 22.0f * scale, readingCenterY), 44.0f * scale,
@@ -16242,11 +16320,11 @@ class Renderer {
 
         const std::wstring windUnit = settings.weatherFahrenheit ? L" mph" : L" km/h";
         const Metric metrics[2] = {
-            {0, Loc(L"Wind"),
-             hasWeather ? state.weather.windSpeed + windUnit + L" " + WindDirToArrow(state.weather.windDir)
+            {0, page > 0 ? L"风况" : Loc(L"Wind"),
+             page > 0 ? (hasForecast ? forecast.wind : std::wstring(L"--")) : hasWeather ? state.weather.windSpeed + windUnit + L" " + WindDirToArrow(state.weather.windDir)
                         : std::wstring(L"--")},
-            {2, Loc(L"Humidity"),
-             hasWeather ? state.weather.humidity + L"%" : std::wstring(L"--")},
+            {2, page > 0 ? L"预报日期" : Loc(L"Humidity"),
+             page > 0 ? std::wstring(date) : hasWeather ? state.weather.humidity + L"%" : std::wstring(L"--")},
         };
 
         const float cardH = 40.0f * scale;
@@ -20553,8 +20631,19 @@ DWORD WINAPI MouseThreadProc(void*) {
     return 0;
 }
 
+bool WeatherPageVisible() {
+    if (!g_settings.weather || CurrentDashboardTab(g_settings) != 2 || g_lookupUi.open) return false;
+    std::lock_guard lock(g_stateMutex);
+    const auto kinds = ChooseActivities(g_state, g_settings, NowSeconds());
+    if (kinds.empty()) return false;
+    if (kinds[0] == IslandKind::Media) return true;
+    return kinds[0] == IslandKind::Idle && !g_settings.gameOverlay &&
+        !Wh_GetIntValue(L"GameOverlayPinned", 0) && !g_timerDetailVisible.load();
+}
+
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static POINT s_touchStart = {0, 0};
+    static bool weatherPagePressed = false;
     static std::wstring fileTrayPressed;
     static bool fileTrayRemovePressed = false;
     static POINT fileTrayDragStart{};
@@ -20823,6 +20912,12 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     SetCursor(LoadCursorW(nullptr,IDC_HAND)); return TRUE;
                 }
             }
+            if (LOWORD(lParam) == HTCLIENT && WeatherPageVisible()) {
+                POINT point{}; GetCursorPos(&point); ScreenToClient(hwnd, &point);
+                if (WeatherPageButtonHit(MediaContentFromClient(point.x, point.y, true))) {
+                    SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE;
+                }
+            }
             if (LOWORD(lParam) == HTCLIENT) {
                 if (g_scrubbing.load()) {
                     SetCursor(LoadCursorW(nullptr, IDC_HAND));
@@ -20899,6 +20994,11 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 s_touchStart.x = xPos;
                 s_touchStart.y = yPos;
                 s_touchStartTime = GetTickCount64();
+                if (WeatherPageVisible() && WeatherPageButtonHit(MediaContentFromClient(xPos, yPos, true))) {
+                    weatherPagePressed = true;
+                    SetCapture(hwnd);
+                    return 0;
+                }
                 notificationPressed = false;
                 {
                     std::lock_guard lock(g_stateMutex);
@@ -21140,6 +21240,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             fileTrayPressed.clear();
             FinishIslandDrag();
             g_volumeDragging=false;
+            weatherPagePressed = false;
             if (reinterpret_cast<HWND>(lParam) != hwnd) {
                 if (g_scrubbing.exchange(false)) {
                     g_layoutDirty = true;
@@ -21199,6 +21300,18 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     return 0;
                 }
                 if (VolumeIsPrimary()) return 0;
+            if (weatherPagePressed) {
+                weatherPagePressed = false;
+                ReleaseCapture();
+                s_touchStartTime = 0;
+                const int x = GET_X_LPARAM(lParam), y = GET_Y_LPARAM(lParam);
+                if (WeatherPageVisible() && WeatherPageButtonHit(MediaContentFromClient(x, y, true)) &&
+                    std::abs(x - s_touchStart.x) <= 8 && std::abs(y - s_touchStart.y) <= 8) {
+                    g_weatherPage = NextWeatherPage(g_weatherPage.load());
+                    g_layoutDirty = true;
+                }
+                return 0;
+            }
                 if (g_scrubbing.load()) {
                     g_scrubbing = false;
                     ReleaseCapture();

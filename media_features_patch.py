@@ -36,7 +36,7 @@ def apply_media_features(src):
 
     settings_yaml = '''  - Lyrics: true
     $name: 实时歌词
-    $description: 通过网易云、QQ、酷狗和 LRCLIB 匹配当前歌曲；展开后可切换到歌词页。
+    $description: 仅网易云音乐、QQ 音乐、酷狗、酷我、Spotify、Apple Music 客户端支持歌词；浏览器不显示歌词。歌词通过网易云、QQ、酷狗和 LRCLIB 匹配。
   - CollapsedLyrics: true
     $name: 收起时显示歌词
     $description: 播放音乐且胶囊收起时，平滑自适应显示当前句歌词；右键菜单亦可随时切换。
@@ -129,7 +129,7 @@ def apply_media_features(src):
                     const auto playbackType=properties.PlaybackType();
                     const bool music=playbackType && playbackType.Value()==winrt::Windows::Media::MediaPlaybackType::Music;
                     const bool video=playbackType && playbackType.Value()==winrt::Windows::Media::MediaPlaybackType::Video;
-                    next.lyricsEligible=LyricsAllowed(IsBrowserMediaSource(next.sourceAppUserModelId),music,video,!next.artist.empty());
+                    next.lyricsEligible=LyricsAllowed(next.sourceAppUserModelId,music,video,!next.artist.empty());
 
                     if (timeline)''')
     start = src.index('                    if (timeline) {', src.index('DWORD WINAPI MediaThreadProc('))

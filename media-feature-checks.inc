@@ -45,10 +45,21 @@ int main() {
     assert(MediaSessionHasContent(true,L""));
     g_stopEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr); assert(g_stopEvent);
     CheckLyricsProviders();
-    assert(LyricsAllowed(false,true,false,true));
-    assert(!LyricsAllowed(true,false,true,true));
-    assert(!LyricsAllowed(true,false,false,true));
-    assert(LyricsAllowed(true,true,false,true));
+    for (const auto* browser : {L"chrome.exe", L"msedge.exe", L"firefox.exe", L"brave.exe", L"Opera.exe",
+        L"Chrome._crx_blgdilankhlgpdndahbehalgkh", L"MSEdge._crx_spotify", L"browser"}) {
+        assert(!LyricsAllowed(browser,true,false,true));
+        assert(!LyricsAllowed(browser,false,true,true));
+    }
+    for (const auto* player : {L"cloudmusic.exe", L"QQMusic.exe", L"KuGou.exe", L"kwmusic.exe",
+        L"Spotify.exe", L"AppleInc.AppleMusicWin_nzyj5cx40ttqa!App",
+        L"SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify", L"C:\\Program Files\\QQMusic\\QQMusic.exe"}) {
+        assert(LyricsAllowed(player,true,false,true));
+        assert(LyricsAllowed(player,false,false,true));
+        assert(!LyricsAllowed(player,true,true,true));
+        assert(!LyricsAllowed(player,false,false,false));
+    }
+    for (const auto* other : {L"", L"vlc.exe", L"wmplayer.exe", L"unknown.exe", L"notspotify.exe", L"cloudmusic-helper.exe"})
+        assert(!LyricsAllowed(other,true,false,true));
     assert(LyricOpacity(true,0,40)==1.0f && LyricOpacity(false,40,40)>=0.68f);
     const auto lyricBounds=MediaLyricsBounds(380);
     assert(lyricBounds.top>=14 && lyricBounds.bottom<=100 && lyricBounds.right<380);

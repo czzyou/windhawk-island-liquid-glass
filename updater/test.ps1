@@ -20,6 +20,42 @@ try {
     foreach ($bad in @('1.0.0-beta','1.0','v1.0.0','01.0.0','1.0.0/../evil')) { Must-Fail { Get-ReleaseVersion $bad } ('Reject version '+$bad) }
     foreach ($bad in @('a/b/c','../repo','a/repo?x=1','https://github.com/a/b')) { Must-Fail { Assert-Repository $bad } ('Reject repository '+$bad) }
     & {
+        Assert ($null -ne (Get-Command Get-DownloadBytes -ErrorAction SilentlyContinue)) 'Download transport supports source fallback'
+        $script:downloadUrls = @()
+        $script:downloadFailures = 0
+        $script:downloadInvalid = $false
+        function Get-DownloadBytes($Url,$Limit) {
+            $script:downloadUrls += $Url
+            Assert ($Limit -eq 1024) 'Download limit preserved across sources'
+            if ($script:downloadInvalid) { throw 'Invalid download size or content' }
+            if ($script:downloadUrls.Count -le $script:downloadFailures) { throw [Net.WebException]::new('Simulated connection failure') }
+            ,[byte[]]@(0,128,255)
+        }
+        $url='https://github.com/test/repo/releases/download/v1.0.0/update.sig'
+        $result=Get-RemoteBytes $url 1024
+        Assert ($script:downloadUrls.Count -eq 1 -and $script:downloadUrls[0] -ceq $url) 'Working GitHub skips fallback'
+        Assert ($result -is [byte[]] -and [Convert]::ToBase64String($result) -ceq 'AID/') 'Binary response preserved'
+        $script:downloadUrls=@(); $script:downloadFailures=1
+        $result=Get-RemoteBytes $url 1024
+        Assert ($script:downloadUrls.Count -eq 2 -and $script:downloadUrls[1] -ceq ('https://ghfast.top/'+$url)) 'GitHub failure selects first fallback'
+        $script:downloadUrls=@(); $script:downloadFailures=2
+        $result=Get-RemoteBytes $url 1024
+        Assert ($script:downloadUrls.Count -eq 3 -and $script:downloadUrls[2] -ceq ('https://gh-proxy.org/'+$url)) 'First fallback failure selects second fallback'
+        $script:downloadUrls=@(); $script:downloadFailures=3
+        Must-Fail { Get-RemoteBytes $url 1024 } 'All sources unavailable propagates failure'
+        Assert ($script:downloadUrls.Count -eq 3) 'Each source tried once without a retry loop'
+        $script:downloadUrls=@(); $script:downloadInvalid=$true
+        Must-Fail { Get-RemoteBytes $url 1024 } 'Invalid download does not bypass validation'
+        Assert ($script:downloadUrls.Count -eq 1) 'Non-network errors stop without fallback'
+        $script:downloadUrls=@()
+        foreach ($bad in @('http://github.com/test/repo','https://github.com.evil.test/test/repo',
+            'https://user:secret@github.com/test/repo','https://github.com:444/test/repo',
+            'https://ghfast.top/https://github.com/test/repo')) {
+            Must-Fail { Get-RemoteBytes $bad 1024 } 'Untrusted origin rejected before downloading'
+        }
+        Assert ($script:downloadUrls.Count -eq 0) 'Rejected URLs never reach the network'
+    }
+    & {
         $script:actionsDirty = $false
         $script:actionsUnavailable = $false
         $script:actionsRun = @{headSha=('a'*40);headBranch='main';event='push';status='completed';conclusion='success';url='https://example.com/run'}
@@ -51,13 +87,23 @@ try {
     $sourcePath=Join-Path (Split-Path $PSScriptRoot -Parent) 'dynamic-island-liquid-glass.wh.cpp'
     $sourceBytes=[IO.File]::ReadAllBytes($sourcePath)
     $version=[regex]::Match([IO.File]::ReadAllText($sourcePath),'(?m)^// @version\s+(\S+)').Groups[1].Value
-    $m=[ordered]@{schema=1;version=$version;tag=('v'+$version);modId=$script:PublicId;sourceAsset='dynamic-island-liquid-glass.wh.cpp';sourceSha256=(Get-FileDigest $sourcePath);sourceBytes=$sourceBytes.Length;minUpdaterVersion='1.0.0';settings=@([pscustomobject]@{name='Appearance.OffsetX';kind='DWord';value=0})}
+    $publisher=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'publish.ps1'))
+    $minimum=[regex]::Match($publisher,"minUpdaterVersion='([^']+)'").Groups[1].Value
+    Assert ((Get-ReleaseVersion $minimum) -eq [version]'1.0.0') 'Publication remains compatible with existing updaters'
+    $m=[ordered]@{schema=1;version=$version;tag=('v'+$version);modId=$script:PublicId;sourceAsset='dynamic-island-liquid-glass.wh.cpp';sourceSha256=(Get-FileDigest $sourcePath);sourceBytes=$sourceBytes.Length;minUpdaterVersion=$minimum;settings=@([pscustomobject]@{name='Appearance.OffsetX';kind='DWord';value=0})}
     $bytes=$script:Utf8.GetBytes(($m | ConvertTo-Json -Depth 10))
     $sig=$rsa.SignData($bytes,'SHA256')
     $public=$rsa.ToXmlString($false)
     $manifest=Get-VerifiedManifest $bytes $sig $public
     Assert-Source $sourcePath $manifest
     $script:checks++
+    $currentUpdater=$script:UpdaterVersion
+    try {
+        foreach ($legacyVersion in @('1.0.0','1.0.1','1.0.2')) {
+            $script:UpdaterVersion=[version]$legacyVersion
+            Assert ((Get-VerifiedManifest $bytes $sig $public).version -ceq $version) ('Release accepted by updater '+$legacyVersion)
+        }
+    } finally { $script:UpdaterVersion=$currentUpdater }
     $corrupt=$bytes.Clone(); $corrupt[0]=0
     Must-Fail { Get-VerifiedManifest $corrupt $sig $public } 'Tampered manifest rejected'
     $bad=[ordered]@{}; foreach ($key in $m.Keys) { $bad[$key]=$m[$key] }; $bad.modId='other-mod'; $badBytes=$script:Utf8.GetBytes(($bad | ConvertTo-Json -Depth 10))
@@ -66,6 +112,24 @@ try {
     Must-Fail { Get-VerifiedManifest $badBytes ($rsa.SignData($badBytes,'SHA256')) $public } 'Registry path injection rejected'
     $damaged=Join-Path $testRoot 'damaged.wh.cpp'; [IO.File]::WriteAllText($damaged,'bad')
     Must-Fail { Assert-Source $damaged $manifest } 'Bad source rejected'
+    & {
+        $script:mirrorRequests=0
+        function Get-DownloadBytes($Url,$Limit) {
+            $script:mirrorRequests++
+            if ($Url.StartsWith('https://github.com/')) { throw [Net.WebException]::new('Simulated GitHub failure') }
+            if ($Url.EndsWith('update.json')) { ,$bytes }
+            elseif ($Url.EndsWith('update.sig')) { ,([byte[]]@(0,1,2)) }
+            else { ,$script:Utf8.GetBytes('bad source') }
+        }
+        $base='https://github.com/test/repo/releases/download/v1.0.0/'
+        $mirrorBytes=Get-RemoteBytes ($base+'update.json') 262144
+        $mirrorSignature=Get-RemoteBytes ($base+'update.sig') 1024
+        Must-Fail { Get-VerifiedManifest $mirrorBytes $mirrorSignature $public } 'Mirror signature tampering rejected'
+        Assert ($script:mirrorRequests -eq 4) 'Signature failure does not trigger another source'
+        [IO.File]::WriteAllBytes($damaged,(Get-RemoteBytes ($base+'dynamic-island-liquid-glass.wh.cpp') 8388608))
+        Must-Fail { Assert-Source $damaged $manifest } 'Mirror source tampering rejected'
+        Assert ($script:mirrorRequests -eq 6) 'Source integrity failure does not trigger another source'
+    }
     $jsonPath=Join-Path $testRoot 'atomic.json'
     Write-JsonFile $jsonPath @{a=1}; Write-JsonFile $jsonPath @{a=2}
     Assert ((Read-JsonFile $jsonPath).a -eq 2) 'Atomic JSON replacement'

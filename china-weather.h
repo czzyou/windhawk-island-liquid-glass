@@ -54,6 +54,36 @@ bool ChinaWeatherTemperature(const std::wstring& text, float& value) {
     return true;
 }
 
+SYSTEMTIME ChinaWeatherDay(SYSTEMTIME today, int offset) {
+    today.wHour = today.wMinute = today.wSecond = today.wMilliseconds = 0;
+    FILETIME file{};
+    if (!SystemTimeToFileTime(&today, &file)) return {};
+    ULARGE_INTEGER ticks{};
+    ticks.LowPart = file.dwLowDateTime; ticks.HighPart = file.dwHighDateTime;
+    ticks.QuadPart += offset * 864000000000ULL;
+    file = {ticks.LowPart, ticks.HighPart};
+    SYSTEMTIME result{};
+    FileTimeToSystemTime(&file, &result);
+    return result;
+}
+
+int ChinaWeatherDateKey(const SYSTEMTIME& day) {
+    return day.wYear * 10000 + day.wMonth * 100 + day.wDay;
+}
+
+std::wstring ChinaWeatherDescription(const std::wstring& code) {
+    const wchar_t* descriptions[] = {L"晴", L"多云", L"阴", L"阵雨", L"雷阵雨", L"雷阵雨伴冰雹",
+        L"雨夹雪", L"小雨", L"中雨", L"大雨", L"暴雨", L"大暴雨", L"特大暴雨",
+        L"阵雪", L"小雪", L"中雪", L"大雪", L"暴雪", L"雾", L"冻雨", L"沙尘暴",
+        L"小到中雨", L"中到大雨", L"大到暴雨", L"暴雨到大暴雨", L"大暴雨到特大暴雨",
+        L"小到中雪", L"中到大雪", L"大到暴雪", L"浮尘", L"扬沙", L"强沙尘暴"};
+    if (code == L"53") return L"霾";
+    if (code == L"301") return L"雨";
+    if (code.empty() || !std::all_of(code.begin(), code.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; })) return L"未知";
+    const int index = _wtoi(code.c_str());
+    return index >= 0 && index < 32 ? descriptions[index] : L"未知";
+}
+
 int ChinaWeatherVisualCode(const std::wstring& code) {
     if (code.size() < 2) return 0;
     const std::wstring digits = (code[0] == L'd' || code[0] == L'n') ? code.substr(1) : code;
@@ -103,22 +133,31 @@ bool ParseChinaWeather(const std::string& currentScript, const std::string& fore
         parsed.windDir = field(current, L"wde");
         parsed.humidity = field(current, L"SD");
         if (!parsed.humidity.empty() && parsed.humidity.back() == L'%') parsed.humidity.pop_back();
-        wchar_t day[8]{}; swprintf_s(day, L"%02d/%02d", now.wMonth, now.wDay);
         const auto days = forecast.GetNamedArray(L"f");
-        for (const auto& value : days) {
-            const auto item = value.GetObject();
-            if (field(item, L"fi") != day) continue;
-            if (!ChinaWeatherTemperature(field(item, L"fd"), parsed.lowTemperature) ||
-                !ChinaWeatherTemperature(field(item, L"fc"), parsed.highTemperature) ||
-                parsed.lowTemperature > parsed.highTemperature) return false;
-            parsed.hasDailyRange = true;
-            break;
+        for (int page = 0; page < 3; ++page) {
+            const auto target = ChinaWeatherDay(now, page);
+            wchar_t day[8]{}; swprintf_s(day, L"%02u/%02u", target.wMonth, target.wDay);
+            auto& daily = parsed.forecast[page];
+            for (const auto& value : days) {
+                const auto item = value.GetObject();
+                if (field(item, L"fi") != day) continue;
+                if (!ChinaWeatherTemperature(field(item, L"fd"), daily.low) ||
+                    !ChinaWeatherTemperature(field(item, L"fc"), daily.high) || daily.low > daily.high) break;
+                daily.date = ChinaWeatherDateKey(target);
+                daily.weatherCode = ChinaWeatherVisualCode(field(item, L"fa"));
+                daily.description = ChinaWeatherDescription(field(item, L"fa"));
+                daily.wind = field(item, L"fe") + L" " + field(item, L"fg");
+                if (fahrenheit) { daily.low = daily.low * 1.8f + 32; daily.high = daily.high * 1.8f + 32; }
+                daily.available = true;
+                break;
+            }
         }
-        if (!parsed.hasDailyRange) return false;
+        if (!parsed.forecast[0].available) return false;
+        parsed.hasDailyRange = true;
+        parsed.lowTemperature = parsed.forecast[0].low;
+        parsed.highTemperature = parsed.forecast[0].high;
         if (fahrenheit) {
             parsed.temperature = parsed.temperature * 1.8f + 32;
-            parsed.lowTemperature = parsed.lowTemperature * 1.8f + 32;
-            parsed.highTemperature = parsed.highTemperature * 1.8f + 32;
             const float mph = _wtof(parsed.windSpeed.c_str()) / 1.609344f;
             wchar_t speed[16]{}; swprintf_s(speed, L"%.0f", mph); parsed.windSpeed = speed;
         }

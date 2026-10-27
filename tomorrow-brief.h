@@ -37,16 +37,7 @@ inline TomorrowBrief MakeMealReminder(const SYSTEMTIME& local, int lunchShown, i
 }
 
 inline SYSTEMTIME BriefTomorrow(SYSTEMTIME today) {
-    today.wHour = today.wMinute = today.wSecond = today.wMilliseconds = 0;
-    FILETIME file{};
-    if (!SystemTimeToFileTime(&today, &file)) return {};
-    ULARGE_INTEGER ticks{};
-    ticks.LowPart = file.dwLowDateTime; ticks.HighPart = file.dwHighDateTime;
-    ticks.QuadPart += 864000000000ULL;
-    file = {ticks.LowPart, ticks.HighPart};
-    SYSTEMTIME result{};
-    FileTimeToSystemTime(&file, &result);
-    return result;
+    return ChinaWeatherDay(today, 1);
 }
 
 inline bool BriefPending(const TomorrowBrief& brief, int tomorrow, double now,
@@ -84,13 +75,7 @@ inline TomorrowBrief ParseTomorrowWeather(const std::string& script, const SYSTE
             const std::wstring code = item.GetNamedString(L"fa", L"").c_str();
             result.weatherCode = ChinaWeatherVisualCode(code);
             if (!result.weatherCode) return {};
-            const wchar_t* descriptions[] = {L"晴", L"多云", L"阴", L"阵雨", L"雷阵雨", L"雷阵雨伴冰雹",
-                L"雨夹雪", L"小雨", L"中雨", L"大雨", L"暴雨", L"大暴雨", L"特大暴雨",
-                L"阵雪", L"小雪", L"中雪", L"大雪", L"暴雪", L"雾", L"冻雨", L"沙尘暴",
-                L"小到中雨", L"中到大雨", L"大到暴雨", L"暴雨到大暴雨", L"大暴雨到特大暴雨",
-                L"小到中雪", L"中到大雪", L"大到暴雪", L"浮尘", L"扬沙", L"强沙尘暴"};
-            const int index = _wtoi(code.c_str());
-            const std::wstring description = index >= 0 && index < 32 ? descriptions[index] : L"霾";
+            const std::wstring description = ChinaWeatherDescription(code);
             if (fahrenheit) { low = low * 1.8f + 32; high = high * 1.8f + 32; }
             wchar_t range[64]{};
             swprintf_s(range, L"%s°～%s°%s", WeatherTemperatureText(low).c_str(),

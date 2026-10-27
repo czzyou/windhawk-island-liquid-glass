@@ -1023,6 +1023,7 @@ weather_test += r'''int main(int argc,char** argv) {
  assert(ParseChinaWeather(current,forecast,now,false,result));
  assert(std::abs(result.temperature-16.1f)<0.01f && result.lowTemperature==6 && result.highTemperature==18);
  assert(result.city==L"沈阳" && result.weatherDesc==L"晴" && result.hasDailyRange);
+''' + (root/'weather-page-checks.inc').read_text(encoding='utf-8') + r'''
  for (const auto* rainCode : {L"d301", L"n301", L"301"}) assert(ChinaWeatherVisualCode(rainCode)==296);
  assert(ChinaWeatherVisualCode(L"d07")==296 && ChinaWeatherVisualCode(L"d00")==113);
  assert(ChinaWeatherVisualCode(L"d999")==0 && ChinaWeatherVisualCode(L"d301x")==0);
@@ -1151,7 +1152,19 @@ point_start=src.index('struct MediaContentPoint {')
 point_end=src.index('\n};',point_start)+3
 quick_test = '#include <windows.h>\n#include <d2d1.h>\n#include <atomic>\n#include <cassert>\n#include <initializer_list>\n'
 quick_test += src[point_start:point_end] + '\n' + (root/'quick-home.h').read_text(encoding='utf-8')
+quick_test += '\n' + (root/'weather-page.h').read_text(encoding='utf-8')
 quick_test += '''int main() {
+ assert(NextWeatherPage(0)==1 && NextWeatherPage(1)==2 && NextWeatherPage(2)==0);
+ for(float width : {300.0f,380.0f,600.0f}) {
+   const auto button=WeatherPageButtonBounds(width);
+   MediaContentPoint p{true,(button.left+button.right)/2,(button.top+button.bottom)/2,width,184};
+   assert(WeatherPageButtonHit(p));
+   p.x=button.left-1; assert(!WeatherPageButtonHit(p));
+   p.x=button.right+1; assert(!WeatherPageButtonHit(p));
+   p.x=button.left+1; p.y=button.bottom+1; assert(!WeatherPageButtonHit(p));
+   p.y=button.top+1; p.height=44; assert(!WeatherPageButtonHit(p));
+   p.height=184; p.valid=false; assert(!WeatherPageButtonHit(p));
+ }
  for(float width : {300.0f,380.0f,420.0f}) {
    for(int index=0;index<4;index++) {
      auto box=QuickHomeButtonBounds(index,width);

@@ -1,6 +1,16 @@
-bool LyricsAllowed(bool browser, bool music, bool video, bool hasArtist) {
-    if (video) return false;
-    return music || (!browser && hasArtist);
+bool LyricsAllowed(std::wstring source, bool music, bool video, bool hasArtist) {
+    if (video || (!music && !hasArtist)) return false;
+    for (auto& c : source) c = static_cast<wchar_t>(towlower(c));
+    const auto slash = source.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) source.erase(0, slash + 1);
+    // Match player identities, never song titles or browser-reported Music metadata.
+    for (const auto* player : {L"cloudmusic", L"cloudmusic.exe", L"qqmusic", L"qqmusic.exe",
+        L"kugou", L"kugou.exe", L"kwmusic", L"kwmusic.exe", L"spotify", L"spotify.exe",
+        L"applemusic", L"applemusic.exe", L"spotifyab.spotifymusic_zpdnekdrzrea0!spotify",
+        L"appleinc.applemusicwin_nzyj5cx40ttqa!app"}) {
+        if (source == player) return true;
+    }
+    return false;
 }
 bool LyricsResultReady(const LyricsSnapshot& lyrics, const std::wstring& identity) {
     return lyrics.trackIdentity == identity && (lyrics.hasData || lyrics.notFound || lyrics.failed);

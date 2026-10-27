@@ -2,7 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:ModId = 'local@dynamic-island-liquid-glass'
 $script:PublicId = 'dynamic-island-liquid-glass'
-$script:UpdaterVersion = [version]'1.0.2'
+$script:UpdaterVersion = [version]'1.0.3'
 $script:Utf8 = New-Object System.Text.UTF8Encoding($false, $true)
 
 function Read-JsonFile([string]$Path) {
@@ -78,12 +78,26 @@ function Assert-Source([string]$Path, $Manifest) {
 
 function Get-RemoteBytes([string]$Url, [int]$Limit) {
     $uri = [uri]$Url
-    if ($uri.Scheme -ne 'https' -or $uri.Host -ne 'github.com') { throw 'Only the configured GitHub release source is allowed.' }
+    if ($uri.Scheme -ne 'https' -or $uri.Host -ne 'github.com' -or $uri.Port -ne 443 -or $uri.UserInfo) {
+        throw 'Only the configured GitHub release source is allowed.'
+    }
+    $downloadFailures = @()
+    foreach ($prefix in @('', 'https://ghfast.top/', 'https://gh-proxy.org/')) {
+        try { return ,(Get-DownloadBytes ($prefix + $uri.AbsoluteUri) $Limit) }
+        catch [Net.WebException], [IO.IOException] {
+            $downloadFailures += ('{0}: {1}' -f ([uri]($prefix + $uri.AbsoluteUri)).Host, $_.Exception.Message)
+        }
+    }
+    throw ('GitHub and backup download sources are unavailable. The update was not installed. Try again later. ' + ($downloadFailures -join '; '))
+}
+
+function Get-DownloadBytes([string]$Url, [int]$Limit) {
+    $uri = [uri]$Url
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $request = [Net.HttpWebRequest]::Create($uri)
-    $request.UserAgent = 'Windhawk-Island-Updater/1.0'
-    $request.Timeout = 30000
-    $request.ReadWriteTimeout = 30000
+    $request.UserAgent = 'Windhawk-Island-Updater/' + $script:UpdaterVersion.ToString(3)
+    $request.Timeout = 10000
+    $request.ReadWriteTimeout = 15000
     $request.MaximumAutomaticRedirections = 5
     $request.CachePolicy = New-Object Net.Cache.RequestCachePolicy([Net.Cache.RequestCacheLevel]::NoCacheNoStore)
     $response = $null
@@ -93,10 +107,14 @@ function Get-RemoteBytes([string]$Url, [int]$Limit) {
     try {
         $response = $request.GetResponse()
         if ($response.ResponseUri.Scheme -ne 'https' -or $response.ContentLength -gt $Limit) { throw 'Invalid download response.' }
+        if ($response.ContentType -like 'text/html*') { throw [Net.WebException]::new('Download source returned an HTML page instead of a release asset.') }
         $stream = $response.GetResponseStream()
         while (($count = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
             if ($output.Length + $count -gt $Limit -or [DateTime]::UtcNow -gt $deadline) { throw 'Download size/time limit exceeded.' }
             $output.Write($buffer, 0, $count)
+        }
+        if ($output.Length -eq 0 -or ($response.ContentLength -ge 0 -and $output.Length -ne $response.ContentLength)) {
+            throw [Net.WebException]::new('Download response is empty or incomplete.')
         }
         ,$output.ToArray()
     } finally { if ($response) { $response.Close() }; $output.Dispose() }
