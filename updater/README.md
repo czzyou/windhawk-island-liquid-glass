@@ -31,10 +31,10 @@
 
 ## 维护者
 
-发布配置在根目录 `release.json`。日常修改先本地编译和检查，备份后使用本地产物首轮体验，用户确认后再提交、推送；GitHub Actions 在推送后复核 x64/x86 编译和自动检查，试用包为可选产物，无需等待它才能本机试用。明确授权发布后，才通过 `updater/publish.ps1` 在本机核对检查结果、签名并发布正式版。普通代码提交、试用产物、草稿和预发布不会推送给客户端。
+发布配置在根目录 `release.json`。日常修改先本地编译和检查，备份后使用本地产物首轮体验，用户确认后再提交、推送；GitHub Actions 在推送后复核 x64/x86 编译和自动检查，试用包为可选产物，无需等待它才能本机试用。明确授权发布后，才通过 `updater/publish.ps1` 核对本地成功构建并签名发布正式版，无需等待 Actions。普通代码提交、试用产物、草稿和预发布不会推送给客户端。
 
 首次执行 `powershell -NoProfile -File updater/publish.ps1 -InitializeKey` 创建签名密钥；私钥保存在当前用户 LOCALAPPDATA 的 `Windhawk-Island-Publisher/signing-key.dpapi`，使用 Windows DPAPI 绑定当前账号，不能提交到 GitHub。此文件单独拷贝到其他账号不能直接恢复，请另外做好原 Windows 用户配置/恢复凭据的离线备份；不要删除或覆盖密钥。
 
-先本地构建和首轮体验，确认后提交并推送源码。正式发布前，等待当前提交在 main 上的 `Source check` 和 `Windows build` 成功并获得发布授权。再执行 `powershell -NoProfile -File updater/publish.ps1 -PrepareOnly` 复用检查结果，在本机签名和打包；使用 `-PublishPrepared -NotesFile <版本说明路径>` 校验附件并发布，签名准备阶段不重复本机构建。准备后修改源码或安装器时，需重新提交、通过 Actions 并准备附件。签名私钥留在本机；客户端仍下载签名源码并本机编译，无需登录 GitHub。
+先确定发布版本号，再本地构建和首轮体验，确认后提交并推送源码。用户授权发布后，执行 `powershell -NoProfile -File updater/publish.ps1 -PrepareOnly` 核对本地构建记录并签名打包；无有效记录时自动补做本地构建和检查。使用 `-PublishPrepared -NotesFile <版本说明路径>` 校验附件并发布，不等待 Actions。准备后修改源码、检查脚本或安装器时，重新构建、提交推送并准备附件。签名私钥留在本机；客户端仍下载签名源码并本机编译，无需登录 GitHub。
 
 公开仓库任何人都能访问，只向熟人分享链接不等于访问控制。不要上传个人注册表、日程、通知、编译日志或私钥。原作者 Himanshu/devcode90 及第三方 MIT 许可证保留在源码中。

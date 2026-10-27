@@ -44,10 +44,6 @@ jobs:
           "WINDHAWK_PATH=$toolchain" >> $env:GITHUB_ENV
       - name: Build x64 and x86 and run regression checks
         run: python build.py --release
-      - name: Run release checks
-        run: python release-checks.py
-      - name: Run isolated updater and publishing checks
-        run: powershell -NoProfile -File updater/test.ps1
       - name: Package build for first-user testing
         shell: pwsh
         run: |

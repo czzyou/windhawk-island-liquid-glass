@@ -5,7 +5,7 @@
 - 日常修改优先在本机使用 Windhawk 1.7.3 工具链编译并做针对性检查，备份后提供本地产物供用户首轮体验；不要为了本机试用先推送 GitHub、等待 Actions 或下载其试用包。用户体验确认后再提交、推送；用户另有明确提交、推送或合并指示时按其指示执行。
 - 用户已授权每次代码修改后自动更新本机试用版：构建通过后备份源码、注册表和 DLL 指向，使用管理员 PowerShell 切换，保留个人设置并确认启动；管理员入口采用 `Start-Process -Verb RunAs -WindowStyle Hidden`，不能把普通进程的权限不足当成必须让用户手动执行的理由。Windows UAC 提示由用户处理。
 - 实际体验测试由用户负责。Actions 在推送后后台复核编译和检查，试用包是可选产物；自动检查通过不等于体验通过。正式 Release 仍需用户明确要求发布，不自动公开新版本。
-- `.github/workflows/source-check.yml` 保留轻量源码检查；`.github/workflows/build.yml` 在推送、PR 和手动触发时使用固定 Windhawk 1.7.3 工具链完成 x64/x86 编译、回归检查与试用包。发布前必须有当前提交在 main 上由 push 触发的 `Source check` 和 `Windows build` 成功结果。`publish.ps1 -PrepareOnly` 复用该结果，仅在本机生成签名和正式附件，不重复编译。
+- 发布以本地成功构建和检查为准，不等待 GitHub Actions。`python build.py --release` 完成 x64/x86 编译、回归、发布与隔离更新器检查后，记录源码、DLL 和检查输入的摘要。`publish.ps1 -PrepareOnly` 自动复用有效记录；输入变化或记录缺失时才重新本地构建。Actions 保留为推送后的后台检查及可选试用包，不作为发布门槛。
 - 发布时更新 `release.json` 的三段数字版本号和 `RELEASE_NOTES.md`，通常从 `1.4.1` 到 `1.4.2`。已发布版本不可覆盖；修复坏版本也要用更高版本号。
 - 使用现有 `updater/publish.ps1` 生成签名附件并上传。源码提交、普通 tag、草稿和预发布不代表客户端能更新；正式发布完成后确认 Latest 指向预期版本且四个附件齐全。
 - 发布规则、实际命令、使用者操作和失败处理以 `发布流程.md` 为准。

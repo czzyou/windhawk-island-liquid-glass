@@ -502,6 +502,14 @@ assert 'Scale(contentScale, contentScale, pillCenter)' in src
 out.write_text(src, encoding='utf-8')
 if '--source-only' in sys.argv:
     sys.exit(0)
+if '--release' in sys.argv:
+    import local_build
+    if '--verify-build' in sys.argv:
+        verified = local_build.valid(root, build_version)
+        print('Local release build verified' if verified else 'Local release build is missing or outdated', flush=True)
+        sys.exit(0 if verified else 1)
+    # A failed rebuild must never leave a successful build record behind.
+    (root / '.local-build.json').unlink(missing_ok=True)
 windhawk=Path(os.environ.get('WINDHAWK_PATH', r'C:\Program Files\Windhawk'))
 compiler=windhawk/'Compiler'
 clang=compiler/'bin/clang++.exe'
@@ -1306,4 +1314,11 @@ args32 = [a.replace('\\64\\windhawk.lib', '\\32\\windhawk.lib')
 (root/'32').mkdir(exist_ok=True)
 args32[args32.index('-o')+1] = str(root/'32'/f'local@{build_id}_{build_version}.dll')
 subprocess.run(args32,cwd=compiler,check=True)
+if '--release' in sys.argv:
+    subprocess.run([sys.executable, str(root/'release-checks.py')], cwd=root, check=True)
+    # Python inherits PS7 module paths; let Windows PowerShell construct its own.
+    powershell_env = {key: value for key, value in os.environ.items() if key.upper() != 'PSMODULEPATH'}
+    subprocess.run(['powershell', '-NoProfile', '-File', str(root/'updater/test.ps1')], cwd=root, env=powershell_env, check=True)
+    local_build.record(root, build_version)
+    print('Local release build recorded: source, x64/x86 DLLs and checks passed', flush=True)
 print('YASB integration compiled')

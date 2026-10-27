@@ -5,6 +5,26 @@ import re
 import subprocess
 import sys
 import json
+import tempfile
+import local_build
+
+with tempfile.TemporaryDirectory() as directory:
+    fixture = Path(directory)
+    (fixture/'32').mkdir()
+    for name in ('dynamic-island-liquid-glass.wh.cpp', 'local@dynamic-island-liquid-glass_1.0.0.dll',
+                 '32/local@dynamic-island-liquid-glass_1.0.0.dll', 'requirements.txt', 'build.py'):
+        (fixture/name).write_text('original', encoding='utf-8')
+    assert not local_build.valid(fixture, '1.0.0')
+    local_build.record(fixture, '1.0.0')
+    assert local_build.valid(fixture, '1.0.0')
+    for name in ('dynamic-island-liquid-glass.wh.cpp', 'local@dynamic-island-liquid-glass_1.0.0.dll',
+                 '32/local@dynamic-island-liquid-glass_1.0.0.dll', 'build.py'):
+        (fixture/name).write_text('changed', encoding='utf-8')
+        assert not local_build.valid(fixture, '1.0.0'), name
+        (fixture/name).write_text('original', encoding='utf-8')
+    assert not local_build.valid(fixture, '1.0.1')
+    (fixture/'32/local@dynamic-island-liquid-glass_1.0.0.dll').unlink()
+    assert not local_build.valid(fixture, '1.0.0')
 
 root = Path(__file__).parent.resolve()
 source = (root/'dynamic-island-liquid-glass.wh.cpp').read_text(encoding='utf-8')

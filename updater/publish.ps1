@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([switch]$InitializeKey, [switch]$PrepareOnly, [switch]$PublishPrepared, [string]$NotesFile)
 . (Join-Path $PSScriptRoot 'core.ps1')
 . (Join-Path $PSScriptRoot 'publish-checks.ps1')
@@ -42,9 +42,13 @@ if ($PublishPrepared -and $PrepareOnly) { throw 'Choose preparation or publicati
 if (-not $PublishPrepared) {
 Push-Location $sourceRoot
 try {
-    & python build.py --release --source-only
-    if ($LASTEXITCODE -ne 0) { throw 'Release source generation failed.' }
-    Assert-ActionsBuild $release.repository $sourceRoot
+    [void](Assert-PublishCheckout $sourceRoot)
+    & python build.py --release --verify-build
+    if ($LASTEXITCODE -ne 0) {
+        & python build.py --release
+        if ($LASTEXITCODE -ne 0) { throw 'Local release build or checks failed; nothing was signed.' }
+    }
+    $publishCommit = Assert-PublishCheckout $sourceRoot
 } finally { Pop-Location }
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 Copy-Item -LiteralPath $source -Destination $asset -Force
@@ -82,6 +86,12 @@ $zip=Join-Path $output 'island-setup.zip'
 Compress-Archive -LiteralPath $setupRoot -DestinationPath $zip -Force
 Remove-Item -LiteralPath $defaultsPath -Force
 } else {
+    Push-Location $sourceRoot
+    try {
+        & python build.py --release --verify-build
+        if ($LASTEXITCODE -ne 0) { throw 'Local build inputs changed. Run -PrepareOnly again.' }
+    } finally { Pop-Location }
+    $publishCommit = Assert-PublishCheckout $sourceRoot
     foreach ($path in @($asset,$manifestPath,(Join-Path $output 'update.sig'),$zip)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Prepared release is incomplete. Run -PrepareOnly first.' }
     }
@@ -107,7 +117,7 @@ try {
 } finally { $archive.Dispose() }
 if (-not $NotesFile -or -not (Test-Path -LiteralPath $NotesFile)) { throw 'Provide -NotesFile with the release notes, or use -PrepareOnly.' }
 $assets=@($asset,$manifestPath,(Join-Path $output 'update.sig'),$zip)
-& gh release create $tag @assets --repo $release.repository --draft --title ('Island '+$release.version) --notes-file $NotesFile
+& gh release create $tag @assets --repo $release.repository --target $publishCommit --draft --title ('Island '+$release.version) --notes-file $NotesFile
 if ($LASTEXITCODE -ne 0) { throw 'Draft release upload failed; nothing was published.' }
 & gh release edit $tag --repo $release.repository --draft=false --latest
 if ($LASTEXITCODE -ne 0) { throw 'Draft uploaded but publication failed. Inspect the release before retrying.' }

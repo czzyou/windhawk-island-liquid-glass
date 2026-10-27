@@ -44,12 +44,12 @@
 
 GitHub Actions 在推送代码、提交 PR 或手动触发时自动运行两项检查：`Source check` 验证补丁合成、版本格式和设置 YAML；`Windows build` 使用固定 Windhawk 1.7.3 工具链编译 x64/x86、运行回归及发布检查，并生成保留 30 天的 `island-build-提交号` 试用包。维护者先进行实际体验；Actions 不签名、不自动发布。
 
-固定操作见 [发布流程](发布流程.md)：本地编译、检查并试用，用户确认后再推送源码；Actions 后台复核，明确授权发布后再本机签名并发布正式 Release。本机试用不需要等待 Actions；只 push 代码不会让使用者收到更新。
+固定操作见 [发布流程](发布流程.md)：本地编译、检查并试用，用户确认后再推送源码；Actions 仅作后台复核，明确授权发布后直接依据本地成功构建签名并发布正式 Release，无需等待云端结果。本机试用不需要等待 Actions；只 push 代码不会让使用者收到更新。
 
-日常发布使用现有签名密钥，不需要重新初始化。本地构建和首轮体验确认后，更新版本和说明，生成源码并提交、推送；正式发布前等待当前提交的两项 Actions 检查成功，用户明确要求发布后运行：
+日常发布使用现有签名密钥，不需要重新初始化。先确定发布版本号和说明，再完成一次本地构建和首轮体验，提交并推送；用户明确要求发布后直接运行，不等待 Actions：
 
 ```powershell
-# 复用当前提交的 Actions 成功结果，在本机签名和打包，不重复编译
+# 复用有效本地构建记录并签名打包；记录缺失或输入变化时才重新本地构建
 powershell -NoProfile -File updater/publish.ps1 -PrepareOnly
 # 上传草稿，附件齐全后发布为 Latest 正式版
 powershell -NoProfile -File updater/publish.ps1 -PublishPrepared -NotesFile RELEASE_NOTES.md
@@ -59,7 +59,6 @@ powershell -NoProfile -File updater/publish.ps1 -PublishPrepared -NotesFile RELE
 
 ```powershell
 python build.py --release
-python release-checks.py
 powershell -NoProfile -File updater/test.ps1
 # 额外验证更新器实际调用本机编译器，输出仍在隔离目录
 powershell -NoProfile -File updater/test.ps1 -Compile

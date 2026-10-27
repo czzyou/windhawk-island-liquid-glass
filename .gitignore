@@ -1,4 +1,5 @@
 __pycache__/
+/.local-build.json
 *.pyc
 /*.dll
 /*.exe

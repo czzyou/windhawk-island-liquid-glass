@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([switch]$Compile)
 . (Join-Path $PSScriptRoot 'core.ps1')
 . (Join-Path $PSScriptRoot 'publish-checks.ps1')
@@ -56,38 +56,27 @@ try {
         Assert ($script:downloadUrls.Count -eq 0) 'Rejected URLs never reach the network'
     }
     & {
-        $script:actionsDirty = $false
-        $script:actionsUnavailable = $false
-        $script:actionsRun = @{headSha=('a'*40);headBranch='main';event='push';status='completed';conclusion='success';url='https://example.com/run'}
+        $script:publishDirty = $false
+        $script:publishBranch = 'main'
         function git {
             $global:LASTEXITCODE = 0
             if ($args -contains 'rev-parse') { 'a'*40 }
-            elseif ($script:actionsDirty) { ' M build.py' }
+            elseif ($args -contains 'branch') { $script:publishBranch }
+            elseif ($script:publishDirty) { ' M build.py' }
         }
-        function gh {
-            $global:LASTEXITCODE = 0
-            if ($script:actionsUnavailable) { '[]' }
-            else { ConvertTo-Json -InputObject @($script:actionsRun) -Compress }
-        }
-        Assert-ActionsBuild 'test/repo' $testRoot
-        $script:checks++
-        $script:actionsDirty = $true
-        Must-Fail { Assert-ActionsBuild 'test/repo' $testRoot } 'Uncommitted release inputs rejected'
-        $script:actionsDirty = $false
-        $script:actionsUnavailable = $true
-        Must-Fail { Assert-ActionsBuild 'test/repo' $testRoot } 'Missing successful build rejected'
-        $script:actionsUnavailable = $false
-        foreach ($bad in @(@('headSha',('b'*40)), @('headBranch','other'), @('event','pull_request'), @('status','in_progress'), @('conclusion','failure'))) {
-            $savedValue = $script:actionsRun[$bad[0]]
-            $script:actionsRun[$bad[0]] = $bad[1]
-            Must-Fail { Assert-ActionsBuild 'test/repo' $testRoot } ('Untrusted build rejected: '+$bad[0])
-            $script:actionsRun[$bad[0]] = $savedValue
-        }
+        Assert ((Assert-PublishCheckout $testRoot) -ceq ('a'*40)) 'Clean main is publishable without cloud checks'
+        $script:publishDirty = $true
+        Must-Fail { Assert-PublishCheckout $testRoot } 'Uncommitted release inputs rejected'
+        $script:publishDirty = $false
+        $script:publishBranch = 'feature'
+        Must-Fail { Assert-PublishCheckout $testRoot } 'Non-main checkout rejected'
     }
     $sourcePath=Join-Path (Split-Path $PSScriptRoot -Parent) 'dynamic-island-liquid-glass.wh.cpp'
     $sourceBytes=[IO.File]::ReadAllBytes($sourcePath)
     $version=[regex]::Match([IO.File]::ReadAllText($sourcePath),'(?m)^// @version\s+(\S+)').Groups[1].Value
     $publisher=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'publish.ps1'))
+    Assert ($publisher -notmatch 'Assert-ActionsBuild|gh run list') 'Cloud checks do not gate publication'
+    Assert ($publisher.Contains('--target $publishCommit')) 'Release targets the verified commit'
     $minimum=[regex]::Match($publisher,"minUpdaterVersion='([^']+)'").Groups[1].Value
     Assert ((Get-ReleaseVersion $minimum) -eq [version]'1.0.0') 'Publication remains compatible with existing updaters'
     $m=[ordered]@{schema=1;version=$version;tag=('v'+$version);modId=$script:PublicId;sourceAsset='dynamic-island-liquid-glass.wh.cpp';sourceSha256=(Get-FileDigest $sourcePath);sourceBytes=$sourceBytes.Length;minUpdaterVersion=$minimum;settings=@([pscustomobject]@{name='Appearance.OffsetX';kind='DWord';value=0})}
