@@ -399,10 +399,10 @@ void GlassRenderer::RunPasses(ID3D11DeviceContext* ctx, GlassPanel& panel, float
     const float panelH = static_cast<float>(pb.bottom - pb.top);
     const float margin = kBlurMarginCss * dpr;
 
-    // Keep a broad transition, with RGB center-sample slope capped below 0.6:
+    // Keep the rim narrow, with RGB center-sample slope capped below 0.6:
     // smootherstep's peak derivative is 1.875, so 1.875/0.42 * (0.04+0.09) < 0.6.
     const float halfMin = std::min(panelW, panelH) / 2.0f;
-    const float bezel = std::min(34.0f * dpr, halfMin * 0.75f);
+    const float bezel = std::min(18.0f * dpr, halfMin * 0.40f);
     const float maxBend = 0.04f * bezel;
 
     ShaderParams params{};

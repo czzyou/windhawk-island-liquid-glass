@@ -77,8 +77,8 @@ HRESULT GlassPanel::Create(ID3D11Device* device, const RECT& bounds, const Glass
     hr = dcompDevice_->CreateVisual(&dcompVisual_);
     if (FAILED(hr)) return hr;
 
-    // Allocate the composition swapchain for the largest surface this panel
-    // can become, once. Resizing a flip-model swapchain discards the presented
+    // Reserve the usual panel size first, growing only when capacity is exceeded.
+    // Resizing a flip-model swapchain discards the presented
     // frame, which showed up as the island's background flickering on every
     // spring tick while it expanded. With a max-size buffer the window can grow
     // and shrink freely: the renderer paints the current bounds into the
@@ -113,6 +113,12 @@ HRESULT GlassPanel::Create(ID3D11Device* device, const RECT& bounds, const Glass
         Present();
     }
     return S_OK;
+}
+
+SIZE GlassSurfaceCapacity(UINT width, UINT height, UINT requiredWidth, UINT requiredHeight) {
+    return {
+        static_cast<LONG>(requiredWidth > width ? std::max(requiredWidth, width * 2) : width),
+        static_cast<LONG>(requiredHeight > height ? std::max(requiredHeight, height * 2) : height)};
 }
 
 HRESULT GlassPanel::EnsureSwapchain(ID3D11Device* device, UINT width, UINT height) {
@@ -158,12 +164,17 @@ HRESULT GlassPanel::EnsureSwapchain(ID3D11Device* device, UINT width, UINT heigh
 }
 
 void GlassPanel::SetBounds(const RECT& bounds) {
-    bounds_ = bounds;
     if (!hwnd_) return;
     const UINT width = bounds.right > bounds.left
         ? static_cast<UINT>(bounds.right - bounds.left) : 1U;
     const UINT height = bounds.bottom > bounds.top
         ? static_cast<UINT>(bounds.bottom - bounds.top) : 1U;
+    // Keep capacity on shrink; grow with headroom only when the panel exceeds it.
+    if (width > swapW_ || height > swapH_) {
+        const auto capacity = GlassSurfaceCapacity(swapW_, swapH_, width, height);
+        if (FAILED(EnsureSwapchain(device_.Get(), capacity.cx, capacity.cy))) return;
+    }
+    bounds_ = bounds;
     SetWindowPos(hwnd_, nullptr, bounds.left, bounds.top,
                  static_cast<int>(width), static_cast<int>(height),
                  SWP_NOZORDER | SWP_NOACTIVATE);

@@ -516,6 +516,9 @@ clang=compiler/'bin/clang++.exe'
 
 glow_test = (root/'aurora-glow-checks.inc').read_text(encoding='utf-8')
 for marker, begin, end in (
+    ('FLUID', 'constexpr int kGlowFieldWidth =', '// END_ALBUM_GLOW_FLUID'),
+    ('BITMAP', 'struct BitmapPixels {', '\n\n'),
+    ('PALETTE', 'static void SampleAlbumGlow(', '\n\nbool DecodeImageBytesToPixels('),
     ('COLOR', 'static float HueToRgb(', '// Returns true if the currently active foreground window'),
     ('UPDATE', '    bool UpdateAmbientGlow(', '    bool Render('),
     ('DRAW', '    void DrawAmbientAuroraGlow(', '    // A real soft shadow'),
@@ -528,7 +531,7 @@ assert 'glowAnimating || mediaAnimating' in src
 (root/'aurora-glow-checks.cpp').write_text(glow_test, encoding='utf-8')
 subprocess.run([str(clang),'-std=c++23','-static',str(root/'aurora-glow-checks.cpp'),'-o',str(root/'aurora-glow-checks.exe')],cwd=compiler,check=True)
 subprocess.run([str(root/'aurora-glow-checks.exe')],check=True)
-print('Aurora glow checks passed: companion, pause, toggle, pastel/neutral colors, contrast and bounds', flush=True)
+print('Aurora glow checks passed: area-weighted palette, liquid motion, pause, toggle, contrast and bounds', flush=True)
 
 waveform_start = src.index('    void DrawWaveform(')
 waveform_end = src.index('\n    void DrawCountdownProgress', waveform_start)
@@ -1248,15 +1251,38 @@ ui_test += '''int main() {
 subprocess.run([str(clang),'-std=c++23','-static',str(root/'timer-ui-checks.cpp'),'-o',str(root/'timer-ui-checks.exe')],cwd=compiler,check=True)
 subprocess.run([str(root/'timer-ui-checks.exe')],check=True)
 print('Timer panel checks passed: centered two-button geometry, hit rejection and companion target',flush=True)
-glass_test = '#include <windows.h>\n#include <d2d1.h>\n#include <d3dcompiler.h>\n#include <algorithm>\n#include <cstdio>\n#include <array>\n#include <cassert>\n'
+glass_test = '#include <cmath>\n#include <windows.h>\n#include <d2d1.h>\n#include <d3dcompiler.h>\n#include <algorithm>\n#include <cstdio>\n#include <array>\n#include <cassert>\n'
 glass_test += (root/'liquid-glass-rim.h').read_text(encoding='utf-8')
 glass_contrast = (root/'native-island-glass.h').read_text(encoding='utf-8')
 glass_test += glass_contrast[glass_contrast.index('bool GlassNeedsDarkText('):glass_contrast.index('class NativeIslandGlass')]
 glass_renderer = (root/'native-glass/src/renderer.cc').read_text(encoding='utf-8')
+glass_panel = (root/'native-glass/src/panel.cc').read_text(encoding='utf-8')
+glass_test += glass_panel[glass_panel.index('SIZE GlassSurfaceCapacity('):glass_panel.index('HRESULT GlassPanel::EnsureSwapchain(')]
 glass_test += glass_renderer[glass_renderer.index('const char kShaderSource[]'):glass_renderer.index('\nstruct ShaderParams {')]
 glass_profile = glass_renderer[glass_renderer.index('    float u = saturate('):glass_renderer.index('    disp = nrm')]
 glass_test += 'float saturate(float x) { return std::clamp(x, 0.0f, 1.0f); }\nfloat GlassRimProfile(float t) { float bump = 0;\n' + glass_profile + '\nreturn bump; }\n'
+glass_band = re.search(r'    const float bezel = ([^;]+);', glass_renderer).group(1)
+glass_test += 'float GlassBandWidth(float halfMin, float dpr) { return ' + glass_band + '; }\n'
 glass_test += '''int main() {
+ for(float dpr : {1.0f,1.5f,2.0f}) {
+   assert(std::abs(GlassBandWidth(18*dpr,dpr)/dpr-7.2f)<0.001f);
+   assert(std::abs(GlassBandWidth(100*dpr,dpr)/dpr-18.0f)<0.001f);
+ }
+ UINT capacityWidth=420, capacityHeight=220;
+ int allocations=0;
+ for(UINT width=380; width<=1900; ++width) {
+   const auto next=GlassSurfaceCapacity(capacityWidth,capacityHeight,width,44);
+   allocations += next.cx!=capacityWidth || next.cy!=capacityHeight;
+   capacityWidth=next.cx; capacityHeight=next.cy;
+   assert(capacityWidth>=width && capacityHeight==220);
+ }
+ assert(allocations==3);
+ const auto shrunk=GlassSurfaceCapacity(capacityWidth,capacityHeight,380,44);
+ assert(shrunk.cx==capacityWidth && shrunk.cy==capacityHeight);
+ const auto reopened=GlassSurfaceCapacity(shrunk.cx,shrunk.cy,1900,184);
+ assert(reopened.cx==shrunk.cx && reopened.cy==shrunk.cy);
+ const auto large=GlassSurfaceCapacity(420,220,1920,480);
+ assert(large.cx>=1920 && large.cy>=480);
  assert(GlassNeedsDarkText(255,255,255,false));
  assert(!GlassNeedsDarkText(0,0,0,true));
  assert(!GlassNeedsDarkText(155,155,155,false));

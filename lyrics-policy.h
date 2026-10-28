@@ -35,7 +35,7 @@ float CollapsedLyricsOffset(float textWidth, float available, double elapsed, do
 bool IsLyricsCredit(const std::wstring& text) {
     auto lower=text;
     for (auto& c:lower) c=static_cast<wchar_t>(towlower(c));
-    const auto first=lower.find_first_not_of(L" \t");
+    const auto first=lower.find_first_not_of(L" \t([（【");
     if (first==std::wstring::npos) return false;
     for (const auto* prefix : {L"作词",L"作曲",L"词曲",L"编曲",L"制作人",L"制作",L"录音",L"混音",L"母带",L"监制",L"出品",L"发行",L"词",L"曲",
                               L"lyrics by",L"composed by",L"written by",L"produced by",L"arranged by",L"composer",L"lyricist",L"producer",L"mixing",L"mastering"}) {
@@ -43,7 +43,31 @@ bool IsLyricsCredit(const std::wstring& text) {
         if (lower.compare(first,wcslen(prefix),prefix)==0 && end<lower.size() &&
             std::wstring(L" :：/\t").find(lower[end])!=std::wstring::npos) return true;
     }
-    return false;
+    // Long slash-separated name lists may omit the usual credit label entirely.
+    const auto slashes=std::count_if(lower.begin(),lower.end(),[](wchar_t c){return c==L'/' || c==L'／';});
+    const bool bracketed=lower.find_first_not_of(L" \t")!=first;
+    if (lower.size()<80 || slashes<4 || (!bracketed && (lower.size()<160 || slashes<8)) ||
+        lower.find(L"://")!=std::wstring::npos || lower.find_first_of(L"!?！？。;；")!=std::wstring::npos) return false;
+    std::vector<std::wstring> names;
+    size_t start=0;
+    while (start<lower.size()) {
+        const auto end=lower.find_first_of(L"/／",start);
+        auto name=lower.substr(start,end==std::wstring::npos ? end : end-start);
+        const auto begin=name.find_first_not_of(L" \t([（【");
+        const auto last=name.find_last_not_of(L" \t)]）】\r");
+        if (begin==std::wstring::npos || last<begin) return false;
+        name=name.substr(begin,last-begin+1);
+        int words=0; bool inWord=false;
+        for (auto c:name) {
+            if (iswspace(c)) inWord=false;
+            else if (!inWord) {++words; inWord=true;}
+        }
+        if (name.size()>64 || words>4) return false;
+        if (std::find(names.begin(),names.end(),name)==names.end()) names.push_back(name);
+        if (end==std::wstring::npos) break;
+        start=end+1;
+    }
+    return names.size()>=5;
 }
 
 struct LyricsWidthTarget {

@@ -1,4 +1,5 @@
-"""Add Ambient Aurora Glow to the island with rich full-spectrum album color extraction."""
+"""Add area-weighted album glow with slow liquid gradient motion."""
+from pathlib import Path
 
 
 def apply_aurora_glow(src):
@@ -10,7 +11,7 @@ def apply_aurora_glow(src):
     # 1. Add YAML settings under Themes
     settings_yaml = '''  - AmbientAuroraGlow: true
     $name: 专辑氛围背光
-    $description: Casts a soft, breathing ambient glow around the island driven by the playing album art accent color.
+    $description: Casts a soft, breathing ambient glow around the island blending the main album colors in proportion to their visible area.
   - AmbientGlowIntensity: 100
     $name: 氛围背光强度
     $description: 0 to 200. Controls how brightly the ambient aurora glow radiates around the island.
@@ -44,13 +45,25 @@ def apply_aurora_glow(src):
     # 4. Enhance BitmapPixels default accent: Pure soft frosted white instead of cyan
     change('''    D2D1_COLOR_F sampledAccent = D2D1::ColorF(0x4cc9f0);''',
            '''    D2D1_COLOR_F sampledAccent = D2D1::ColorF(0.92f, 0.94f, 0.98f, 1.0f);
-    bool accentIsNeutral = true;''')
+    bool accentIsNeutral = true;
+    std::array<D2D1_COLOR_F, 5> glowColors{};
+    std::array<float, 5> glowWeights{};
+    int glowColorCount = 0;''')
 
     change('''        if (poolCount > 0) {''', '''        if (poolCount > 0) {
             pixels.accentIsNeutral = false;''')
     change('''            targetAccent = state.media.art.sampledAccent;''',
            '''            targetAccent = EnsureContrastAgainstBackground(
                 state.media.art.sampledAccent, settings.pillBgColor);''')
+
+    change('bool DecodeImageBytesToPixels(',
+           (Path(__file__).parent / 'album-glow-palette.h').read_text(encoding='utf-8') + '\n\nbool DecodeImageBytesToPixels(')
+    decode = src.index('bool DecodeImageBytesToPixels(')
+    sample = src.index('    pixels.generation = ++g_artGenerationCounter;', decode)
+    src = src[:sample] + '    SampleAlbumGlow(pixels);\n' + src[sample:]
+
+    change('class Renderer {',
+           (Path(__file__).parent / 'album-glow-fluid.h').read_text(encoding='utf-8') + '\n\nclass Renderer {')
 
     # 5. Expand album color extraction spectrum (unlock moody darks, soft pastels, warm earthy & vivid tones)
     old_color_filter = '''        // Reject near-black, near-white, and near-gray pixels.
@@ -101,7 +114,16 @@ def apply_aurora_glow(src):
     change('''    ComPtr<ID2D1LinearGradientBrush> glassRimBrush_;
     float settingsOpacity_ = 0.96f;''',
            '''    ComPtr<ID2D1LinearGradientBrush> glassRimBrush_;
-    ComPtr<ID2D1SolidColorBrush> auroraGlowBrush_;
+    ComPtr<ID2D1BitmapBrush> auroraGlowBrush_;
+    ComPtr<ID2D1Bitmap> auroraGlowBitmap_;
+    double lastGlowFieldTime_ = -1.0;
+    float lastGlowFieldPhase_ = -1.0f;
+    uint64_t lastGlowArt_ = 0;
+    D2D1_COLOR_F lastGlowAccent_{};
+    bool lastGlowAuto_ = true;
+    float glowPhase_ = 0.0f;
+    bool glowMotionEnabled_ = true;
+    double lastGlowMotionCheck_ = -1.0;
     float auroraGlowBlend_ = 0.0f;
     double lastGlowTime_ = -1.0;
     float settingsOpacity_ = 0.96f;''')
@@ -110,7 +132,8 @@ def apply_aurora_glow(src):
         glassRimStops_.Reset();''',
            '''        glassRimBrush_.Reset();
         glassRimStops_.Reset();
-        auroraGlowBrush_.Reset();''')
+        auroraGlowBrush_.Reset();
+        auroraGlowBitmap_.Reset();''')
 
     # 9. Add DrawAmbientAuroraGlow method right before DrawSoftShadow
     glow_method = '''    // Ambient Aurora Glow.
@@ -119,6 +142,15 @@ def apply_aurora_glow(src):
         const float target = settings.ambientAuroraGlow && mediaShown &&
             settings.ambientGlowIntensity > 0.005f && settings.backdropMaterial == BackdropMaterial::None
             ? (playing ? 1.0f : 0.65f) : 0.0f;
+        if (lastGlowMotionCheck_ < 0 || now - lastGlowMotionCheck_ >= 1.0) {
+            BOOL enabled = TRUE;
+            if (SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &enabled, 0))
+                glowMotionEnabled_ = enabled != FALSE;
+            lastGlowMotionCheck_ = now;
+        }
+        const bool flowing = target > 0 && playing && glowMotionEnabled_;
+        if (flowing && lastGlowTime_ >= 0)
+            glowPhase_ += static_cast<float>((std::max)(0.0, (std::min)(now - lastGlowTime_, 0.1))) * 0.55f;
         const float previous = auroraGlowBlend_;
         if (lastGlowTime_ < 0.0) {
             auroraGlowBlend_ = target;
@@ -129,7 +161,7 @@ def apply_aurora_glow(src):
             if (std::fabs(target - auroraGlowBlend_) <= 0.005f) auroraGlowBlend_ = target;
         }
         lastGlowTime_ = now;
-        return previous != auroraGlowBlend_ || auroraGlowBlend_ != target;
+        return flowing || previous != auroraGlowBlend_ || auroraGlowBlend_ != target;
     }
 
     void DrawAmbientAuroraGlow(D2D1_RECT_F rect, float radius,
@@ -160,33 +192,57 @@ def apply_aurora_glow(src):
             glowColor.b = (std::min)(1.0f, glowColor.b * boost);
         }
 
-        // Calm breathing pulsation (~2.6s cycle) when music is actively playing
-        const float pulse = state.media.playing ?
-            (0.86f + 0.14f * std::sin(static_cast<float>(now * 2.4))) : 0.85f;
-
-        const float totalIntensity = settings.ambientGlowIntensity * auroraGlowBlend_ * pulse * settingsOpacity_;
+        const float totalIntensity = settings.ambientGlowIntensity * auroraGlowBlend_ * settingsOpacity_;
         if (totalIntensity <= 0.005f) {
             return;
         }
 
         const bool flushTop = settings.notchStyle || settings.borderMergedMode;
-        const float offsetRatio = flushTop ? 0.32f : 0.16f;
+        const float offsetRatio = flushTop ? 0.16f : 0.08f;
         const float availBottom = (std::max)(0.0f, bitmapHeight_ - rect.bottom - 3.5f);
         const float availTop = (std::max)(0.0f, rect.top - 3.5f);
-        float spreadY = (std::min)(Clamp(13.5f * settings.sizeScale, 5.0f, 16.5f),
+        float spreadY = (std::min)(Clamp(5.5f * settings.sizeScale, 2.5f, 6.5f),
                                    availBottom / (1.0f + offsetRatio));
         if (!flushTop) spreadY = (std::min)(spreadY, availTop / (0.70f - offsetRatio));
         const float yOffset = spreadY * offsetRatio;
         const float availX = (std::max)(0.0f, (std::min)(rect.left, bitmapWidth_ - rect.right) - 4.0f);
-        const float spreadX = (std::min)({spreadY * 1.30f, availX, kRenderPadX - 4.0f});
+        const float spreadX = (std::min)({spreadY, availX, kRenderPadX - 4.0f});
 
-        if (!auroraGlowBrush_) {
-            if (FAILED(target_->CreateSolidColorBrush(glowColor, &auroraGlowBrush_)) || !auroraGlowBrush_) {
-                return;
+        const auto& art = state.media.art;
+        const bool autoColor = settings.accentMode == AccentMode::Auto;
+        const bool paletteChanged = lastGlowArt_ != art.generation || lastGlowAuto_ != autoColor ||
+            (!autoColor && (lastGlowAccent_.r != glowColor.r || lastGlowAccent_.g != glowColor.g ||
+                           lastGlowAccent_.b != glowColor.b));
+        const bool fieldDue = lastGlowFieldTime_ < 0 || now - lastGlowFieldTime_ >= 1.0 / 30.0;
+        if (!auroraGlowBitmap_ || paletteChanged || (fieldDue && lastGlowFieldPhase_ != glowPhase_)) {
+            const int colorCount = autoColor ? art.glowColorCount : 0;
+            const int count = (std::max)(1, colorCount);
+            std::array<D2D1_COLOR_F, 5> colors{};
+            std::array<float, 5> weights{};
+            for (int j = 0; j < count; ++j) {
+                colors[j] = colorCount ? art.glowColors[j] : glowColor;
+                weights[j] = colorCount ? art.glowWeights[j] : 1.0f;
+                const float peak = (std::max)({colors[j].r, colors[j].g, colors[j].b});
+                if (peak > 0.001f && peak < 0.35f) {
+                    colors[j].r *= 0.35f / peak; colors[j].g *= 0.35f / peak; colors[j].b *= 0.35f / peak;
+                }
             }
-        } else {
-            auroraGlowBrush_->SetColor(glowColor);
+            const auto pixels = BuildAlbumGlowField(colors.data(), weights.data(), count, glowPhase_);
+            const UINT pitch = kGlowFieldWidth * 4;
+            if (!auroraGlowBitmap_) {
+                if (FAILED(target_->CreateBitmap(D2D1::SizeU(kGlowFieldWidth, kGlowFieldHeight),
+                    pixels.data(), pitch, D2D1::BitmapProperties(D2D1::PixelFormat(
+                        DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)), &auroraGlowBitmap_))) return;
+            } else if (FAILED(auroraGlowBitmap_->CopyFromMemory(nullptr, pixels.data(), pitch))) return;
+            lastGlowFieldTime_ = now; lastGlowFieldPhase_ = glowPhase_;
+            lastGlowArt_ = art.generation; lastGlowAccent_ = glowColor; lastGlowAuto_ = autoColor;
         }
+        if (!auroraGlowBrush_ && FAILED(target_->CreateBitmapBrush(auroraGlowBitmap_.Get(), &auroraGlowBrush_))) return;
+        const float fieldTop = flushTop ? rect.top : rect.top - spreadY * 0.70f + yOffset;
+        auroraGlowBrush_->SetTransform(D2D1::Matrix3x2F::Scale(
+            (rect.right - rect.left + spreadX * 2) / kGlowFieldWidth,
+            (rect.bottom + spreadY + yOffset - fieldTop) / kGlowFieldHeight) *
+            D2D1::Matrix3x2F::Translation(rect.left - spreadX, fieldTop));
 
         constexpr int kSteps = 10;
         const float compactFade = 1.0f - g_idleCompactBlend.load();

@@ -49,7 +49,7 @@
             return CollapsedLyricsWidth(measured,available);
         };
         const int index=CurrentLyricLine(state,now);
-        float requested=CollapsedLyricsWidth(collapsedTitleWidth_,available);
+        float requested=CollapsedTitleWidth(collapsedTitleWidth_,available);
         if (state.lyrics.synced && index>=0) requested=lineWidth(index);
         if (state.media.playing && state.lyrics.synced && index+1<static_cast<int>(lines.size()) &&
             !IsLyricsCredit(lines[index+1].text) && lines[index+1].timeMs-LyricPositionMs(state)<=200)
@@ -102,7 +102,7 @@
         }
         const int current=ClampInt(active,0,static_cast<int>(lyrics.lines.size())-1);
         if (compact) {
-            DrawCompactLyric(lyrics.lines[current].text,area,settings);
+            DrawCompactLyric(IsLyricsCredit(lyrics.lines[current].text) ? L"♪" : lyrics.lines[current].text,area,settings);
             target_->PopAxisAlignedClip();
             return;
         }
@@ -116,6 +116,7 @@
         if (std::fabs(desired-lyricScroll_)>0.1f) g_layoutDirty=true;
         for (int i=(std::max)(0,current-1);i<static_cast<int>(lyricBlocks_.size()) && i<=current+1;++i) {
             const auto& block=lyricBlocks_[i];
+            if (!block.layout) continue;
             const float top=area.top+block.top-lyricScroll_;
             if (top>=area.bottom) break;
             if (top+block.height<=area.top) continue;
@@ -140,16 +141,20 @@
         if (!settings.collapsedLyrics || !state.media.lyricsEligible) return false;
         const int index = CurrentLyricLine(state, now);
         std::wstring line = state.media.title;
-        if (state.lyrics.synced && index >= 0) line = state.lyrics.lines[index].text;
-        if (!state.lyrics.synced || index < 0) {
-            const auto alignment=textFormat_->GetTextAlignment();
-            const auto paragraph=textFormat_->GetParagraphAlignment();
-            textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            textFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            target_->DrawTextW(line.c_str(),static_cast<UINT32>(line.size()),textFormat_.Get(),
-                D2D1::RectF(rect.left+44,rect.top+5,rect.right-48,rect.bottom-5),textBrush_.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
-            textFormat_->SetTextAlignment(alignment);
-            textFormat_->SetParagraphAlignment(paragraph);
+        const bool showLyric=state.lyrics.synced && index>=0 && !IsLyricsCredit(state.lyrics.lines[index].text);
+        if (showLyric) line = state.lyrics.lines[index].text;
+        if (!showLyric) {
+            auto& cache=collapsedTitleCache_;
+            if (cache.text!=line || cache.format!=textFormat_.Get() || !cache.layout) {
+                cache.layout=CreateCollapsedTitleLayout(dwriteFactory_.Get(),textFormat_.Get(),line);
+                cache.text=line; cache.format=textFormat_.Get();
+            }
+            if (cache.layout) {
+                cache.layout->SetMaxWidth((std::max)(1.0f,rect.right-rect.left-92));
+                cache.layout->SetMaxHeight((std::max)(1.0f,rect.bottom-rect.top-10));
+                target_->DrawTextLayout(D2D1::Point2F(rect.left+44,rect.top+5),cache.layout.Get(),
+                    textBrush_.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
             return true;
         }
         const auto identity=MediaTrackIdentity(state.media);
@@ -210,6 +215,7 @@
     float collapsedTitleWidth_=-1;
     LyricsWidthTarget collapsedWidthTarget_;
     MarqueeLayoutCache collapsedLyricCache_;
+    MarqueeLayoutCache collapsedTitleCache_;
     std::wstring collapsedLyricIdentity_;
     int collapsedLyricIndex_=-2;
     double collapsedLyricStartedAt_=0;

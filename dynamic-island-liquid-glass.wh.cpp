@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.5.8
+// @version         1.5.9
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -200,7 +200,7 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
     $description: Casts a soft shadow beneath the island to lift it off the desktop.
   - AmbientAuroraGlow: true
     $name: 专辑氛围背光
-    $description: Casts a soft, breathing ambient glow around the island driven by the playing album art accent color.
+    $description: Casts a soft, breathing ambient glow around the island blending the main album colors in proportion to their visible area.
   - AmbientGlowIntensity: 100
     $name: 氛围背光强度
     $description: 0 to 200. Controls how brightly the ambient aurora glow radiates around the island.
@@ -1049,8 +1049,8 @@ HRESULT GlassPanel::Create(ID3D11Device* device, const RECT& bounds, const Glass
     hr = dcompDevice_->CreateVisual(&dcompVisual_);
     if (FAILED(hr)) return hr;
 
-    // Allocate the composition swapchain for the largest surface this panel
-    // can become, once. Resizing a flip-model swapchain discards the presented
+    // Reserve the usual panel size first, growing only when capacity is exceeded.
+    // Resizing a flip-model swapchain discards the presented
     // frame, which showed up as the island's background flickering on every
     // spring tick while it expanded. With a max-size buffer the window can grow
     // and shrink freely: the renderer paints the current bounds into the
@@ -1085,6 +1085,12 @@ HRESULT GlassPanel::Create(ID3D11Device* device, const RECT& bounds, const Glass
         Present();
     }
     return S_OK;
+}
+
+SIZE GlassSurfaceCapacity(UINT width, UINT height, UINT requiredWidth, UINT requiredHeight) {
+    return {
+        static_cast<LONG>(requiredWidth > width ? std::max(requiredWidth, width * 2) : width),
+        static_cast<LONG>(requiredHeight > height ? std::max(requiredHeight, height * 2) : height)};
 }
 
 HRESULT GlassPanel::EnsureSwapchain(ID3D11Device* device, UINT width, UINT height) {
@@ -1130,12 +1136,17 @@ HRESULT GlassPanel::EnsureSwapchain(ID3D11Device* device, UINT width, UINT heigh
 }
 
 void GlassPanel::SetBounds(const RECT& bounds) {
-    bounds_ = bounds;
     if (!hwnd_) return;
     const UINT width = bounds.right > bounds.left
         ? static_cast<UINT>(bounds.right - bounds.left) : 1U;
     const UINT height = bounds.bottom > bounds.top
         ? static_cast<UINT>(bounds.bottom - bounds.top) : 1U;
+    // Keep capacity on shrink; grow with headroom only when the panel exceeds it.
+    if (width > swapW_ || height > swapH_) {
+        const auto capacity = GlassSurfaceCapacity(swapW_, swapH_, width, height);
+        if (FAILED(EnsureSwapchain(device_.Get(), capacity.cx, capacity.cy))) return;
+    }
+    bounds_ = bounds;
     SetWindowPos(hwnd_, nullptr, bounds.left, bounds.top,
                  static_cast<int>(width), static_cast<int>(height),
                  SWP_NOZORDER | SWP_NOACTIVATE);
@@ -1808,10 +1819,10 @@ void GlassRenderer::RunPasses(ID3D11DeviceContext* ctx, GlassPanel& panel, float
     const float panelH = static_cast<float>(pb.bottom - pb.top);
     const float margin = kBlurMarginCss * dpr;
 
-    // Keep a broad transition, with RGB center-sample slope capped below 0.6:
+    // Keep the rim narrow, with RGB center-sample slope capped below 0.6:
     // smootherstep's peak derivative is 1.875, so 1.875/0.42 * (0.04+0.09) < 0.6.
     const float halfMin = std::min(panelW, panelH) / 2.0f;
-    const float bezel = std::min(34.0f * dpr, halfMin * 0.75f);
+    const float bezel = std::min(18.0f * dpr, halfMin * 0.40f);
     const float maxBend = 0.04f * bezel;
 
     ShaderParams params{};
@@ -3438,6 +3449,9 @@ struct BitmapPixels {
     uint64_t generation = 0;
     D2D1_COLOR_F sampledAccent = D2D1::ColorF(0.92f, 0.94f, 0.98f, 1.0f);
     bool accentIsNeutral = true;
+    std::array<D2D1_COLOR_F, 5> glowColors{};
+    std::array<float, 5> glowWeights{};
+    int glowColorCount = 0;
 };
 
 
@@ -4048,7 +4062,7 @@ float CollapsedLyricsOffset(float textWidth, float available, double elapsed, do
 bool IsLyricsCredit(const std::wstring& text) {
     auto lower=text;
     for (auto& c:lower) c=static_cast<wchar_t>(towlower(c));
-    const auto first=lower.find_first_not_of(L" \t");
+    const auto first=lower.find_first_not_of(L" \t([（【");
     if (first==std::wstring::npos) return false;
     for (const auto* prefix : {L"作词",L"作曲",L"词曲",L"编曲",L"制作人",L"制作",L"录音",L"混音",L"母带",L"监制",L"出品",L"发行",L"词",L"曲",
                               L"lyrics by",L"composed by",L"written by",L"produced by",L"arranged by",L"composer",L"lyricist",L"producer",L"mixing",L"mastering"}) {
@@ -4056,7 +4070,31 @@ bool IsLyricsCredit(const std::wstring& text) {
         if (lower.compare(first,wcslen(prefix),prefix)==0 && end<lower.size() &&
             std::wstring(L" :：/\t").find(lower[end])!=std::wstring::npos) return true;
     }
-    return false;
+    // Long slash-separated name lists may omit the usual credit label entirely.
+    const auto slashes=std::count_if(lower.begin(),lower.end(),[](wchar_t c){return c==L'/' || c==L'／';});
+    const bool bracketed=lower.find_first_not_of(L" \t")!=first;
+    if (lower.size()<80 || slashes<4 || (!bracketed && (lower.size()<160 || slashes<8)) ||
+        lower.find(L"://")!=std::wstring::npos || lower.find_first_of(L"!?！？。;；")!=std::wstring::npos) return false;
+    std::vector<std::wstring> names;
+    size_t start=0;
+    while (start<lower.size()) {
+        const auto end=lower.find_first_of(L"/／",start);
+        auto name=lower.substr(start,end==std::wstring::npos ? end : end-start);
+        const auto begin=name.find_first_not_of(L" \t([（【");
+        const auto last=name.find_last_not_of(L" \t)]）】\r");
+        if (begin==std::wstring::npos || last<begin) return false;
+        name=name.substr(begin,last-begin+1);
+        int words=0; bool inWord=false;
+        for (auto c:name) {
+            if (iswspace(c)) inWord=false;
+            else if (!inWord) {++words; inWord=true;}
+        }
+        if (name.size()>64 || words>4) return false;
+        if (std::find(names.begin(),names.end(),name)==names.end()) names.push_back(name);
+        if (end==std::wstring::npos) break;
+        start=end+1;
+    }
+    return names.size()>=5;
 }
 
 struct LyricsWidthTarget {
@@ -4103,6 +4141,11 @@ std::vector<LyricTextBlock> BuildLyricBlocks(IDWriteFactory* factory, IDWriteTex
     float top = 0;
     for (const auto& line : lines) {
         LyricTextBlock block;
+        if (IsLyricsCredit(line.text)) {
+            block.top=top;
+            blocks.push_back(std::move(block));
+            continue;
+        }
         const auto text = line.text.empty() ? std::wstring(L" ") : line.text;
         if (FAILED(factory->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format,
                 width, 16384.0f, &block.layout))) return {};
@@ -4133,6 +4176,25 @@ float MeasureLongestLyricWidth(IDWriteFactory* factory, IDWriteTextFormat* forma
 }
 float CollapsedLyricsWidth(float widest, float available) {
     return (std::min)((std::max)(0.0f,available),widest<0 ? 400.0f : std::ceil(widest+92.0f));
+}
+
+float CollapsedTitleWidth(float widest, float available) {
+    return CollapsedLyricsWidth(widest, (std::min)(420.0f, available));
+}
+
+Microsoft::WRL::ComPtr<IDWriteTextLayout> CreateCollapsedTitleLayout(
+    IDWriteFactory* factory, IDWriteTextFormat* format, const std::wstring& title) {
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+    if (FAILED(factory->CreateTextLayout(title.c_str(), static_cast<UINT32>(title.size()),
+            format, 328, 26, &layout))) return layout;
+    layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    Microsoft::WRL::ComPtr<IDWriteInlineObject> ellipsis;
+    DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
+    if (FAILED(factory->CreateEllipsisTrimmingSign(format, &ellipsis)) ||
+        FAILED(layout->SetTrimming(&trimming, ellipsis.Get()))) layout.Reset();
+    return layout;
 }
 
 std::atomic<bool> g_lyricsTabAvailable{false}, g_defaultOutputIsBluetooth{false};
@@ -6355,6 +6417,82 @@ RECT GetIslandDockRect() {
     return r;
 }
 
+// Approximate visible area on a bounded grid; keep neutral regions and undo PBGRA.
+static void SampleAlbumGlow(BitmapPixels& pixels) {
+    struct Bin { float r = 0, g = 0, b = 0, count = 0; };
+    std::array<Bin, 512> bins{};
+    if (!pixels.width || !pixels.height ||
+        pixels.bgra.size() != static_cast<size_t>(pixels.width) * pixels.height * 4) return;
+    const UINT nx = (std::min)(pixels.width, 64u), ny = (std::min)(pixels.height, 64u);
+    float total = 0;
+    for (UINT y = 0; y < ny; ++y) {
+        for (UINT x = 0; x < nx; ++x) {
+            const size_t i = (static_cast<size_t>((2 * y + 1) * pixels.height / (2 * ny)) *
+                pixels.width + (2 * x + 1) * pixels.width / (2 * nx)) * 4;
+            const float a = pixels.bgra[i + 3] / 255.0f;
+            if (a < 0.125f) continue;
+            const float r = (std::min)(1.0f, pixels.bgra[i + 2] / (255.0f * a));
+            const float g = (std::min)(1.0f, pixels.bgra[i + 1] / (255.0f * a));
+            const float b = (std::min)(1.0f, pixels.bgra[i] / (255.0f * a));
+            const int index = ((std::min)(7, int(r * 8)) << 6) |
+                ((std::min)(7, int(g * 8)) << 3) | (std::min)(7, int(b * 8));
+            auto& bin = bins[index];
+            bin.r += r * a; bin.g += g * a; bin.b += b * a; bin.count += a;
+            total += a;
+        }
+    }
+    if (total == 0) return;
+    for (auto& bin : bins) if (bin.count > 0) {
+        bin.r /= bin.count; bin.g /= bin.count; bin.b /= bin.count;
+    }
+    auto distance = [](const Bin& a, const Bin& b) {
+        return (a.r-b.r)*(a.r-b.r) + (a.g-b.g)*(a.g-b.g) + (a.b-b.b)*(a.b-b.b);
+    };
+    std::array<Bin, 5> centers{};
+    int count = 0;
+    for (; count < 5; ++count) {
+        float best = 0;
+        const Bin* seed = nullptr;
+        for (const auto& bin : bins) {
+            if (bin.count == 0) continue;
+            float separation = 1;
+            for (int j = 0; j < count; ++j) separation = (std::min)(separation, distance(bin, centers[j]));
+            const float score = bin.count * separation;
+            if (score > best) { best = score; seed = &bin; }
+        }
+        if (!seed || (count && best < total * 0.0001f)) break;
+        centers[count] = *seed;
+    }
+    for (int pass = 0; pass < 6; ++pass) {
+        std::array<Bin, 5> sums{};
+        for (const auto& bin : bins) {
+            if (bin.count == 0) continue;
+            int nearest = 0;
+            for (int j = 1; j < count; ++j)
+                if (distance(bin, centers[j]) < distance(bin, centers[nearest])) nearest = j;
+            auto& sum = sums[nearest];
+            sum.r += bin.r * bin.count; sum.g += bin.g * bin.count;
+            sum.b += bin.b * bin.count; sum.count += bin.count;
+        }
+        for (int j = 0; j < count; ++j) {
+            if (sums[j].count > 0) {
+                centers[j] = sums[j];
+                centers[j].r /= sums[j].count; centers[j].g /= sums[j].count; centers[j].b /= sums[j].count;
+            } else centers[j].count = 0;
+        }
+    }
+    std::sort(centers.begin(), centers.begin() + count,
+        [](const Bin& a, const Bin& b) { return a.count > b.count; });
+    pixels.glowColorCount = 0;
+    for (int j = 0; j < count; ++j) {
+        if (centers[j].count <= 0) continue;
+        const int k = pixels.glowColorCount++;
+        pixels.glowColors[k] = D2D1::ColorF(centers[j].r, centers[j].g, centers[j].b, 1);
+        pixels.glowWeights[k] = centers[j].count / total;
+    }
+}
+
+
 bool DecodeImageBytesToPixels(const std::vector<uint8_t>& bytes, BitmapPixels* outPixels) {
     if (!outPixels || bytes.empty()) {
         return false;
@@ -6553,6 +6691,7 @@ bool DecodeImageBytesToPixels(const std::vector<uint8_t>& bytes, BitmapPixels* o
     // else: no qualifying colorful pixel found (B&W / fully-filtered image)
     // — leave sampledAccent at the neutral BitmapPixels default.
 
+    SampleAlbumGlow(pixels);
     pixels.generation = ++g_artGenerationCounter;
     *outPixels = std::move(pixels);
     return true;
@@ -13743,6 +13882,68 @@ std::array<D2D1_GRADIENT_STOP, 7> LiquidGlassRimStops() {
     }};
 }
 
+// Subtle ambient light, guided by https://developer.apple.com/videos/play/wwdc2025/219/.
+// Original field implementation, not Apple's material renderer.
+constexpr int kGlowFieldWidth = 160, kGlowFieldHeight = 48;
+using GlowFieldPixels = std::array<uint8_t, kGlowFieldWidth * kGlowFieldHeight * 4>;
+
+static GlowFieldPixels BuildAlbumGlowField(const D2D1_COLOR_F* colors,
+    const float* weights, int count, float phase) {
+    struct Lobe { float x, y, rx, ry, weight; D2D1_COLOR_F color; };
+    std::array<Lobe, 10> lobes{};
+    count = (std::max)(0, (std::min)(5, count));
+    float weightSum = 0, accumulated = 0;
+    for (int j = 0; j < count; ++j) weightSum += (std::max)(0.0f, weights[j]);
+    for (int j = 0; j < count; ++j) {
+        const float share = weightSum > 0 ? (std::max)(0.0f, weights[j]) / weightSum : 0;
+        const float center = accumulated + share * 0.5f;
+        accumulated += share;
+        const auto color = colors[j];
+        for (int k = 0; k < 2; ++k) {
+            const int i = j * 2 + k;
+            const float seed = i * 2.39996f;
+            const float t = phase * 0.55f + seed;
+            lobes[i] = {
+                (k ? 1.0f - center : center) + 0.085f * std::sin(t),
+                (k ? 0.85f : 0.15f) + 0.09f * std::sin(t * 0.79f),
+                (0.18f + 0.28f * std::sqrt(share)) * (1.0f + 0.06f * std::sin(t)),
+                0.65f + 0.04f * std::cos(t * 0.83f),
+                share * 0.5f, D2D1::ColorF(color.r * color.r, color.g * color.g, color.b * color.b)};
+        }
+    }
+    GlowFieldPixels pixels{};
+    for (int y = 0; y < kGlowFieldHeight; ++y) {
+        const float v = (y + 0.5f) / kGlowFieldHeight;
+        const float warpX = 0.14f * std::sin(phase * 0.61f) +
+            0.065f * std::sin(v * 3.0f + phase * 0.52f);
+        for (int x = 0; x < kGlowFieldWidth; ++x) {
+            const float u = (x + 0.5f) / kGlowFieldWidth + warpX;
+            const float warpedV = v + 0.14f * std::sin(u * 4.2f - phase * 0.43f);
+            float r = 0, g = 0, b = 0, total = 0;
+            for (int i = 0; i < count * 2; ++i) {
+                const auto& lobe = lobes[i];
+                const float dx = (u - lobe.x) / lobe.rx, dy = (warpedV - lobe.y) / lobe.ry;
+                const float q = 1.0f + dx * dx + dy * dy;
+                const float influence = lobe.weight / (q * q);
+                total += influence;
+                r += lobe.color.r * influence; g += lobe.color.g * influence; b += lobe.color.b * influence;
+            }
+            const size_t index = (y * kGlowFieldWidth + x) * 4;
+            if (total > 0) {
+                // Gamma-2 light mixing avoids dark, muddy joins between saturated colours.
+                pixels[index] = static_cast<uint8_t>(std::sqrt(Clamp(b / total, 0, 1)) * 255 + 0.5f);
+                pixels[index + 1] = static_cast<uint8_t>(std::sqrt(Clamp(g / total, 0, 1)) * 255 + 0.5f);
+                pixels[index + 2] = static_cast<uint8_t>(std::sqrt(Clamp(r / total, 0, 1)) * 255 + 0.5f);
+                pixels[index + 3] = 255;
+            }
+        }
+    }
+    return pixels;
+}
+
+// END_ALBUM_GLOW_FLUID
+
+
 inline Microsoft::WRL::ComPtr<IDWriteFontFallback> CreateIslandChineseFontFallback(IDWriteFactory* factory) {
     Microsoft::WRL::ComPtr<IDWriteFactory2> factory2;
     Microsoft::WRL::ComPtr<IDWriteFontFallbackBuilder> builder;
@@ -13834,6 +14035,15 @@ class Renderer {
         const float target = settings.ambientAuroraGlow && mediaShown &&
             settings.ambientGlowIntensity > 0.005f && settings.backdropMaterial == BackdropMaterial::None
             ? (playing ? 1.0f : 0.65f) : 0.0f;
+        if (lastGlowMotionCheck_ < 0 || now - lastGlowMotionCheck_ >= 1.0) {
+            BOOL enabled = TRUE;
+            if (SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &enabled, 0))
+                glowMotionEnabled_ = enabled != FALSE;
+            lastGlowMotionCheck_ = now;
+        }
+        const bool flowing = target > 0 && playing && glowMotionEnabled_;
+        if (flowing && lastGlowTime_ >= 0)
+            glowPhase_ += static_cast<float>((std::max)(0.0, (std::min)(now - lastGlowTime_, 0.1))) * 0.55f;
         const float previous = auroraGlowBlend_;
         if (lastGlowTime_ < 0.0) {
             auroraGlowBlend_ = target;
@@ -13844,7 +14054,7 @@ class Renderer {
             if (std::fabs(target - auroraGlowBlend_) <= 0.005f) auroraGlowBlend_ = target;
         }
         lastGlowTime_ = now;
-        return previous != auroraGlowBlend_ || auroraGlowBlend_ != target;
+        return flowing || previous != auroraGlowBlend_ || auroraGlowBlend_ != target;
     }
 
     bool Render(const SharedState& state, const Settings& settings, const Activity& primary,
@@ -14029,6 +14239,7 @@ class Renderer {
         glassRimBrush_.Reset();
         glassRimStops_.Reset();
         auroraGlowBrush_.Reset();
+        auroraGlowBitmap_.Reset();
         target_.Reset();
         textFormat_.Reset();
         smallTextFormat_.Reset();
@@ -14722,33 +14933,57 @@ class Renderer {
             glowColor.b = (std::min)(1.0f, glowColor.b * boost);
         }
 
-        // Calm breathing pulsation (~2.6s cycle) when music is actively playing
-        const float pulse = state.media.playing ?
-            (0.86f + 0.14f * std::sin(static_cast<float>(now * 2.4))) : 0.85f;
-
-        const float totalIntensity = settings.ambientGlowIntensity * auroraGlowBlend_ * pulse * settingsOpacity_;
+        const float totalIntensity = settings.ambientGlowIntensity * auroraGlowBlend_ * settingsOpacity_;
         if (totalIntensity <= 0.005f) {
             return;
         }
 
         const bool flushTop = settings.notchStyle || settings.borderMergedMode;
-        const float offsetRatio = flushTop ? 0.32f : 0.16f;
+        const float offsetRatio = flushTop ? 0.16f : 0.08f;
         const float availBottom = (std::max)(0.0f, bitmapHeight_ - rect.bottom - 3.5f);
         const float availTop = (std::max)(0.0f, rect.top - 3.5f);
-        float spreadY = (std::min)(Clamp(13.5f * settings.sizeScale, 5.0f, 16.5f),
+        float spreadY = (std::min)(Clamp(5.5f * settings.sizeScale, 2.5f, 6.5f),
                                    availBottom / (1.0f + offsetRatio));
         if (!flushTop) spreadY = (std::min)(spreadY, availTop / (0.70f - offsetRatio));
         const float yOffset = spreadY * offsetRatio;
         const float availX = (std::max)(0.0f, (std::min)(rect.left, bitmapWidth_ - rect.right) - 4.0f);
-        const float spreadX = (std::min)({spreadY * 1.30f, availX, kRenderPadX - 4.0f});
+        const float spreadX = (std::min)({spreadY, availX, kRenderPadX - 4.0f});
 
-        if (!auroraGlowBrush_) {
-            if (FAILED(target_->CreateSolidColorBrush(glowColor, &auroraGlowBrush_)) || !auroraGlowBrush_) {
-                return;
+        const auto& art = state.media.art;
+        const bool autoColor = settings.accentMode == AccentMode::Auto;
+        const bool paletteChanged = lastGlowArt_ != art.generation || lastGlowAuto_ != autoColor ||
+            (!autoColor && (lastGlowAccent_.r != glowColor.r || lastGlowAccent_.g != glowColor.g ||
+                           lastGlowAccent_.b != glowColor.b));
+        const bool fieldDue = lastGlowFieldTime_ < 0 || now - lastGlowFieldTime_ >= 1.0 / 30.0;
+        if (!auroraGlowBitmap_ || paletteChanged || (fieldDue && lastGlowFieldPhase_ != glowPhase_)) {
+            const int colorCount = autoColor ? art.glowColorCount : 0;
+            const int count = (std::max)(1, colorCount);
+            std::array<D2D1_COLOR_F, 5> colors{};
+            std::array<float, 5> weights{};
+            for (int j = 0; j < count; ++j) {
+                colors[j] = colorCount ? art.glowColors[j] : glowColor;
+                weights[j] = colorCount ? art.glowWeights[j] : 1.0f;
+                const float peak = (std::max)({colors[j].r, colors[j].g, colors[j].b});
+                if (peak > 0.001f && peak < 0.35f) {
+                    colors[j].r *= 0.35f / peak; colors[j].g *= 0.35f / peak; colors[j].b *= 0.35f / peak;
+                }
             }
-        } else {
-            auroraGlowBrush_->SetColor(glowColor);
+            const auto pixels = BuildAlbumGlowField(colors.data(), weights.data(), count, glowPhase_);
+            const UINT pitch = kGlowFieldWidth * 4;
+            if (!auroraGlowBitmap_) {
+                if (FAILED(target_->CreateBitmap(D2D1::SizeU(kGlowFieldWidth, kGlowFieldHeight),
+                    pixels.data(), pitch, D2D1::BitmapProperties(D2D1::PixelFormat(
+                        DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)), &auroraGlowBitmap_))) return;
+            } else if (FAILED(auroraGlowBitmap_->CopyFromMemory(nullptr, pixels.data(), pitch))) return;
+            lastGlowFieldTime_ = now; lastGlowFieldPhase_ = glowPhase_;
+            lastGlowArt_ = art.generation; lastGlowAccent_ = glowColor; lastGlowAuto_ = autoColor;
         }
+        if (!auroraGlowBrush_ && FAILED(target_->CreateBitmapBrush(auroraGlowBitmap_.Get(), &auroraGlowBrush_))) return;
+        const float fieldTop = flushTop ? rect.top : rect.top - spreadY * 0.70f + yOffset;
+        auroraGlowBrush_->SetTransform(D2D1::Matrix3x2F::Scale(
+            (rect.right - rect.left + spreadX * 2) / kGlowFieldWidth,
+            (rect.bottom + spreadY + yOffset - fieldTop) / kGlowFieldHeight) *
+            D2D1::Matrix3x2F::Translation(rect.left - spreadX, fieldTop));
 
         constexpr int kSteps = 10;
         const float compactFade = 1.0f - g_idleCompactBlend.load();
@@ -17147,7 +17382,7 @@ class Renderer {
             return CollapsedLyricsWidth(measured,available);
         };
         const int index=CurrentLyricLine(state,now);
-        float requested=CollapsedLyricsWidth(collapsedTitleWidth_,available);
+        float requested=CollapsedTitleWidth(collapsedTitleWidth_,available);
         if (state.lyrics.synced && index>=0) requested=lineWidth(index);
         if (state.media.playing && state.lyrics.synced && index+1<static_cast<int>(lines.size()) &&
             !IsLyricsCredit(lines[index+1].text) && lines[index+1].timeMs-LyricPositionMs(state)<=200)
@@ -17200,7 +17435,7 @@ class Renderer {
         }
         const int current=ClampInt(active,0,static_cast<int>(lyrics.lines.size())-1);
         if (compact) {
-            DrawCompactLyric(lyrics.lines[current].text,area,settings);
+            DrawCompactLyric(IsLyricsCredit(lyrics.lines[current].text) ? L"♪" : lyrics.lines[current].text,area,settings);
             target_->PopAxisAlignedClip();
             return;
         }
@@ -17214,6 +17449,7 @@ class Renderer {
         if (std::fabs(desired-lyricScroll_)>0.1f) g_layoutDirty=true;
         for (int i=(std::max)(0,current-1);i<static_cast<int>(lyricBlocks_.size()) && i<=current+1;++i) {
             const auto& block=lyricBlocks_[i];
+            if (!block.layout) continue;
             const float top=area.top+block.top-lyricScroll_;
             if (top>=area.bottom) break;
             if (top+block.height<=area.top) continue;
@@ -17238,16 +17474,20 @@ class Renderer {
         if (!settings.collapsedLyrics || !state.media.lyricsEligible) return false;
         const int index = CurrentLyricLine(state, now);
         std::wstring line = state.media.title;
-        if (state.lyrics.synced && index >= 0) line = state.lyrics.lines[index].text;
-        if (!state.lyrics.synced || index < 0) {
-            const auto alignment=textFormat_->GetTextAlignment();
-            const auto paragraph=textFormat_->GetParagraphAlignment();
-            textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            textFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            target_->DrawTextW(line.c_str(),static_cast<UINT32>(line.size()),textFormat_.Get(),
-                D2D1::RectF(rect.left+44,rect.top+5,rect.right-48,rect.bottom-5),textBrush_.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
-            textFormat_->SetTextAlignment(alignment);
-            textFormat_->SetParagraphAlignment(paragraph);
+        const bool showLyric=state.lyrics.synced && index>=0 && !IsLyricsCredit(state.lyrics.lines[index].text);
+        if (showLyric) line = state.lyrics.lines[index].text;
+        if (!showLyric) {
+            auto& cache=collapsedTitleCache_;
+            if (cache.text!=line || cache.format!=textFormat_.Get() || !cache.layout) {
+                cache.layout=CreateCollapsedTitleLayout(dwriteFactory_.Get(),textFormat_.Get(),line);
+                cache.text=line; cache.format=textFormat_.Get();
+            }
+            if (cache.layout) {
+                cache.layout->SetMaxWidth((std::max)(1.0f,rect.right-rect.left-92));
+                cache.layout->SetMaxHeight((std::max)(1.0f,rect.bottom-rect.top-10));
+                target_->DrawTextLayout(D2D1::Point2F(rect.left+44,rect.top+5),cache.layout.Get(),
+                    textBrush_.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
             return true;
         }
         const auto identity=MediaTrackIdentity(state.media);
@@ -17308,6 +17548,7 @@ class Renderer {
     float collapsedTitleWidth_=-1;
     LyricsWidthTarget collapsedWidthTarget_;
     MarqueeLayoutCache collapsedLyricCache_;
+    MarqueeLayoutCache collapsedTitleCache_;
     std::wstring collapsedLyricIdentity_;
     int collapsedLyricIndex_=-2;
     double collapsedLyricStartedAt_=0;
@@ -19776,7 +20017,16 @@ public:
     uint64_t fileTrayIconGeneration_ = 0;
     ComPtr<ID2D1GradientStopCollection> glassRimStops_;
     ComPtr<ID2D1LinearGradientBrush> glassRimBrush_;
-    ComPtr<ID2D1SolidColorBrush> auroraGlowBrush_;
+    ComPtr<ID2D1BitmapBrush> auroraGlowBrush_;
+    ComPtr<ID2D1Bitmap> auroraGlowBitmap_;
+    double lastGlowFieldTime_ = -1.0;
+    float lastGlowFieldPhase_ = -1.0f;
+    uint64_t lastGlowArt_ = 0;
+    D2D1_COLOR_F lastGlowAccent_{};
+    bool lastGlowAuto_ = true;
+    float glowPhase_ = 0.0f;
+    bool glowMotionEnabled_ = true;
+    double lastGlowMotionCheck_ = -1.0;
     float auroraGlowBlend_ = 0.0f;
     double lastGlowTime_ = -1.0;
     float settingsOpacity_ = 0.96f;
