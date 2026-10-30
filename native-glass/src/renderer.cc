@@ -55,6 +55,15 @@ float sdRoundRect(float2 p, float2 halfSize, float r) {
   return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
 }
 
+// Adapted from shuding/liquid-glass: nested smoothstep and center-relative scaling.
+// Keep the existing rim untouched; limit the added center-relative sampling contraction to 8%.
+float GlassInteriorScale(float depth, float halfMin, float bezel) {
+  float t = saturate((depth - bezel) / max(halfMin - bezel, 1e-4));
+  float displacement = t * t * (3.0 - 2.0 * t);
+  float scaled = displacement * displacement * (3.0 - 2.0 * displacement);
+  return 1.0 - 0.08 * scaled;
+}
+
 // Smooth max(q,0): the normal direction rotates continuously through corner
 // regions, removing the directional crease along the diagonal
 float2 softClamp(float2 q, float soft) {
@@ -96,6 +105,8 @@ float4 PSLens(float4 pos : SV_Position) : SV_Target {
     disp = nrm * (bump * maxBend * min(dispFactor, 1.0));
   }
 
+  float2 lensCss = css + p * (GlassInteriorScale(depth, min(halfSize.x, halfSize.y), bezel) - 1.0);
+
   // Integrate the compressed footprint; offsets vanish with the bump so the
   // five taps converge to the clear-center sample without a threshold jump.
   float3 c;
@@ -111,18 +122,18 @@ float4 PSLens(float4 pos : SV_Position) : SV_Target {
     [unroll] for (int i = 0; i < 5; ++i) {
       float2 d = disp * radial[i] + tangent * lateral[i];
       c += wts[i] * float3(
-          tex.Sample(smp, toBlurUV(css + d + chroma)).r,
-          tex.Sample(smp, toBlurUV(css + d)).g,
-          tex.Sample(smp, toBlurUV(css + d - chroma)).b);
+          tex.Sample(smp, toBlurUV(lensCss + d + chroma)).r,
+          tex.Sample(smp, toBlurUV(lensCss + d)).g,
+          tex.Sample(smp, toBlurUV(lensCss + d - chroma)).b);
     }
   } else {
-    c = tex.Sample(smp, toBlurUV(css + disp)).rgb;
+    c = tex.Sample(smp, toBlurUV(lensCss + disp)).rgb;
   }
   // Clear glass keeps full-resolution detail throughout, with a little interior softness.
   float3 sharp = float3(
-      sharpTex.Sample(smp, toBlurUV(css + disp + chroma)).r,
-      sharpTex.Sample(smp, toBlurUV(css + disp)).g,
-      sharpTex.Sample(smp, toBlurUV(css + disp - chroma)).b);
+      sharpTex.Sample(smp, toBlurUV(lensCss + disp + chroma)).r,
+      sharpTex.Sample(smp, toBlurUV(lensCss + disp)).g,
+      sharpTex.Sample(smp, toBlurUV(lensCss + disp - chroma)).b);
   if (hdrSource > 0.5) sharp = scRGBToDisplay(sharp);
   float sharpMix = 0.85 + 0.15 * (1.0 - smoothstep(0.0, 1.0, saturate(depth / bezel)));
   c = lerp(c, sharp, sharpMix);

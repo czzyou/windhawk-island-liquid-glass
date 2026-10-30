@@ -100,6 +100,13 @@ int main() {
     assert(ParseTomorrowWeather(inverted,today,L"沈阳",false).key.empty());
     auto fahrenheit = ParseTomorrowWeather(fixture,today,L"沈阳",true);
     assert(fahrenheit.body.find(L"28°～52°F") != std::wstring::npos);
+    SYSTEMTIME monthEnd{2026,10,0,31,18};
+    const std::string monthEndForecast = R"(var fc={"f":[
+        {"fi":"10/31","fa":"01","fc":"7","fd":"0"},
+        {"fi":"11/1","fa":"03","fc":"12","fd":"-6"}]};)";
+    assert(ParseTomorrowWeather(monthEndForecast,monthEnd,L"沈阳",false).date == 20261101);
+    auto firstMorning = BriefTomorrow(monthEnd); firstMorning.wHour = 8;
+    assert(ParseTomorrowWeather(monthEndForecast,firstMorning,L"沈阳",false).date == 20261101);
     auto day = GetNbaLocalDay(BriefTomorrow(today));
     NbaSnapshot game; game.gameId=L"a"; game.scheduled=true;
     game.awayAbbr=L"CLE"; game.homeAbbr=L"BOS"; game.startTime=day.start+8*3600;

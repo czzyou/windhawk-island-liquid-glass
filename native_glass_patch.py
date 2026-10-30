@@ -14,6 +14,8 @@ def apply_native_glass(src):
              'd3d_utils.cc', 'panel.cc', 'capture.cc', 'renderer.cc', 'session.cc']
     native = '\n/* electron-liquid-glass, https://github.com/hicccc77/electron-liquid-glass\n'
     native += (root/'native-glass/LICENSE').read_text(encoding='utf-8') + '\n*/\n'
+    native += '\n/* shuding/liquid-glass, https://github.com/shuding/liquid-glass\n'
+    native += (root/'native-glass/shuding-liquid-glass.LICENSE').read_text(encoding='utf-8') + '\n*/\n'
     for name in files:
         text = (root/'native-glass/src'/name).read_text(encoding='utf-8-sig')
         native += '\n'.join(line for line in text.splitlines()
@@ -82,10 +84,4 @@ def apply_native_glass(src):
             // When Ctrl+hover''')
     change('''            renderer.Render(snapshot, renderSettings, primary, secondary,''', '''            renderer.ApplyGlassTheme(renderSettings);
             renderer.Render(snapshot, renderSettings, primary, secondary,''')
-    start = src.index('    void DrawNotification(')
-    end = src.index('    void DrawVolume(', start)
-    display = src[start:end]
-    assert display.count('mutedBrush_->SetOpacity(0.75f);') == 1
-    src = src[:start] + display.replace('mutedBrush_->SetOpacity(0.75f);',
-        'mutedBrush_->SetOpacity(nativeGlass_.Ready() ? 0.95f : 0.75f);') + src[end:]
     return src

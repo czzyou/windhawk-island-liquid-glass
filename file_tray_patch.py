@@ -28,7 +28,7 @@ def apply_file_tray(src):
                 added.push_back(std::move(item));''')
     change('    static ULONGLONG s_touchStartTime = 0;',
            '    static std::wstring fileTrayPressed;\n    static bool fileTrayRemovePressed = false;\n    static POINT fileTrayDragStart{};\n    static ULONGLONG s_touchStartTime = 0;')
-    change('                if (notificationPressed) return 0;', '''                if (notificationPressed) return 0;
+    change('                s_touchStartTime = GetTickCount64();', '''                s_touchStartTime = GetTickCount64();
                 if (g_settings.fileTrayModule && NormalizedTabIndex(g_settings) == FileTrayTabIndex(g_settings)) {
                     {
                         std::lock_guard lock(g_stateMutex);

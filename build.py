@@ -78,64 +78,6 @@ replace('const float h = std::max(3.0f, amp * maxH);',
         'const float h = 3.0f + (maxH - 3.0f) * std::sqrt(amp);')
 
 replace('(g_settings.autoHideIdleSeconds == -1 ? 0.0f : 36.0f)', '(g_settings.autoHideIdleSeconds == -1 ? 0.0f : IdleStripLayout::kHeight)')
-notification_route = '''std::wstring NotificationLaunchTarget(const std::wstring& appId) {
-    if (appId.empty() || appId.find_first_of(L"\\\\/:\\\"\\r\\n") != std::wstring::npos ||
-        std::any_of(appId.begin(), appId.end(), [](wchar_t c) { return c < 32; }))
-        return L"ms-actioncenter:";
-    return L"shell:AppsFolder\\\\" + appId;
-}
-
-'''
-replace('''    std::wstring app;
-    std::wstring title;
-    std::wstring body;''', '''    std::wstring app;
-    std::wstring sourceAppId;
-    std::wstring title;
-    std::wstring body;''')
-replace('''void HandleStatusClickAtPoint(HWND hwnd, LPARAM lParam) {''', notification_route + '''bool OpenNotificationSource(const std::wstring& appId) {
-    const auto target = NotificationLaunchTarget(appId);
-    SHELLEXECUTEINFOW launch{sizeof(launch)};
-    launch.fMask = SEE_MASK_FLAG_NO_UI;
-    launch.lpFile = target.c_str();
-    launch.nShow = SW_SHOWNORMAL;
-    if (ShellExecuteExW(&launch)) return true;
-    if (target == L"ms-actioncenter:") return false;
-    launch.lpFile = L"ms-actioncenter:";
-    return ShellExecuteExW(&launch) != FALSE;
-}
-
-void HandleStatusClickAtPoint(HWND hwnd, LPARAM lParam) {''')
-replace('''    static ULONGLONG s_touchStartTime = 0;''', '''    static ULONGLONG s_touchStartTime = 0;
-    static bool notificationPressed = false;
-    static std::wstring notificationAppId;
-    static double notificationExpiry = 0.0;''')
-replace('''                s_touchStartTime = GetTickCount64();''', '''                s_touchStartTime = GetTickCount64();
-                notificationPressed = false;
-                {
-                    std::lock_guard lock(g_stateMutex);
-                    const auto visible = ChooseActivities(g_state, g_settings, NowSeconds());
-                    if (!visible.empty() && visible[0] == IslandKind::Notification) {
-                        notificationPressed = true;
-                        notificationAppId = g_state.notification.sourceAppId;
-                        notificationExpiry = g_state.notification.expiresAt;
-                    }
-                }
-                // A notification must not fall through to media transport hit tests.
-                if (notificationPressed) return 0;''')
-replace('''                ULONGLONG now = GetTickCount64();''', '''                if (notificationPressed) {
-                    notificationPressed = false;
-                    const bool tap = s_touchStartTime > 0 && GetTickCount64() - s_touchStartTime < 500 &&
-                        std::abs(xPos - s_touchStart.x) <= 8 && std::abs(yPos - s_touchStart.y) <= 8;
-                    s_touchStartTime = 0;
-                    if (tap && OpenNotificationSource(notificationAppId)) {
-                        std::lock_guard lock(g_stateMutex);
-                        if (g_state.notification.expiresAt == notificationExpiry)
-                            g_state.notification.active = false;
-                        g_layoutDirty = true;
-                    }
-                    return 0;
-                }
-                ULONGLONG now = GetTickCount64();''')
 replace('''    void Step(float totalDt, float stiffness, float damping) {''', '''    void StepExponential(float dt) {
         if (dt <= 0.0f) return;
         const float previous = value;
@@ -241,24 +183,6 @@ fade_helper = """float IdleDashboardExpandedAlpha(float height, float fullHeight
 replace(original_source[start:end], """        const float expandedAlpha = IdleDashboardExpandedAlpha(dashHeight);
         const float collapsedAlpha = 1.0f - expandedAlpha;""")
 replace('const wchar_t* Loc(const wchar_t* english) {', fade_helper+'const wchar_t* Loc(const wchar_t* english) {')
-replace('    std::set<uint32_t> seenIds;', '    Wh_SetStringValue(L"NotificationListenerStatus", L"Waiting for startup delay");\n    std::set<uint32_t> seenIds;')
-replace('            auto listener = UserNotificationListener::Current();\n            auto access = listener.RequestAccessAsync().get();', '            Wh_SetStringValue(L"NotificationListenerStatus", L"Activating listener");\n            auto listener = UserNotificationListener::Current();\n            Wh_SetStringValue(L"NotificationListenerStatus", L"Requesting access");\n            auto access = listener.RequestAccessAsync().get();\n            Wh_SetIntValue(L"NotificationAccessStatus", static_cast<int>(access));\n            Wh_SetStringValue(L"NotificationListenerStatus", access == UserNotificationListenerAccessStatus::Allowed ? L"Listening" : L"Permission not allowed");')
-replace('                    auto notifications = listener.GetNotificationsAsync(NotificationKinds::Toast).get();', '                    auto notifications = listener.GetNotificationsAsync(NotificationKinds::Toast).get();\n                    Wh_SetIntValue(L"NotificationCount", notifications.Size());')
-replace('                Wh_Log(L"NotificationThreadProc connection error: %s (0x%08X). Retrying in 3s...", ex.message().c_str(), ex.to_abi());', '                Wh_SetStringValue(L"NotificationListenerStatus", L"Connection error");\n                Wh_SetIntValue(L"NotificationListenerHRESULT", static_cast<int>(ex.to_abi()));\n                Wh_Log(L"NotificationThreadProc connection error: %s (0x%08X). Retrying in 3s...", ex.message().c_str(), ex.to_abi());')
-replace('                            if (g_settings.notificationRespectDnD && g_isDnDActive.load()) {', '                            Wh_SetIntValue(L"NotificationSuppressedDnD", g_settings.notificationRespectDnD && g_isDnDActive.load());\n                            if (g_settings.notificationRespectDnD && g_isDnDActive.load()) {')
-replace('                            auto appInfo = userNotification.AppInfo();', '                            Wh_SetStringValue(L"NotificationParseStage", L"AppInfo");\n                            auto appInfo = userNotification.AppInfo();')
-replace('''                            auto appInfo = userNotification.AppInfo();''', '''                            auto appInfo = userNotification.AppInfo();
-                            try { snapshot.sourceAppId = appInfo.AppUserModelId().c_str(); } catch (...) {}''')
-replace('                            auto displayInfo = appInfo.DisplayInfo();', '                            Wh_SetStringValue(L"NotificationParseStage", L"DisplayInfo");\n                            auto displayInfo = appInfo.DisplayInfo();')
-replace('                            snapshot.app = displayInfo.DisplayName().c_str();', '                            Wh_SetStringValue(L"NotificationParseStage", L"DisplayName");\n                            snapshot.app = displayInfo.DisplayName().c_str();')
-replace('                            TriggerNudge();\n                        } catch (const winrt::hresult_error& nex) {', '                            Wh_SetStringValue(L"NotificationParseStage", L"Published");\n                            TriggerNudge();\n                        } catch (const winrt::hresult_error& nex) {\n                            Wh_SetIntValue(L"NotificationParseHRESULT", static_cast<int>(nex.to_abi()));')
-metadata_start=src.index('                            Wh_SetStringValue(L"NotificationParseStage", L"AppInfo");')
-metadata_end=src.index('\n                            if (snapshot.icon.bgra.empty()',metadata_start)
-metadata=src[metadata_start:metadata_end]
-replace(metadata, '                            try {\n'+''.join('    '+line+'\n' for line in metadata.splitlines())+'                            } catch (const winrt::hresult_error&) {\n                                // Classic desktop toasts can omit app metadata; keep their text.\n                            }\n')
-replace('                            auto notification = userNotification.Notification();', '                            if (snapshot.app.empty()) snapshot.app = L"Windows notification";\n                            Wh_SetStringValue(L"NotificationParseStage", L"Notification text");\n                            auto notification = userNotification.Notification();')
-replace('                                g_state.notification = std::move(snapshot);', '                                snapshot.expiresAt = NowSeconds() + 4.0;\n                                g_state.notification = std::move(snapshot);')
-replace('                    Wh_SetIntValue(L"NotificationCount", notifications.Size());', '                    static uint32_t lastNotificationCount = UINT32_MAX;\n                    if (lastNotificationCount != notifications.Size()) {\n                        lastNotificationCount = notifications.Size();\n                        Wh_SetIntValue(L"NotificationCount", lastNotificationCount);\n                    }')
 replace('0.55f * settingsOpacity_;', '0.18f * settingsOpacity_;')
 replace('0.18f * settingsOpacity_;', '0.18f * settingsOpacity_ * (1.0f - g_idleCompactBlend.load());')
 replace('''        bg.a = Clamp(bg.a * settingsOpacity_, 0.0f, 1.0f);''', '''        bg.a = Clamp(bg.a * settingsOpacity_, 0.0f, 1.0f);
@@ -389,8 +313,6 @@ replace('''        // Check if animating structurally''', '''        GUITHREADIN
 replace('''        const bool springsAnimating =
             std::fabs(widthSpring.value''', '''        const bool springsAnimating = dockingAnimating ||
             std::fabs(widthSpring.value''')
-from notification_patch import apply_notifications
-src = apply_notifications(src)
 from weather_patch import apply_weather
 src = apply_weather(src)
 from quick_home_patch import apply_quick_home
@@ -455,7 +377,6 @@ old_menu = src[menu_start:menu_end]
 menu = old_menu
 for line in (
     '    AppendMenuW(menu, MF_STRING, 40, g_manuallyHidden.load() ? L"Show Island" : L"Hide Island");\n',
-    '    AppendMenuW(menu, MF_STRING, 45, L"Edit notification app mappings");\n',
 ):
     assert menu.count(line) == 1
     menu = menu.replace(line, '', 1)
@@ -465,7 +386,6 @@ for begin, end in (
     ('    AppendMenuW(menu, MF_STRING, 4, L"Transparency 100%");',
      '    AppendMenuW(menu, MF_STRING, 9, L"Open Windhawk settings");'),
     ('    // Theme ids are a contiguous range', '    switch (cmd) {'),
-    ('        case 45: {', '        case 1:'),
     ('        case 4:', '        case 9: {'),
     ('        case 10: {', '        case 11: {'),
     ('        case 40: {', '        case 41: {'),
@@ -499,6 +419,11 @@ print('Windhawk settings YAML parsed successfully', flush=True)
 out = root/(build_id + '.wh.cpp')
 assert 'renderSettings.sizeScale *= compactDrawScale' not in src
 assert 'Scale(contentScale, contentScale, pillCenter)' in src
+# The removed notification feature must not return through a feature patch.
+for removed in ('NotificationThreadProc', 'CaptureShellNotification', 'IslandKind::Notification',
+                'NotificationRespectDnD', 'OpenNotificationSource', 'RegisterShellHookWindow',
+                'NotificationSnapshot', 'g_state.notification', 'DrawNotification', 'g_inbox'):
+    assert removed not in src, removed
 out.write_text(src, encoding='utf-8')
 if '--source-only' in sys.argv:
     sys.exit(0)
@@ -720,9 +645,9 @@ timer_test = r"""#include <string>
 #include <vector>
 #include <atomic>
 #include <cassert>
-enum class IslandKind {Clipboard,CapsLock,Device,Bluetooth,DoNotDisturb,Volume,Notification,BatteryLow,Progress,Timer,NBAScore,HourlyClock,TomorrowBrief,Media,Lookup,Idle};
+enum class IslandKind {Clipboard,CapsLock,Device,Bluetooth,DoNotDisturb,Volume,BatteryLow,Progress,Timer,NBAScore,HourlyClock,TomorrowBrief,Media,Lookup,Idle};
 struct Alert { bool active=false, justFinished=false, available=false; double expiresAt=0, finishedExpiresAt=0; };
-struct SharedState { Alert clipboard,capsLock,device,bluetoothDevice,doNotDisturb,volume,notification,battery,progress,timer,nba,media,hourlyClock,tomorrowBrief,lookup; };
+struct SharedState { Alert clipboard,capsLock,device,bluetoothDevice,doNotDisturb,volume,battery,progress,timer,nba,media,hourlyClock,tomorrowBrief,lookup; };
 struct Settings { bool capsLock=true,bluetoothIndicator=true,doNotDisturbIndicator=true,volume=true,battery=true,progress=true,timerEnabled=true,nbaScores=true,media=true,quickLookup=true; };
 std::atomic<bool> g_timerDashboardExpanded=false, g_isFullscreen=false, g_manuallyHidden=false;
 int pin=0, nbaClock=0;
@@ -740,9 +665,7 @@ timer_test += r"""int main() {
  assert(ChooseActivities(state,settings,10)[0]==IslandKind::Idle);
  g_timerDashboardExpanded=false; pin=1;
  assert(ChooseActivities(state,settings,10)[0]==IslandKind::Idle);
- state.notification.active=true; state.notification.expiresAt=20;
- assert(ChooseActivities(state,settings,10)[0]==IslandKind::Notification);
- state.notification.active=false; pin=0; state.media.available=true;
+ pin=0; state.media.available=true;
  auto kinds=ChooseActivities(state,settings,10);
  assert(kinds[0]==IslandKind::Timer && kinds[1]==IslandKind::Media);
  state.timer.active=false; state.timer.justFinished=true; state.timer.finishedExpiresAt=16;
@@ -761,9 +684,7 @@ timer_test += r"""int main() {
  assert(nbaKinds[0]==IslandKind::NBAScore && nbaKinds[1]==IslandKind::Media);
  nbaClock=1;
  assert(ChooseActivities(state,settings,10)[0]==IslandKind::Idle && state.nba.active);
- state.notification.active=true; state.notification.expiresAt=20;
- assert(ChooseActivities(state,settings,10)[0]==IslandKind::Notification);
- state.notification.active=false; state.timer.active=true;
+ state.timer.active=true;
  assert(ChooseActivities(state,settings,10)[0]==IslandKind::Timer);
  state.timer.active=false; nbaClock=0;
  assert(ChooseActivities(state,settings,10)[0]==IslandKind::NBAScore);
@@ -772,11 +693,7 @@ timer_test += r"""int main() {
  state.hourlyClock.active=true; state.hourlyClock.expiresAt=15;
  assert(ChooseActivities(state,settings,10)==std::vector<IslandKind>{IslandKind::HourlyClock});
  assert(ChooseActivities(state,settings,15)[0]==IslandKind::Media);
- state.notification.active=true; state.notification.expiresAt=20;
- assert(ChooseActivities(state,settings,10)[0]==IslandKind::Notification);
  state.tomorrowBrief.active=true; state.hourlyClock.active=false;
- assert(ChooseActivities(state,settings,10)[0]==IslandKind::Notification);
- state.notification.active=false;
  assert(ChooseActivities(state,settings,10)[0]==IslandKind::TomorrowBrief);
  g_isFullscreen=true;
  assert(ChooseActivities(state,settings,10)[0]==IslandKind::Media);
@@ -876,7 +793,7 @@ subprocess.run([str(root/'checks.exe')],check=True)
 print('57 anchor/hover and collapsed-dashboard assertions passed',flush=True)
 motion_test = '#include <algorithm>\n#include <atomic>\n#include <cmath>\n#include <cassert>\n' + dock_helpers[:dock_helpers.index('bool GetCaptionDockTarget')]
 motion_test += src[src.index('struct SpringValue {'):src.index('\nSettings g_settings;')]
-motion_test = '#include <string>\n' + motion_test + notification_route + small_screen_scale
+motion_test = '#include <string>\n' + motion_test + small_screen_scale
 motion_test += '''int main() {
  assert(SmallScreenScale(1920,1040)==1.0f);
  assert(SmallScreenScale(3840/2.0f,2080/2.0f)==1.0f);
@@ -884,11 +801,6 @@ motion_test += '''int main() {
  assert(std::abs(SmallScreenScale(1920/1.5f,1040/1.5f)-(1040/1.5f)/900)<0.0001f);
  assert(SmallScreenScale(800,560)==0.75f);
  assert(SmallScreenScale(1080,1920)==0.75f);
- assert(NotificationLaunchTarget(L"")==L"ms-actioncenter:");
- assert(NotificationLaunchTarget(L"Package_family!App")==L"shell:AppsFolder\\\\Package_family!App");
- assert(NotificationLaunchTarget(L"https://example.com")==L"ms-actioncenter:");
- assert(NotificationLaunchTarget(L"C:\\\\app.exe")==L"ms-actioncenter:");
- assert(NotificationLaunchTarget(L"app\\nargs")==L"ms-actioncenter:");
  for(float fps : {30.0f,60.0f,144.0f,240.0f}) {
    SpringValue lyric; lyric.Reset(192); lyric.target=892;
    for(int i=0;i<fps/5;++i) {
@@ -969,50 +881,6 @@ struct Settings { bool clockFollowSystem=false, use24HourClock=true, showSeconds
 subprocess.run([str(clang),'-std=c++23','-static',str(root/'clock-checks.cpp'),'-o',str(root/'clock-checks.exe')],cwd=compiler,check=True)
 subprocess.run([str(root/'clock-checks.exe')],check=True)
 print('4 date/time formatting assertions passed',flush=True)
-mapping_test = r'''#include <windows.h>
-#include <shellapi.h>
-#include <algorithm>
-#include <cassert>
-#include <cstdio>
-#include <string>
-#include <vector>
-std::wstring iniPath;
-std::vector<std::wstring> launches;
-bool failFirst=false;
-std::wstring NotificationMappingsPath() { return iniPath; }
-bool EqualsNoCase(const std::wstring& a,const std::wstring& b) { return _wcsicmp(a.c_str(),b.c_str())==0; }
-bool ProcessImageNameForWindow(HWND,std::wstring*) { return false; }
-BOOL TestEnumWindows(WNDENUMPROC,LPARAM) { return TRUE; }
-BOOL TestShellExecute(SHELLEXECUTEINFOW* launch) {
- launches.push_back(launch->lpFile);
- return !(failFirst && launches.size()==1);
-}
-#define EnumWindows TestEnumWindows
-#define ShellExecuteExW TestShellExecute
-''' + notification_route + src[src.index('bool OpenNotificationSource('):src.index('void HandleStatusClickAtPoint(')]
-mapping_test += r'''int main() {
- wchar_t temp[MAX_PATH]{}, file[MAX_PATH]{}, exe[MAX_PATH]{};
- GetTempPathW(MAX_PATH,temp); GetTempFileNameW(temp,L"din",0,file); iniPath=file;
- FILE* stream=_wfopen(file,L"wb"); assert(stream); const wchar_t bom=0xfeff;
- fwrite(&bom,sizeof(bom),1,stream); fclose(stream);
- GetModuleFileNameW(nullptr,exe,MAX_PATH);
- assert(OpenNotificationSource(L"Pkg!App",L"Unknown"));
- assert(launches.back()==L"shell:AppsFolder\\Pkg!App"); launches.clear();
- assert(OpenNotificationSource(L"",L"Unknown")); assert(launches.back()==L"ms-actioncenter:"); launches.clear();
- WritePrivateProfileStringW(L"Apps",L"微信",exe,file);
- assert(OpenNotificationSource(L"",L"微信")); assert(launches.back()==exe); launches.clear();
- WritePrivateProfileStringW(L"Apps",L"微信",L"C:\\nonexistent\\app.exe",file);
- assert(OpenNotificationSource(L"",L"微信")); assert(launches.back()==L"ms-actioncenter:"); launches.clear();
- WritePrivateProfileStringW(L"Apps",L"Mapped",L"app:Other!App",file);
- assert(OpenNotificationSource(L"Mapped",L"Unknown")); assert(launches.back()==L"shell:AppsFolder\\Other!App"); launches.clear();
- WritePrivateProfileStringW(L"Apps",L"微信",exe,file); failFirst=true;
- assert(OpenNotificationSource(L"",L"微信")); assert(launches.size()==2 && launches.back()==L"ms-actioncenter:");
- DeleteFileW(file);
-}'''
-(root/'mapping-checks.cpp').write_text(mapping_test,encoding='utf-8')
-subprocess.run([str(clang),'-std=c++23','-static',str(root/'mapping-checks.cpp'),'-o',str(root/'mapping-checks.exe')],cwd=compiler,check=True)
-subprocess.run([str(root/'mapping-checks.exe')],check=True)
-print('Mapping checks passed: Unicode names, app IDs, executable paths and failure fallback; launches mocked',flush=True)
 weather_test = r'''#include <windows.h>
 #include <winrt/Windows.Data.Json.h>
 #include <algorithm>
@@ -1261,6 +1129,8 @@ glass_test += glass_panel[glass_panel.index('SIZE GlassSurfaceCapacity('):glass_
 glass_test += glass_renderer[glass_renderer.index('const char kShaderSource[]'):glass_renderer.index('\nstruct ShaderParams {')]
 glass_profile = glass_renderer[glass_renderer.index('    float u = saturate('):glass_renderer.index('    disp = nrm')]
 glass_test += 'float saturate(float x) { return std::clamp(x, 0.0f, 1.0f); }\nfloat GlassRimProfile(float t) { float bump = 0;\n' + glass_profile + '\nreturn bump; }\n'
+glass_interior = glass_renderer[glass_renderer.index('float GlassInteriorScale('):glass_renderer.index('// Smooth max(q,0):')]
+glass_test += glass_interior.replace('max(', 'std::max(').replace('1e-4)', '1e-4f)')
 glass_band = re.search(r'    const float bezel = ([^;]+);', glass_renderer).group(1)
 glass_test += 'float GlassBandWidth(float halfMin, float dpr) { return ' + glass_band + '; }\n'
 glass_test += '''int main() {
@@ -1307,6 +1177,25 @@ glass_test += '''int main() {
    const float slope=(value-GlassRimProfile(t-0.001f))/0.001f;
    assert(slope*0.13f<0.6f);
  }
+ for(float halfMin : {18.0f, 44.0f, 100.0f, 240.0f}) {
+   const float band=GlassBandWidth(halfMin,1.0f);
+   assert(GlassInteriorScale(0,halfMin,band)==1);
+   assert(GlassInteriorScale(band,halfMin,band)==1);
+   assert(std::abs(GlassInteriorScale(halfMin,halfMin,band)-0.92f)<0.00001f);
+   float previous=0;
+   for(int i=1;i<=1000;i++) {
+     const float x=halfMin*i/1000.0f;
+     const float scale=GlassInteriorScale(halfMin-x,halfMin,band);
+     assert(scale>=0.92f && scale<=1.0f);
+     const float sample=x*scale;
+     assert(sample>previous && sample<=x);
+     previous=sample;
+     if(halfMin-x<=band) assert(scale==1);
+   }
+   const float step=halfMin*0.001f;
+   assert(std::abs(GlassInteriorScale(band+step,halfMin,band)-1.0f)<0.00001f);
+   assert(std::abs(GlassInteriorScale(halfMin-step,halfMin,band)-0.92f)<0.00001f);
+ }
  const auto stops=LiquidGlassRimStops();
  assert(stops.front().position==0 && stops.back().position==1);
  for(size_t i=0;i<stops.size();i++) {
@@ -1320,7 +1209,7 @@ glass_test += '''int main() {
 (root/'glass-checks.cpp').write_text(glass_test,encoding='utf-8')
 subprocess.run([str(clang),'-std=c++23','-static',str(root/'glass-checks.cpp'),'-ld3dcompiler','-o',str(root/'glass-checks.exe')],cwd=compiler,check=True)
 subprocess.run([str(root/'glass-checks.exe')],check=True)
-print('Glass-rim checks passed: shader compilation, smooth refraction profile, RGB slope bound and gradient stops',flush=True)
+print('Glass checks passed: shader compilation, preserved rim/RGB profile, interior lens continuity and monotonic sampling, gradient stops',flush=True)
 brief_test = (root/'weather-checks.cpp').read_text(encoding='utf-8').split('bool ParseChinaWeather(')[0]
 brief_test += (root/'tomorrow-brief-checks.inc').read_text(encoding='utf-8')
 (root/'tomorrow-brief-checks.cpp').write_text(brief_test,encoding='utf-8')

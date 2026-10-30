@@ -20,8 +20,8 @@ def apply_tomorrow_brief(src):
     change('DWORD WINAPI AudioThreadProc(', helpers + '\nDWORD WINAPI AudioThreadProc(')
     src = src.replace('#include <windows.h>', '#include <windows.h>\n#include <commctrl.h>', 1)
     change('void ShowContextMenu(HWND hwnd, POINT screenPoint) {', (root / 'important-days-ui.h').read_text(encoding='utf-8') + '\nvoid ShowContextMenu(HWND hwnd, POINT screenPoint) {')
-    change('    AppendMenuW(menu, MF_STRING, 45, L"Edit notification app mappings");', '    AppendMenuW(menu, MF_STRING, 45, L"Edit notification app mappings");\n    AppendMenuW(menu, MF_STRING, 46, L"重要日子…");')
-    change('        case 45: {', '        case 46: ShowImportantDays(hwnd); break;\n        case 45: {')
+    change('    AppendMenuW(menu, MF_STRING, 1, L"Dismiss");', '    AppendMenuW(menu, MF_STRING, 1, L"Dismiss");\n    AppendMenuW(menu, MF_STRING, 46, L"重要日子…");')
+    change('        case 1:\n            DismissTransientState();', '        case 46: ShowImportantDays(hwnd); break;\n        case 1:\n            DismissTransientState();')
     change('    HourlyClock,\n    DoNotDisturb,', '    HourlyClock,\n    TomorrowBrief,\n    DoNotDisturb,')
     change('''        case IslandKind::HourlyClock:
             activity.width''', '''        case IslandKind::TomorrowBrief:

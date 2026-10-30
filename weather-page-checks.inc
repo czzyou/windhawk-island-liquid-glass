@@ -20,3 +20,24 @@
     SYSTEMTIME leapDay{2028,2,0,28};
     assert(ChinaWeatherDateKey(ChinaWeatherDay(leapDay,1)) == 20280229);
     assert(ChinaWeatherDateKey(ChinaWeatherDay(leapDay,2)) == 20280301);
+
+    auto boundaryCurrent = current;
+    boundaryCurrent.replace(boundaryCurrent.find("10月16日"), std::string("10月16日").size(), "10月30日");
+    SYSTEMTIME boundary{2026,10,0,30,12,0,0,0};
+    const auto november = ChinaWeatherDay(boundary, 2);
+    assert(ChinaWeatherDateMatches(L"11/1", november));
+    assert(ChinaWeatherDateMatches(L"11/01", november));
+    for (const auto* invalid : {L"11/1x", L"11/001", L"11//1", L"11/2", L"", L"1/11"})
+        assert(!ChinaWeatherDateMatches(invalid, november));
+    for (const auto* date : {"11/1", "11/01"}) {
+        const std::string boundaryForecast = std::string(R"(var fc={"f":[
+            {"fi":"10/30","fa":"00","fc":"18","fd":"-4"},
+            {"fi":"10/31","fa":"01","fc":"7","fd":"0"},
+            {"fi":")") + date + R"(","fa":"03","fc":"12","fd":"-6"}]};)";
+        WeatherSnapshot crossed;
+        assert(ParseChinaWeather(boundaryCurrent,boundaryForecast,boundary,false,crossed));
+        assert(crossed.forecast[2].available && crossed.forecast[2].date == 20261101);
+        assert(crossed.forecast[2].low == -6 && crossed.forecast[2].high == 12);
+    }
+    SYSTEMTIME january{2027,1,0,1};
+    assert(ChinaWeatherDateMatches(L"1/1", january) && ChinaWeatherDateMatches(L"01/01", january));

@@ -55,20 +55,17 @@ inline TomorrowBrief ParseTomorrowWeather(const std::string& script, const SYSTE
     const auto tomorrow = BriefTomorrow(today);
     const bool showTomorrow = BriefWeatherTomorrow(today);
     const auto target = showTomorrow ? tomorrow : today;
-    wchar_t currentDate[8]{}, nextDate[8]{};
-    swprintf_s(currentDate, L"%02u/%02u", today.wMonth, today.wDay);
-    swprintf_s(nextDate, L"%02u/%02u", target.wMonth, target.wDay);
     try {
         const auto object = JsonObject::Parse(winrt::to_hstring(ChinaWeatherObject(script, "fc")));
         const auto days = object.GetNamedArray(L"f");
         bool current = false;
         for (const auto& value : days) {
-            if (value.GetObject().GetNamedString(L"fi", L"") == currentDate) current = true;
+            if (ChinaWeatherDateMatches(std::wstring(value.GetObject().GetNamedString(L"fi", L"")), today)) current = true;
         }
         if (!current) return {};
         for (const auto& value : days) {
             const auto item = value.GetObject();
-            if (item.GetNamedString(L"fi", L"") != nextDate) continue;
+            if (!ChinaWeatherDateMatches(std::wstring(item.GetNamedString(L"fi", L"")), target)) continue;
             float low = 0, high = 0;
             if (!ChinaWeatherTemperature(std::wstring(item.GetNamedString(L"fd", L"")), low) ||
                 !ChinaWeatherTemperature(std::wstring(item.GetNamedString(L"fc", L"")), high) || low > high) return {};

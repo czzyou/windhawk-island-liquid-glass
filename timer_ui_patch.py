@@ -832,13 +832,10 @@ int MediaTransportHitTest(const MediaContentPoint& pt) {''')
     ComPtr<IDWriteTextFormat> timerHeroFormat_;''')
 
     # ---- Mouse: shared timer surface, actions and hover -------------------
-    change('''    static bool notificationPressed = false;
-    static int quickHomePressed = -1;''', '''    static bool notificationPressed = false;
-    static int quickHomePressed = -1;
+    change('''    static int quickHomePressed = -1;''', '''    static int quickHomePressed = -1;
     static int timerDetailPressed = -1;''')
 
-    change('''                if (notificationPressed) return 0;
-                quickHomePressed = -1;
+    change('''                quickHomePressed = -1;
                 {
                     std::lock_guard lock(g_stateMutex);
                     const auto kinds = ChooseActivities(g_state, g_settings, NowSeconds());
@@ -853,8 +850,7 @@ int MediaTransportHitTest(const MediaContentPoint& pt) {''')
                     std::lock_guard lock(g_stateMutex);
                     mediaActive = g_settings.media && g_state.media.available;
                 }''',
-           '''                if (notificationPressed) return 0;
-                quickHomePressed = -1;
+           '''                quickHomePressed = -1;
                 timerDetailPressed = -1;
                 bool timerSurface = false;
                 {

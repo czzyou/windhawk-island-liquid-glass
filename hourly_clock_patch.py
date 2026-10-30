@@ -27,7 +27,7 @@ def apply_hourly_clock(src):
                 break;
             case IslandKind::NBAScore:
                 DrawNba(state, unscaledRect, settings);''')
-    change('''                                 primary.kind == IslandKind::Notification ||''', '''                                 primary.kind == IslandKind::Notification ||
+    change('''                                 primary.kind == IslandKind::Volume ||''', '''                                 primary.kind == IslandKind::Volume ||
                                  primary.kind == IslandKind::HourlyClock ||''')
     change('''    TextWidthCache idleClockWidthCache_;''', '''    TextWidthCache idleClockWidthCache_;
     TextWidthCache hourlyClockWidthCache_;''')
@@ -106,9 +106,9 @@ HANDLE g_hourlyClockThread = nullptr;''')
 bool StartThreads() {''')
     change('''    g_nbaThread = CreateThread(nullptr, 0, NbaThreadProc, nullptr, 0, nullptr);''', '''    g_nbaThread = CreateThread(nullptr, 0, NbaThreadProc, nullptr, 0, nullptr);
     g_hourlyClockThread = CreateThread(nullptr, 0, HourlyClockThreadProc, nullptr, 0, nullptr);''')
-    change('''g_weatherThread, g_nbaThread, g_notificationThread''', '''g_weatherThread, g_nbaThread, g_hourlyClockThread, g_notificationThread''')
+    change('''g_weatherThread, g_nbaThread''', '''g_weatherThread, g_nbaThread, g_hourlyClockThread''')
     change('''    g_nbaThread = nullptr;
-    g_notificationThread = nullptr;''', '''    g_nbaThread = nullptr;
+''', '''    g_nbaThread = nullptr;
     g_hourlyClockThread = nullptr;
-    g_notificationThread = nullptr;''')
+''')
     return src

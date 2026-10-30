@@ -39,8 +39,8 @@ def apply_volume_control(src):
     if (!g_volumeChangedEvent) return false;
     g_volumeControlThread = CreateThread(nullptr, 0, VolumeControlThreadProc, nullptr, 0, nullptr);
     if (!g_volumeControlThread) return false;''')
-    change('g_nbaThread, g_hourlyClockThread, g_notificationThread','g_nbaThread, g_hourlyClockThread, g_volumeControlThread, g_notificationThread')
-    change('    g_hourlyClockThread = nullptr;\n    g_notificationThread = nullptr;','    g_hourlyClockThread = nullptr;\n    g_volumeControlThread = nullptr;\n    if (g_volumeChangedEvent) { CloseHandle(g_volumeChangedEvent); g_volumeChangedEvent=nullptr; }\n    g_notificationThread = nullptr;')
+    change('g_nbaThread, g_hourlyClockThread','g_nbaThread, g_hourlyClockThread, g_volumeControlThread')
+    change('    g_hourlyClockThread = nullptr;','    g_hourlyClockThread = nullptr;\n    g_volumeControlThread = nullptr;\n    if (g_volumeChangedEvent) { CloseHandle(g_volumeChangedEvent); g_volumeChangedEvent=nullptr; }')
     change('''    void DrawVolume(const SharedState& state, D2D1_RECT_F rect) {
 ''','''    void DrawVolume(const SharedState& state, D2D1_RECT_F rect) {
         D2D1_MATRIX_3X2_F transform;

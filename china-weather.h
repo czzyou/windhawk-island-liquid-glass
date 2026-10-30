@@ -105,6 +105,20 @@ int ChinaWeatherVisualCode(const std::wstring& code) {
     }
 }
 
+bool ChinaWeatherDateMatches(const std::wstring& text, const SYSTEMTIME& target) {
+    const auto slash = text.find(L'/');
+    if (slash == std::wstring::npos || slash < 1 || slash > 2 ||
+        text.size() - slash - 1 < 1 || text.size() - slash - 1 > 2) return false;
+    unsigned parts[2]{};
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (i == slash) continue;
+        if (text[i] < L'0' || text[i] > L'9') return false;
+        auto& part = parts[i > slash];
+        part = part * 10 + text[i] - L'0';
+    }
+    return parts[0] == target.wMonth && parts[1] == target.wDay;
+}
+
 bool ParseChinaWeather(const std::string& currentScript, const std::string& forecastScript,
                        const SYSTEMTIME& now, bool fahrenheit, WeatherSnapshot& result) {
     using namespace winrt::Windows::Data::Json;
@@ -139,11 +153,10 @@ bool ParseChinaWeather(const std::string& currentScript, const std::string& fore
         const auto days = forecast.GetNamedArray(L"f");
         for (int page = 0; page < 3; ++page) {
             const auto target = ChinaWeatherDay(now, page);
-            wchar_t day[8]{}; swprintf_s(day, L"%02u/%02u", target.wMonth, target.wDay);
             auto& daily = parsed.forecast[page];
             for (const auto& value : days) {
                 const auto item = value.GetObject();
-                if (field(item, L"fi") != day) continue;
+                if (!ChinaWeatherDateMatches(field(item, L"fi"), target)) continue;
                 if (!ChinaWeatherTemperature(field(item, L"fd"), daily.low) ||
                     !ChinaWeatherTemperature(field(item, L"fc"), daily.high) || daily.low > daily.high) break;
                 daily.date = ChinaWeatherDateKey(target);

@@ -68,9 +68,17 @@ def apply_quick_home(src):
                 primary.height = (quickHome ? 124.0f : MediaLayout::kExpandedHeight) * g_settings.sizeScale;''')
     change('''const float expandedAlpha = IdleDashboardExpandedAlpha(dashHeight);''',
            '''const float expandedAlpha = IdleDashboardExpandedAlpha(dashHeight, NormalizedTabIndex(settings) == 0 ? 124.0f : 144.0f);''')
-    change('''    static bool notificationPressed = false;''', '''    static bool notificationPressed = false;
+    change('''    static ULONGLONG s_touchStartTime = 0;''', '''    static ULONGLONG s_touchStartTime = 0;
     static int quickHomePressed = -1;''')
-    change('''                if (notificationPressed) return 0;''', '''                if (notificationPressed) return 0;
+    change('''                if (WeatherPageVisible() && WeatherPageButtonHit(MediaContentFromClient(xPos, yPos, true))) {
+                    weatherPagePressed = true;
+                    SetCapture(hwnd);
+                    return 0;
+                }''', '''                if (WeatherPageVisible() && WeatherPageButtonHit(MediaContentFromClient(xPos, yPos, true))) {
+                    weatherPagePressed = true;
+                    SetCapture(hwnd);
+                    return 0;
+                }
                 quickHomePressed = -1;
                 {
                     std::lock_guard lock(g_stateMutex);

@@ -99,7 +99,7 @@ def apply_expanded_layout(src):
         const float fit = (std::min)(1.0f, (rect.right - rect.left - 48.0f) / groupWidth);
         target_->SetTransform(D2D1::Matrix3x2F::Scale(fit, fit, D2D1::Point2F(cx, cy)) * oldTransform);
         ComPtr<ID2D1SolidColorBrush> face, ink;
-        target_->CreateSolidColorBrush(WithAlpha(material_.textPrimary, 0.96f * settingsOpacity_), &face);
+        target_->CreateSolidColorBrush(D2D1::ColorF(0xF2F2F7, 0.96f * settingsOpacity_), &face);
         target_->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.09f, settingsOpacity_), &ink);
         if (face && ink) {
             target_->FillEllipse(D2D1::Ellipse(center, 40, 40), face.Get());

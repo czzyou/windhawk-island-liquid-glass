@@ -1,4 +1,4 @@
-// ==WindhawkMod==
+﻿// ==WindhawkMod==
 // @id              dynamic-island-for-windows
 // @name            Dynamic Island for Windows
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
@@ -42,7 +42,7 @@ The Dynamic Island intelligently expands to display context-aware dashboards. Yo
 ## ✨ Core Features
 
 - **Hardware Privacy Indicators:** A pulsing orange dot appears when your microphone is active, and a green dot when your camera is in use. Rate-limited polling ensures absolutely no CPU drain.
-- **High-Res Clipboard & Notifications:** Instantly see what you copied or your latest Windows notifications, featuring crisp, high-fidelity 64px app icons extracted directly from system executables.
+- **High-Res Clipboard:** Instantly see what you copied, featuring crisp, high-fidelity 64px app icons extracted directly from system executables.
 - **360Hz+ Dynamic Fluid Animations:** Ultra-smooth resizing and splitting with native support for high refresh rate monitors (up to 360Hz/500Hz+) and zero idle CPU drain.
 - **Eight Curated Themes:** Obsidian, Graphite, Slate, Nord, Evergreen, Espresso, Plum and a light Porcelain, all switchable from the right-click menu's Theme submenu — or dial in your exact hex colors.
 - **Clean Flat Material:** Surfaces are built from soft downward depth shading, a drop shadow, and an accent wash tinted live from your album art. No rim lighting, no glass highlights, no outlined cards — nothing traces a bright line along an edge.
@@ -61,7 +61,6 @@ The Dynamic Island intelligently expands to display context-aware dashboards. Yo
 - **Right-Click Menu:** Right-click the island to access Theme presets, Transparency settings, and to pin the island open.
 - **⚠️ Right-click choices are per-session:** The right-click menu is a quick way to try things out, not a place to configure the mod. **Theme**, **shape style** (Pill / Notch / Windows 11) and **pin open** are all re-applied from your Windhawk settings whenever the mod restarts — so a reboot, a mod update, or toggling the mod off and on will discard them. Anything you want to keep, set in the **Mod Settings** tab instead. (Transparency and Expand-on-hover do persist, but the settings tab is still the reliable place for them.)
 - **Windhawk Settings:** Visit the Mod Settings tab to change the island's Position, Size Scale, Refresh Rate (Target FPS), Animation Style (Smooth/Default/Bouncy/Snappy), Animation Speed, and toggle specific modules. You can also perfectly align the island using the `Offset X` and `Offset Y` settings, and select exactly which monitor the island should appear on (including a "Follow Mouse" mode!).
-- **Notifications:** Windows must allow apps to read notifications: turn on **Settings > Privacy & security > Notifications > "Let apps access your notifications"**. Without that permission Windows denies the listener and the module stays silent. Nothing needs to be added to the process inclusion list; the island runs in its own process and reads notifications from there.
 - **Quick Hide/Show:** Right-click the island and choose "Hide Island" to collapse it completely — CPU usage drops to ~0% while hidden since the mod fully parks its render thread. Bring it back instantly with the configurable hotkey (default **Ctrl+Alt+D**, changeable in the **Shortcuts** settings tab). Because a hidden island can't be right-clicked, the hotkey is the *only* way back once hidden — if you turn the hotkey off while hidden, re-enable it (or disable the mod) from Windhawk's settings.
 
 ---
@@ -343,13 +342,10 @@ We love community contributions! To ensure high-quality updates, please follow t
     $description: Shows a quick preview of the text or images you just copied.
   - StatusCountdownProgress: false
     $name: Status countdown progress bar
-    $description: Shows a subtle countdown progress bar at the bottom of temporary status alert cards (such as Clipboard, Notifications, and Device alerts). Disabled by default.
+    $description: Shows a subtle countdown progress bar at the bottom of temporary status alert cards (such as Clipboard and Device alerts). Disabled by default.
   - DoNotDisturbIndicator: true
     $name: Do Not Disturb status alert
     $description: Shows a status alert card when Do Not Disturb is toggled in the Windows notification panel.
-  - NotificationRespectDnD: true
-    $name: Notifications respect Do Not Disturb
-    $description: Suppresses Dynamic Island notification alerts when Windows Do Not Disturb is active.
   - HardwareMonitorModule: true
     $name: Include Hardware Monitor in scroll loop
     $description: Add CPU, GPU, RAM, FPS and Network stats card to mouse-wheel scroll loop.
@@ -478,7 +474,6 @@ We love community contributions! To ensure high-quality updates, please follow t
 #include <mmsystem.h>
 #include <objbase.h>
 #include <wrl/client.h>
-#include <uiautomation.h>
 #include <winhttp.h>
 #include <pdh.h>
 #include <pdhmsg.h>
@@ -505,16 +500,6 @@ We love community contributions! To ensure high-quality updates, please follow t
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Media.Control.h>
 #include <winrt/Windows.Storage.Streams.h>
-#if __has_include(<winrt/Windows.UI.Notifications.Management.h>) && \
-    __has_include(<winrt/Windows.UI.Notifications.h>)
-#define DYNAMIC_ISLAND_HAS_USER_NOTIFICATION_LISTENER 1
-#include <winrt/Windows.ApplicationModel.h>
-#include <winrt/Windows.UI.Notifications.h>
-#include <winrt/Windows.UI.Notifications.Management.h>
-#else
-#define DYNAMIC_ISLAND_HAS_USER_NOTIFICATION_LISTENER 0
-#endif
-
 #if __has_include(<winrt/Windows.Devices.Enumeration.h>) && \
     __has_include(<winrt/Windows.Devices.Bluetooth.h>) && \
     __has_include(<winrt/Windows.Devices.Bluetooth.GenericAttributeProfile.h>)
@@ -739,7 +724,6 @@ enum class IslandKind {
     Media,
     Progress,
     Clipboard,
-    Notification,
     Volume,
     BatteryLow,
     CapsLock,
@@ -969,7 +953,6 @@ struct Settings {
     D2D1_COLOR_F camDotColor = D2D1::ColorF(0.204f, 0.780f, 0.349f, 1.0f); // #34C759
     bool hardwareMonitorModule = true;
     bool doNotDisturbIndicator = true;
-    bool notificationRespectDnD = true;
 
     // ── Premium material / redesign ──────────────────────────────────────────
     bool materialDepth = true;      // downward depth shading + accent bloom
@@ -1056,15 +1039,6 @@ struct BatterySnapshot {
 struct ProgressSnapshot {
     bool active = false;
     int percent = 0;
-};
-
-struct NotificationSnapshot {
-    bool active = false;
-    std::wstring app;
-    std::wstring title;
-    std::wstring body;
-    BitmapPixels icon;
-    double expiresAt = 0.0;
 };
 
 struct VolumeSnapshot {
@@ -1174,7 +1148,6 @@ struct FileTrayItem {
 struct SharedState {
     MediaSnapshot media;
     ClipboardSnapshot clipboard;
-    NotificationSnapshot notification;
     VolumeSnapshot volume;
     CapsLockSnapshot capsLock;
     TimerSnapshot timer;
@@ -1253,7 +1226,6 @@ HANDLE g_renderThread = nullptr;
 HANDLE g_mediaThread = nullptr;
 HANDLE g_audioThread = nullptr;
 HANDLE g_weatherThread = nullptr;
-HANDLE g_notificationThread = nullptr;
 HANDLE g_bluetoothThread = nullptr;
 std::atomic<bool> g_running = false;
 std::atomic<int> g_idleTab = 0;
@@ -1279,8 +1251,6 @@ std::atomic<double> g_hotkeyUnhideUntil = 0.0;         // grace deadline to keep
 FILETIME g_prevIdleTime = {};
 FILETIME g_prevKernelTime = {};
 FILETIME g_prevUserTime = {};
-UINT g_shellHookMessage = 0;
-UINT g_taskbarCreatedMessage = 0;
 bool g_volumeInitialized = false;
 std::atomic<double> g_lastNudgeTime = 0.0;
 
@@ -2116,7 +2086,6 @@ void LoadSettings() {
     next.bluetoothIndicator = Wh_GetIntSetting(L"Modules.BluetoothIndicator") != 0;
     next.bluetoothShowBattery = Wh_GetIntSetting(L"Modules.BluetoothShowBattery") != 0;
     next.doNotDisturbIndicator = Wh_GetIntSetting(L"Modules.DoNotDisturbIndicator") != 0;
-    next.notificationRespectDnD = Wh_GetIntSetting(L"Modules.NotificationRespectDnD") != 0;
 
     // ── Premium material / redesign ──────────────────────────────────────────
     {
@@ -3575,85 +3544,6 @@ BitmapPixels FindMediaSourceIcon(const std::wstring& sourceAppUserModelId) {
     return pixels;
 }
 
-struct FindAppIconData {
-    const std::wstring* targetName;
-    HWND bestHwnd = nullptr;
-    std::unordered_map<DWORD, std::wstring> pidToProcessName;
-};
-
-BOOL CALLBACK FindAppIconWindowProc(HWND hwnd, LPARAM lParam) {
-    auto* d = reinterpret_cast<FindAppIconData*>(lParam);
-    if (!IsWindowVisible(hwnd)) {
-        return TRUE;
-    }
-
-    if (hwnd == g_hwnd) {
-        return TRUE;
-    }
-
-    // 1. Fast path: Check window title first (lightweight check without opening process handles)
-    wchar_t title[128] = {};
-    GetWindowTextW(hwnd, title, ARRAYSIZE(title));
-    std::wstring titleLower = ToLowerCopy(title);
-    if (!titleLower.empty() && titleLower.find(*d->targetName) != std::wstring::npos) {
-        d->bestHwnd = hwnd;
-        return FALSE; // Found via title, stop enumeration
-    }
-
-    // 2. Slow path fallback: Check process executable name
-    DWORD pid = 0;
-    GetWindowThreadProcessId(hwnd, &pid);
-    if (!pid) {
-        return TRUE;
-    }
-
-    std::wstring baseNoExe;
-    auto it = d->pidToProcessName.find(pid);
-    if (it != d->pidToProcessName.end()) {
-        baseNoExe = it->second;
-    } else {
-        std::wstring image;
-        if (ProcessImageNameForPid(pid, &image)) {
-            std::wstring base = ToLowerCopy(BaseNameFromPath(image));
-            baseNoExe = base;
-            if (baseNoExe.size() > 4 && baseNoExe.substr(baseNoExe.size() - 4) == L".exe") {
-                baseNoExe = baseNoExe.substr(0, baseNoExe.size() - 4);
-            }
-            d->pidToProcessName[pid] = baseNoExe;
-        } else {
-            d->pidToProcessName[pid] = L"";
-        }
-    }
-
-    if (!baseNoExe.empty()) {
-        if (baseNoExe.find(*d->targetName) != std::wstring::npos ||
-            d->targetName->find(baseNoExe) != std::wstring::npos) {
-            d->bestHwnd = hwnd;
-            return FALSE; // Found via process name, stop enumeration
-        }
-    }
-
-    return TRUE;
-}
-
-BitmapPixels FindAppIconByName(const std::wstring& appName, UINT size) {
-    BitmapPixels pixels;
-    if (appName.empty()) {
-        return pixels;
-    }
-
-    const std::wstring appNameLower = ToLowerCopy(appName);
-    FindAppIconData data;
-    data.targetName = &appNameLower;
-
-    EnumWindows(FindAppIconWindowProc, reinterpret_cast<LPARAM>(&data));
-
-    if (data.bestHwnd) {
-        pixels = GetWindowIconPixels(data.bestHwnd, size);
-    }
-    return pixels;
-}
-
 std::vector<uint8_t> ReadWinRtStreamBytes(
     const winrt::Windows::Storage::Streams::IRandomAccessStreamReference& reference) {
     std::vector<uint8_t> bytes;
@@ -4090,201 +3980,6 @@ void UnsubscribeDndNotification() {
     g_wnfDndSubscription = nullptr;
 }
 
-#if DYNAMIC_ISLAND_HAS_USER_NOTIFICATION_LISTENER
-DWORD WINAPI NotificationThreadProc(void*) {
-    winrt::init_apartment(winrt::apartment_type::multi_threaded);
-
-    using winrt::Windows::UI::Notifications::KnownNotificationBindings;
-    using winrt::Windows::UI::Notifications::NotificationKinds;
-    using winrt::Windows::UI::Notifications::Management::UserNotificationListener;
-    using winrt::Windows::UI::Notifications::Management::UserNotificationListenerAccessStatus;
-
-    std::set<uint32_t> seenIds;
-    bool firstPoll = true;
-    bool accessLogged = false;
-
-    // The Windows Notification Service (WNS) and UWP subsystem take time to initialize on boot.
-    // If this runs too early, instantiating UserNotificationListener::Current()
-    // can permanently bind to an uninitialized COM proxy, permanently breaking notifications for the process.
-    // To prevent this, we enforce a strict 30-second delay from process creation before touching the API.
-    FILETIME creationTime, exitTime, kernelTime, userTime;
-    if (GetProcessTimes(GetCurrentProcess(), &creationTime, &exitTime, &kernelTime, &userTime)) {
-        ULARGE_INTEGER ct;
-        ct.LowPart = creationTime.dwLowDateTime;
-        ct.HighPart = creationTime.dwHighDateTime;
-
-        FILETIME systemTime;
-        GetSystemTimeAsFileTime(&systemTime);
-        ULARGE_INTEGER st;
-        st.LowPart = systemTime.dwLowDateTime;
-        st.HighPart = systemTime.dwHighDateTime;
-
-        uint64_t msSinceProcessStart = (st.QuadPart - ct.QuadPart) / 10000;
-        if (msSinceProcessStart < 30000) {
-            DWORD waitTime = 30000 - (DWORD)msSinceProcessStart;
-            Wh_Log(L"Process started recently. Delaying UserNotificationListener init by %d ms to let UWP subsystem load...", waitTime);
-            WaitForSingleObject(g_stopEvent, waitTime);
-        }
-    }
-
-    while (WaitForSingleObject(g_stopEvent, 0) == WAIT_TIMEOUT) {
-        try {
-            auto listener = UserNotificationListener::Current();
-            auto access = listener.RequestAccessAsync().get();
-            if (access != UserNotificationListenerAccessStatus::Allowed) {
-                if (!accessLogged) {
-                    if (access == UserNotificationListenerAccessStatus::Denied) {
-                        // Actionable: this is a Windows privacy switch, not a
-                        // mod setting, and it is the usual reason the module
-                        // stays silent when everything else is configured.
-                        Wh_Log(L"Notification listener permission DENIED by Windows. "
-                               L"Enable Settings > Privacy & security > Notifications > "
-                               L"\"Let apps access your notifications\", then restart the mod. "
-                               L"Retrying meanwhile...");
-                    } else {
-                        Wh_Log(L"Notification listener permission not granted or UWP subsystem not ready on boot (status: %d); retrying connection loop...", (int)access);
-                    }
-                    accessLogged = true;
-                }
-                WaitForSingleObject(g_stopEvent, 3000);
-                continue;
-            }
-
-            if (accessLogged) {
-                Wh_Log(L"WinRT UserNotificationListener successfully connected.");
-                accessLogged = false;
-            }
-
-            while (WaitForSingleObject(g_stopEvent, 0) == WAIT_TIMEOUT) {
-                try {
-                    auto notifications = listener.GetNotificationsAsync(NotificationKinds::Toast).get();
-                    std::set<uint32_t> currentIds;
-
-                    for (uint32_t i = 0; i < notifications.Size(); ++i) {
-                        currentIds.insert(notifications.GetAt(i).Id());
-                    }
-
-                    if (firstPoll) {
-                        seenIds = std::move(currentIds);
-                        firstPoll = false;
-                        WaitForSingleObject(g_stopEvent, 1000);
-                        continue;
-                    }
-
-                    for (uint32_t i = 0; i < notifications.Size(); ++i) {
-                        try {
-                            auto userNotification = notifications.GetAt(i);
-                            const uint32_t id = userNotification.Id();
-
-                            if (seenIds.count(id)) {
-                                continue;
-                            }
-
-                            // Immediately mark as seen so we don't process it again
-                            seenIds.insert(id);
-
-                            if (g_settings.notificationRespectDnD && g_isDnDActive.load()) {
-                                continue;
-                            }
-
-                            NotificationSnapshot snapshot;
-                            snapshot.active = true;
-                            snapshot.expiresAt = NowSeconds() + 4.0;
-                            auto appInfo = userNotification.AppInfo();
-                            auto displayInfo = appInfo.DisplayInfo();
-                            snapshot.app = displayInfo.DisplayName().c_str();
-                            try {
-                                auto logo = displayInfo.GetLogo({32.0f, 32.0f});
-                                std::vector<uint8_t> logoBytes = ReadWinRtStreamBytes(logo);
-                                if (!logoBytes.empty()) {
-                                    DecodeImageBytesToPixels(logoBytes, &snapshot.icon);
-                                }
-                            } catch (...) {
-                            }
-
-                            if (snapshot.icon.bgra.empty() && !snapshot.app.empty()) {
-                                snapshot.icon = FindAppIconByName(snapshot.app, 64);
-                            }
-
-                            auto notification = userNotification.Notification();
-                            auto binding = notification.Visual().GetBinding(KnownNotificationBindings::ToastGeneric());
-                            if (binding) {
-                                auto textElements = binding.GetTextElements();
-                                if (textElements.Size() > 0) {
-                                    snapshot.title = textElements.GetAt(0).Text().c_str();
-                                }
-                                if (textElements.Size() > 1) {
-                                    snapshot.body = textElements.GetAt(1).Text().c_str();
-                                }
-                            }
-
-                            if (snapshot.title.empty()) {
-                                snapshot.title = snapshot.app.empty() ? L"New notification" : snapshot.app;
-                            }
-                            if (!snapshot.body.empty()) {
-                                snapshot.title += L" - " + snapshot.body;
-                            }
-                            if (snapshot.title.size() > 120) {
-                                snapshot.title.resize(120);
-                                snapshot.title += L"...";
-                            }
-
-                            {
-                                std::lock_guard lock(g_stateMutex);
-                                g_state.notification = std::move(snapshot);
-                            }
-                            TriggerNudge();
-                        } catch (const winrt::hresult_error& nex) {
-                            if (nex.to_abi() == 0x80004001 || nex.to_abi() == 0x80040154) { // E_NOTIMPL or REGDB_E_CLASSNOTREG
-                                // UWP subsystem not ready, skip without spamming logs
-                            } else {
-                                Wh_Log(L"Failed to parse a notification (0x%08X); skipping.", nex.to_abi());
-                            }
-                        } catch (...) {
-                            Wh_Log(L"Failed to parse a notification; skipping.");
-                        }
-                    }
-
-                    seenIds = std::move(currentIds);
-                } catch (const winrt::hresult_error& ex) {
-                    const HRESULT hr = ex.to_abi();
-                    if (hr == 0x80004001 || hr == 0x80040154) { // E_NOTIMPL or REGDB_E_CLASSNOTREG
-                        if (!accessLogged) {
-                            Wh_Log(L"Notification listener UWP subsystem not fully ready (0x%08X). Retrying in background...", hr);
-                            accessLogged = true;
-                        }
-                    } else {
-                        Wh_Log(L"NotificationThreadProc inner loop WinRT error: %s (0x%08X); reconnecting...", ex.message().c_str(), hr);
-                    }
-                    WaitForSingleObject(g_stopEvent, 3000);
-                    break;
-                } catch (...) {
-                    Wh_Log(L"NotificationThreadProc inner loop unknown exception; reconnecting...");
-                    WaitForSingleObject(g_stopEvent, 3000);
-                    break;
-                }
-
-                WaitForSingleObject(g_stopEvent, 1000);
-            }
-        } catch (const winrt::hresult_error& ex) {
-            if (!accessLogged) {
-                Wh_Log(L"NotificationThreadProc connection error: %s (0x%08X). Retrying in 3s...", ex.message().c_str(), ex.to_abi());
-                accessLogged = true;
-            }
-            WaitForSingleObject(g_stopEvent, 3000);
-        } catch (...) {
-            if (!accessLogged) {
-                Wh_Log(L"NotificationThreadProc unknown connection exception. Retrying in 3s...");
-                accessLogged = true;
-            }
-            WaitForSingleObject(g_stopEvent, 3000);
-        }
-    }
-
-    winrt::uninit_apartment();
-    return 0;
-}
-#endif
 
 #if DYNAMIC_ISLAND_HAS_BLUETOOTH_WATCHER
 
@@ -5782,162 +5477,6 @@ bool ReadClipboardImagePixels(HWND hwnd, BitmapPixels* outPixels, UINT maxDim) {
     return true;
 }
 
-bool IsLikelyToastWindow(HWND hwnd, const wchar_t* className, const wchar_t* title) {
-    if (hwnd == g_hwnd || !hwnd) {
-        return false;
-    }
-
-    if (GetWindow(hwnd, GW_OWNER)) {
-        return false;
-    }
-
-    const std::wstring cls = ToLowerCopy(className ? className : L"");
-    const std::wstring text = ToLowerCopy(title ? title : L"");
-
-    // Classic Windows 10 toasts have clear class names
-    if (cls.find(L"notification") != std::wstring::npos ||
-        cls.find(L"toast") != std::wstring::npos ||
-        cls.find(L"windows.ui.notifications") != std::wstring::npos) {
-        return true;
-    }
-
-    // Windows 11 toasts use generic XAML or CoreWindow classes, usually hosted by
-    // explorer.exe, sihost.exe, or ShellExperienceHost.exe.
-    // Importantly, their title is often empty at the exact moment of creation!
-    if (cls.find(L"xaml_windowedpopupclass") != std::wstring::npos ||
-        cls.find(L"windows.ui.core.corewindow") != std::wstring::npos) {
-
-        std::wstring image;
-        if (ProcessImageNameForWindow(hwnd, &image)) {
-            const std::wstring base = ToLowerCopy(BaseNameFromPath(image));
-            if (base == L"explorer.exe" || base == L"sihost.exe" || base == L"shellexperiencehost.exe") {
-                // Ensure it's not the start menu, search, or action center main panel
-                if (text != L"start" && text != L"action center" && text != L"search" && text != L"task view") {
-                    return true;
-                }
-            }
-        }
-    }
-
-    return false;
-}
-
-void CaptureShellNotification(HWND hwnd) {
-    // Grace period: ignore notifications that fire in the first 3 seconds after
-    // the mod starts. sihost.exe gets injected while system windows are still
-    // settling, which causes false positives (e.g. Snipping Tool windows).
-    if (NowSeconds() < 3.0) {
-        return;
-    }
-
-    wchar_t className[128] = {};
-    wchar_t title[192] = {};
-    GetClassNameW(hwnd, className, ARRAYSIZE(className));
-    GetWindowTextW(hwnd, title, ARRAYSIZE(title));
-
-    if (!IsLikelyToastWindow(hwnd, className, title)) {
-        return;
-    }
-
-    NotificationSnapshot notification;
-    notification.active = true;
-    notification.app = L"Notification";
-    notification.title = title;
-    notification.expiresAt = NowSeconds() + 4.0;
-    // Fetch a 64px icon to ensure crisp rendering inside the pill
-    notification.icon = GetWindowIconPixels(hwnd, 64);
-
-    if (notification.title.size() > 96) {
-        notification.body = notification.title.substr(64);
-        notification.title.resize(64);
-        notification.title += L"...";
-    }
-
-    {
-        std::lock_guard lock(g_stateMutex);
-        g_state.notification = std::move(notification);
-    }
-    TriggerNudge();
-
-    // Spawn a background thread to extract the full rich text body of the toast using UI Automation.
-    // Modern Windows Toasts often only provide the App Name via GetWindowTextW, leaving the body hidden in the XAML tree.
-    std::thread([hwnd]() {
-        Sleep(400); // Give the heavy UWP XAML tree enough time to fully construct the text nodes
-        HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        if (SUCCEEDED(hr)) {
-            IUIAutomation* uia = nullptr;
-            hr = CoCreateInstance(__uuidof(CUIAutomation), nullptr, CLSCTX_INPROC_SERVER, __uuidof(IUIAutomation), (void**)&uia);
-            if (SUCCEEDED(hr) && uia) {
-                IUIAutomation2* uia2 = nullptr;
-                if (SUCCEEDED(uia->QueryInterface(__uuidof(IUIAutomation2), (void**)&uia2)) && uia2) {
-                    uia2->put_TransactionTimeout(500);
-                    uia2->put_ConnectionTimeout(500);
-                    uia2->Release();
-                }
-                IUIAutomationElement* windowEl = nullptr;
-                if (SUCCEEDED(uia->ElementFromHandle(hwnd, &windowEl)) && windowEl) {
-                    IUIAutomationCondition* cond = nullptr;
-                    uia->CreateTrueCondition(&cond);
-                    IUIAutomationElementArray* elements = nullptr;
-                    if (SUCCEEDED(windowEl->FindAll(TreeScope_Descendants, cond, &elements)) && elements) {
-                        int count = 0;
-                        elements->get_Length(&count);
-                        std::wstring appName;
-                        std::wstring fullText;
-                        for (int i = 0; i < count; ++i) {
-                            IUIAutomationElement* el = nullptr;
-                            if (SUCCEEDED(elements->GetElement(i, &el)) && el) {
-                                BSTR name = nullptr;
-                                el->get_CurrentName(&name);
-                                if (name && wcslen(name) > 0) {
-                                    std::wstring chunk = name;
-                                    // Skip generic screen-reader labels often found in toasts
-                                    if (chunk != L"Notification" && chunk != L"New notification") {
-                                        if (appName.empty()) {
-                                            appName = chunk;
-                                        } else {
-                                            if (!fullText.empty()) fullText += L"  -  ";
-                                            fullText += chunk;
-                                        }
-                                    }
-                                }
-                                if (name) SysFreeString(name);
-                                el->Release();
-                            }
-                        }
-                        elements->Release();
-
-                        if (fullText.empty() && !appName.empty()) {
-                            fullText = appName;
-                            appName = L"Notification";
-                        }
-
-                        if (!fullText.empty()) {
-                            std::lock_guard lock(g_stateMutex);
-                            if (g_state.notification.active) {
-                                if (!appName.empty()) {
-                                    g_state.notification.app = appName;
-                                    if (appName != L"Notification") {
-                                        BitmapPixels resolvedIcon = FindAppIconByName(appName, 64);
-                                        if (!resolvedIcon.bgra.empty()) {
-                                            g_state.notification.icon = std::move(resolvedIcon);
-                                        }
-                                    }
-                                }
-                                g_state.notification.title = fullText;
-                            }
-                        }
-                    }
-                    if (cond) cond->Release();
-                    windowEl->Release();
-                }
-                uia->Release();
-            }
-            CoUninitialize();
-        }
-    }).detach();
-}
-
 void CaptureClipboard(HWND hwnd) {
     ClipboardSnapshot clip;
     clip.expiresAt = NowSeconds() + 2.5;
@@ -6349,7 +5888,6 @@ void OpenRelevantApp() {
 void DismissTransientState() {
     std::lock_guard lock(g_stateMutex);
     g_state.clipboard.active = false;
-    g_state.notification.active = false;
     g_state.volume.active = false;
     g_state.progress.active = false;
     g_state.capsLock.active = false;
@@ -6802,11 +6340,9 @@ class Renderer {
         marqueeArtistCache_.layout.Reset();
         marqueeAlbumCache_.layout.Reset();
         marqueeClipboardCache_.layout.Reset();
-        marqueeNotificationCache_.layout.Reset();
         scratchColorBrush_.Reset();
 
         artBitmap_.Reset();
-        notificationIconBitmap_.Reset();
         mediaSourceIconBitmap_.Reset();
         clipboardIconBitmap_.Reset();
         clipboardImageBitmap_.Reset();
@@ -7191,7 +6727,6 @@ class Renderer {
             marqueeArtistCache_.layout.Reset();
             marqueeAlbumCache_.layout.Reset();
             marqueeClipboardCache_.layout.Reset();
-            marqueeNotificationCache_.layout.Reset();
             weatherDescFormat_.Reset();
             weatherDescFormatSize_ = -1.0f;
         }
@@ -7382,9 +6917,6 @@ class Renderer {
                 break;
             case IslandKind::Clipboard:
                 DrawClipboard(state, unscaledRect);
-                break;
-            case IslandKind::Notification:
-                DrawNotification(state, unscaledRect);
                 break;
             case IslandKind::Volume:
                 DrawVolume(state, unscaledRect);
@@ -10092,80 +9624,6 @@ class Renderer {
         mutedBrush_->SetOpacity(0.58f);
     }
 
-    void DrawNotification(const SharedState& state, D2D1_RECT_F rect) {
-        if (rect.bottom - rect.top < 48.0f || rect.right - rect.left < 120.0f) return;
-        const double now = NowSeconds();
-        const float ttl = 4.0f;
-        const float remaining = Clamp(static_cast<float>(state.notification.expiresAt - now), 0.0f, ttl);
-        const float progress = remaining / ttl;
-
-        const float cy = (rect.top + rect.bottom) * 0.5f;
-        // Apple DI: app icon is a large iOS-style rounded square.
-        const float iconSz = (rect.bottom - rect.top) - 16.0f;
-        D2D1_RECT_F badge = D2D1::RectF(rect.left + 14, cy - iconSz * 0.5f,
-                                        rect.left + 14 + iconSz, cy + iconSz * 0.5f);
-        const float br = iconSz * 0.35f;  // Softer iOS superellipse-like squircle.
-
-        // Icon background plate.
-        ComPtr<ID2D1SolidColorBrush> plateBrush;
-        target_->CreateSolidColorBrush(material_.raisedStrong, &plateBrush);
-        target_->FillRoundedRectangle(D2D1::RoundedRect(badge, br, br), plateBrush.Get());
-
-        if (!state.notification.icon.bgra.empty()) {
-            DrawRoundedBitmapPixels(state.notification.icon, badge, br,
-                                    notificationIconBitmap_, notificationIconGeneration_, 1.0f);
-
-            // Draw a red dot (badge) at the top-right of the app icon
-            ComPtr<ID2D1SolidColorBrush> badgeColor;
-            target_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.23f, 0.18f, 1.0f), &badgeColor);
-
-            const float dotR = iconSz * 0.13f;
-            const float dotX = badge.right - dotR * 0.5f;
-            const float dotY = badge.top + dotR * 0.5f;
-
-            target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotR, dotR), badgeColor.Get());
-
-            ComPtr<ID2D1SolidColorBrush> badgeBorder;
-            target_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f), &badgeBorder);
-            target_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotR, dotR), badgeBorder.Get(), 0.9f);
-        } else {
-            const wchar_t* glyph = usingFluentIcons_ ? L"\uEA8F" : L"\uE7E7";
-            textBrush_->SetOpacity(0.95f);
-            if (iconFormat_) {
-                iconFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-                iconFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                target_->DrawTextW(glyph,
-                                   static_cast<UINT32>(wcslen(glyph)), iconFormat_.Get(), badge,
-                                   textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-                iconFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-                iconFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-            }
-            textBrush_->SetOpacity(0.90f);
-        }
-
-        const float tx = badge.right + 14.0f;
-        const bool showBar = g_settings.statusCountdownProgress;
-        D2D1_RECT_F appRect = showBar
-            ? D2D1::RectF(tx, cy - 18.0f, rect.right - 14.0f, cy - 2.0f)
-            : D2D1::RectF(tx, cy - 16.0f, rect.right - 14.0f, cy - 1.0f);
-        mutedBrush_->SetOpacity(0.75f);
-        target_->DrawTextW(state.notification.app.c_str(),
-                           static_cast<UINT32>(state.notification.app.size()),
-                           smallTextFormat_.Get(), appRect, mutedBrush_.Get(),
-                           D2D1_DRAW_TEXT_OPTIONS_CLIP);
-
-        D2D1_RECT_F titleRect = showBar
-            ? D2D1::RectF(tx, cy - 2.0f, rect.right - 14.0f, cy + 15.0f)
-            : D2D1::RectF(tx, cy - 1.0f, rect.right - 14.0f, cy + 16.0f);
-        textBrush_->SetOpacity(0.95f);
-        DrawMarqueeText(state.notification.title.empty() ? L"Notification" : state.notification.title,
-                        titleRect, textFormat_.Get(), textBrush_.Get(), now, 28.0f, marqueeNotificationCache_);
-        textBrush_->SetOpacity(0.90f);
-
-        DrawCountdownProgress(tx, rect.right - 14.0f, rect.bottom - 6.0f, progress);
-        mutedBrush_->SetOpacity(0.50f);
-    }
-
     void DrawVolume(const SharedState& state, D2D1_RECT_F rect) {
         if (rect.bottom - rect.top < 24.0f || rect.right - rect.left < 140.0f) return;
         const bool muted = state.volume.muted || state.volume.percent == 0;
@@ -10804,9 +10262,7 @@ class Renderer {
     MarqueeLayoutCache marqueeArtistCache_;
     MarqueeLayoutCache marqueeAlbumCache_;
     MarqueeLayoutCache marqueeClipboardCache_;
-    MarqueeLayoutCache marqueeNotificationCache_;
     ComPtr<ID2D1Bitmap> artBitmap_;
-    ComPtr<ID2D1Bitmap> notificationIconBitmap_;
     ComPtr<ID2D1Bitmap> mediaSourceIconBitmap_;
     ComPtr<ID2D1Bitmap> clipboardIconBitmap_;
     ComPtr<ID2D1Bitmap> clipboardImageBitmap_;
@@ -10816,7 +10272,6 @@ class Renderer {
     std::wstring calendarCachedWeekdayName_;
     ComPtr<IDWriteTextFormat> weatherDescFormat_;
     float weatherDescFormatSize_ = -1.0f;
-    uint64_t notificationIconGeneration_ = 0;
     uint64_t mediaSourceIconGeneration_ = 0;
     uint64_t clipboardIconGeneration_ = 0;
     uint64_t clipboardImageGeneration_ = 0;
@@ -10850,10 +10305,6 @@ Activity ActivityForKind(IslandKind kind, const Settings& settings, const Shared
         case IslandKind::Clipboard:
             activity.width = 340.0f;
             activity.height = 56.0f;
-            break;
-        case IslandKind::Notification:
-            activity.width = 360.0f;
-            activity.height = 58.0f;
             break;
         case IslandKind::Volume:
             activity.width = 300.0f;
@@ -10931,9 +10382,6 @@ std::vector<IslandKind> ChooseActivities(const SharedState& state, const Setting
     }
     if (settings.volume && state.volume.active && now < state.volume.expiresAt) {
         activities.push_back(IslandKind::Volume);
-    }
-    if (state.notification.active && now < state.notification.expiresAt) {
-        activities.push_back(IslandKind::Notification);
     }
     if (settings.battery && state.battery.active && now < state.battery.expiresAt) {
         activities.push_back(IslandKind::BatteryLow);
@@ -11152,9 +10600,6 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     switch (msg) {
         case WM_CREATE:
             AddClipboardFormatListener(hwnd);
-            if (g_shellHookMessage == 0) g_shellHookMessage = RegisterWindowMessageW(L"SHELLHOOK");
-            if (g_taskbarCreatedMessage == 0) g_taskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
-            RegisterShellHookWindow(hwnd);
             // File Tray (#33). Accepting drops costs nothing when the module is
             // off; WM_DROPFILES just ignores them in that case.
             DragAcceptFiles(hwnd, TRUE);
@@ -11236,7 +10681,6 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         case WM_DESTROY:
             RemoveClipboardFormatListener(hwnd);
-            DeregisterShellHookWindow(hwnd);
             return 0;
 
         // Both of these touch the window from the thread that owns it, the only
@@ -11734,20 +11178,6 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
     }
 
-    if (msg == g_shellHookMessage && g_shellHookMessage != 0) {
-        if (wParam == HSHELL_WINDOWCREATED) {
-            CaptureShellNotification(reinterpret_cast<HWND>(lParam));
-        }
-        return 0;
-    }
-
-    if (msg == g_taskbarCreatedMessage && g_taskbarCreatedMessage != 0) {
-        Wh_Log(L"TaskbarCreated received; re-registering shell hook window.");
-        DeregisterShellHookWindow(hwnd);
-        RegisterShellHookWindow(hwnd);
-        return 0;
-    }
-
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
@@ -11776,14 +11206,10 @@ DWORD WINAPI RenderThreadProc(void*) {
     }
 
     g_hwnd = hwnd;
-    if (g_shellHookMessage == 0) g_shellHookMessage = RegisterWindowMessageW(L"SHELLHOOK");
-    if (g_taskbarCreatedMessage == 0) g_taskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
     using ChangeWindowMessageFilterEx_t = BOOL(WINAPI*)(HWND, UINT, DWORD, PVOID);
     static auto pChangeWindowMessageFilterEx = reinterpret_cast<ChangeWindowMessageFilterEx_t>(
         GetProcAddress(GetModuleHandleW(L"user32.dll"), "ChangeWindowMessageFilterEx"));
     if (pChangeWindowMessageFilterEx) {
-        if (g_shellHookMessage) pChangeWindowMessageFilterEx(hwnd, g_shellHookMessage, 1 /*MSGFLT_ALLOW*/, nullptr);
-        if (g_taskbarCreatedMessage) pChangeWindowMessageFilterEx(hwnd, g_taskbarCreatedMessage, 1 /*MSGFLT_ALLOW*/, nullptr);
         pChangeWindowMessageFilterEx(hwnd, WM_COPYDATA, 1 /*MSGFLT_ALLOW*/, nullptr);
         pChangeWindowMessageFilterEx(hwnd, 0x0049 /*WM_COPYGLOBALDATA*/, 1 /*MSGFLT_ALLOW*/, nullptr);
     } else {
@@ -11791,8 +11217,6 @@ DWORD WINAPI RenderThreadProc(void*) {
         static auto pChangeWindowMessageFilter = reinterpret_cast<ChangeWindowMessageFilter_t>(
             GetProcAddress(GetModuleHandleW(L"user32.dll"), "ChangeWindowMessageFilter"));
         if (pChangeWindowMessageFilter) {
-            if (g_shellHookMessage) pChangeWindowMessageFilter(g_shellHookMessage, 1 /*MSGFLT_ADD*/);
-            if (g_taskbarCreatedMessage) pChangeWindowMessageFilter(g_taskbarCreatedMessage, 1 /*MSGFLT_ADD*/);
             pChangeWindowMessageFilter(WM_COPYDATA, 1 /*MSGFLT_ADD*/);
             pChangeWindowMessageFilter(0x0049 /*WM_COPYGLOBALDATA*/, 1 /*MSGFLT_ADD*/);
         }
@@ -12031,10 +11455,6 @@ DWORD WINAPI RenderThreadProc(void*) {
                 g_state.clipboard.active = false;
                 snapshot.clipboard.active = false;
             }
-            if (g_state.notification.active && now >= g_state.notification.expiresAt) {
-                g_state.notification.active = false;
-                snapshot.notification.active = false;
-            }
             if (g_state.volume.active && now >= g_state.volume.expiresAt) {
                 g_state.volume.active = false;
                 snapshot.volume.active = false;
@@ -12119,7 +11539,6 @@ DWORD WINAPI RenderThreadProc(void*) {
                                        (now - snapshot.media.titleChangedAt < 5.0);
 
         bool isTransientAlert = (primary.kind == IslandKind::Clipboard ||
-                                 primary.kind == IslandKind::Notification ||
                                  primary.kind == IslandKind::Volume ||
                                  primary.kind == IslandKind::BatteryLow ||
                                  primary.kind == IslandKind::CapsLock ||
@@ -12431,8 +11850,7 @@ DWORD WINAPI RenderThreadProc(void*) {
         // Device, Bluetooth and Do Not Disturb are here only when the countdown bar
         // is switched on, since that bar is the one thing on them that moves.
         const auto isTransientPill = [](IslandKind kind) {
-            return kind == IslandKind::BatteryLow || kind == IslandKind::Clipboard ||
-                   kind == IslandKind::Notification;
+            return kind == IslandKind::BatteryLow || kind == IslandKind::Clipboard;
         };
         const auto hasCountdownBar = [](IslandKind kind) {
             return kind == IslandKind::Device || kind == IslandKind::Bluetooth ||
@@ -12500,7 +11918,6 @@ DWORD WINAPI RenderThreadProc(void*) {
         // Compare data snapshot to detect changes
         static uint64_t prevArtGen = 0;
         static uint64_t prevSrcIconGen = 0;
-        static uint64_t prevNotifIconGen = 0;
         static uint64_t prevClipIconGen = 0;
         static int prevCpu = -1;
         static int prevRam = -1;
@@ -12531,7 +11948,6 @@ DWORD WINAPI RenderThreadProc(void*) {
             // the live waveform for the static bars, and without this the frozen
             // last playing frame stayed up until some unrelated repaint came along.
             snapshot.media.playing != prevPlaying ||
-            snapshot.notification.icon.generation != prevNotifIconGen ||
             snapshot.clipboard.appIcon.generation != prevClipIconGen ||
             systemMetricsChanged ||
             snapshot.system.volumePercent != prevVol ||
@@ -12544,7 +11960,6 @@ DWORD WINAPI RenderThreadProc(void*) {
             prevSrcIconGen = snapshot.media.sourceIconGeneration;
             prevMediaTitle = snapshot.media.title;
             prevPlaying = snapshot.media.playing;
-            prevNotifIconGen = snapshot.notification.icon.generation;
             prevClipIconGen = snapshot.clipboard.appIcon.generation;
             prevCpu = snapshot.system.cpuPercent;
             prevRam = snapshot.system.memoryPercent;
@@ -12709,10 +12124,6 @@ bool StartThreads() {
     g_weatherThread = CreateThread(nullptr, 0, WeatherThreadProc, nullptr, 0, nullptr);
     g_keyboardThread = CreateThread(nullptr, 0, KeyboardThreadProc, nullptr, 0, &g_keyboardThreadId);
     g_mouseThread = CreateThread(nullptr, 0, MouseThreadProc, nullptr, 0, &g_mouseThreadId);
-#if DYNAMIC_ISLAND_HAS_USER_NOTIFICATION_LISTENER
-    g_notificationThread = CreateThread(nullptr, 0, NotificationThreadProc, nullptr, 0, nullptr);
-#endif
-    g_bluetoothThread = CreateThread(nullptr, 0, BluetoothThreadProc, nullptr, 0, nullptr);
     SubscribeDndNotification();
 
     return true;
@@ -12730,7 +12141,7 @@ void StopThreads() {
         SetEvent(g_stopEvent);
     }
 
-    HANDLE handles[] = {g_renderThread, g_mediaThread, g_audioThread, g_weatherThread, g_notificationThread, g_keyboardThread, g_mouseThread, g_bluetoothThread};
+    HANDLE handles[] = {g_renderThread, g_mediaThread, g_audioThread, g_weatherThread, g_keyboardThread, g_mouseThread, g_bluetoothThread};
     for (HANDLE handle : handles) {
         if (handle) {
             WaitForSingleObject(handle, 3000);
@@ -12742,7 +12153,6 @@ void StopThreads() {
     g_mediaThread = nullptr;
     g_audioThread = nullptr;
     g_weatherThread = nullptr;
-    g_notificationThread = nullptr;
     g_keyboardThread = nullptr;
     g_keyboardThreadId = 0;
     g_mouseThread = nullptr;

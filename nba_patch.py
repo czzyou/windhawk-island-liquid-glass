@@ -68,7 +68,7 @@ def apply_nba(src):
             activity.height = 36.0f;
             break;''')
 
-    # Timer first, then the live game, then media. A notification still wins
+    # Timer first, then the live game, then media. A transient alert still wins
     # because it is pushed earlier and ChooseActivities only shows two pills.
     change('''    if (settings.media && state.media.available) {
         activities.push_back(IslandKind::Media);
@@ -283,13 +283,13 @@ HANDLE g_nbaThread = nullptr;''')
            '''    g_weatherThread = CreateThread(nullptr, 0, WeatherThreadProc, nullptr, 0, nullptr);
     g_nbaThread = CreateThread(nullptr, 0, NbaThreadProc, nullptr, 0, nullptr);''')
 
-    change('''    HANDLE handles[] = {g_renderThread, g_mediaThread, g_audioThread, g_weatherThread, g_notificationThread, g_keyboardThread, g_mouseThread, g_bluetoothThread};''',
-           '''    HANDLE handles[] = {g_renderThread, g_mediaThread, g_audioThread, g_weatherThread, g_nbaThread, g_notificationThread, g_keyboardThread, g_mouseThread, g_bluetoothThread};''')
+    change('''    HANDLE handles[] = {g_renderThread, g_mediaThread, g_audioThread, g_weatherThread, g_keyboardThread, g_mouseThread, g_bluetoothThread};''',
+           '''    HANDLE handles[] = {g_renderThread, g_mediaThread, g_audioThread, g_weatherThread, g_nbaThread, g_keyboardThread, g_mouseThread, g_bluetoothThread};''')
 
     change('''    g_weatherThread = nullptr;
-    g_notificationThread = nullptr;''', '''    g_weatherThread = nullptr;
+''', '''    g_weatherThread = nullptr;
     g_nbaThread = nullptr;
-    g_notificationThread = nullptr;''')
+''')
 
     change('    ComPtr<IDWriteTextFormat> timerHeroFormat_;',
            '    ComPtr<IDWriteTextFormat> timerHeroFormat_;\n    ComPtr<IDWriteTextFormat> nbaAuxFormat_;')
