@@ -794,6 +794,9 @@ print('57 anchor/hover and collapsed-dashboard assertions passed',flush=True)
 motion_test = '#include <algorithm>\n#include <atomic>\n#include <cmath>\n#include <cassert>\n' + dock_helpers[:dock_helpers.index('bool GetCaptionDockTarget')]
 motion_test += src[src.index('struct SpringValue {'):src.index('\nSettings g_settings;')]
 motion_test = '#include <string>\n' + motion_test + small_screen_scale
+lyric_motion = re.search(r'const bool lyricResize=([^;]+);', src).group(1)
+lyric_motion = lyric_motion.replace('primary.kind==IslandKind::Media', 'media').replace('g_settings.collapsedLyrics', 'lyrics').replace('g_settings.sizeScale', 'scale')
+motion_test += 'bool CheckedLyricResize(bool media,bool lyrics,bool secondary,bool isHoverExpanded,bool pinned,float targetHeight,float scale,const SpringValue& heightSpring) { return ' + lyric_motion + '; }\n'
 motion_test += '''int main() {
  assert(SmallScreenScale(1920,1040)==1.0f);
  assert(SmallScreenScale(3840/2.0f,2080/2.0f)==1.0f);
@@ -801,7 +804,25 @@ motion_test += '''int main() {
  assert(std::abs(SmallScreenScale(1920/1.5f,1040/1.5f)-(1040/1.5f)/900)<0.0001f);
  assert(SmallScreenScale(800,560)==0.75f);
  assert(SmallScreenScale(1080,1920)==0.75f);
+ SpringValue settled; settled.Reset(44);
+ assert(CheckedLyricResize(true,true,false,false,false,44,1,settled));
+ assert(!CheckedLyricResize(true,true,false,true,false,184,1,settled));
+ assert(!CheckedLyricResize(true,true,false,false,true,184,1,settled));
+ assert(!CheckedLyricResize(false,true,false,false,false,44,1,settled));
+ settled.velocity=5;
+ assert(!CheckedLyricResize(true,true,false,false,false,44,1,settled));
  for(float fps : {30.0f,60.0f,144.0f,240.0f}) {
+   for(bool expanding : {false,true}) {
+     SpringValue w,h; w.Reset(expanding?200:380); h.Reset(expanding?44:184);
+     w.target=expanding?380:200; h.target=expanding?184:44;
+     for(int i=0;i<fps/3;++i) {
+       const bool lyricOnly=CheckedLyricResize(true,true,false,expanding,false,h.target,1,h);
+       assert(!lyricOnly);
+       if(lyricOnly) w.StepExponential(1/fps); else w.Step(1/fps,280,24);
+       h.Step(1/fps,280,24);
+       assert(std::abs((w.value-200)/180-(h.value-44)/140)<0.0001f);
+     }
+   }
    SpringValue lyric; lyric.Reset(192); lyric.target=892;
    for(int i=0;i<fps/5;++i) {
      const float before=lyric.value; lyric.StepExponential(1/fps);
@@ -1129,8 +1150,25 @@ glass_test += glass_panel[glass_panel.index('SIZE GlassSurfaceCapacity('):glass_
 glass_test += glass_renderer[glass_renderer.index('const char kShaderSource[]'):glass_renderer.index('\nstruct ShaderParams {')]
 glass_profile = glass_renderer[glass_renderer.index('    float u = saturate('):glass_renderer.index('    disp = nrm')]
 glass_test += 'float saturate(float x) { return std::clamp(x, 0.0f, 1.0f); }\nfloat GlassRimProfile(float t) { float bump = 0;\n' + glass_profile + '\nreturn bump; }\n'
-glass_interior = glass_renderer[glass_renderer.index('float GlassInteriorScale('):glass_renderer.index('// Smooth max(q,0):')]
-glass_test += glass_interior.replace('max(', 'std::max(').replace('1e-4)', '1e-4f)')
+# Run the actual HLSL geometry functions with small vector/operator equivalents.
+glass_test += r'''using std::min; using std::max;
+struct float2 { float x,y; float2(float a,float b):x(a),y(b){} };
+float2 operator+(float2 a,float2 b) { return {a.x+b.x,a.y+b.y}; }
+float2 operator-(float2 a,float2 b) { return {a.x-b.x,a.y-b.y}; }
+float2 operator+(float2 a,float b) { return {a.x+b,a.y+b}; }
+float2 operator*(float2 a,float2 b) { return {a.x*b.x,a.y*b.y}; }
+float2 operator*(float2 a,float b) { return {a.x*b,a.y*b}; }
+float2 operator*(float a,float2 b) { return b*a; }
+float2 operator/(float2 a,float b) { return {a.x/b,a.y/b}; }
+float2 operator/(float2 a,float2 b) { return {a.x/b.x,a.y/b.y}; }
+float2 operator-(float2 a) { return {-a.x,-a.y}; }
+float2 abs(float2 a) { return {std::abs(a.x),std::abs(a.y)}; }
+float2 max(float2 a,float b) { return {max(a.x,b),max(a.y,b)}; }
+float2 sqrt(float2 a) { return {std::sqrt(a.x),std::sqrt(a.y)}; }
+float length(float2 a) { return std::sqrt(a.x*a.x+a.y*a.y); }
+'''
+glass_interior = glass_renderer[glass_renderer.index('float sdRoundRect('):glass_renderer.index('float2 toBlurUV(')]
+glass_test += re.sub(r'(?<![\w.])(\d+\.\d+(?:e[+-]?\d+)?|\d+e[+-]?\d+)(?![\w.])', r'\1f', glass_interior)
 glass_band = re.search(r'    const float bezel = ([^;]+);', glass_renderer).group(1)
 glass_test += 'float GlassBandWidth(float halfMin, float dpr) { return ' + glass_band + '; }\n'
 glass_test += '''int main() {
@@ -1177,24 +1215,33 @@ glass_test += '''int main() {
    const float slope=(value-GlassRimProfile(t-0.001f))/0.001f;
    assert(slope*0.13f<0.6f);
  }
- for(float halfMin : {18.0f, 44.0f, 100.0f, 240.0f}) {
-   const float band=GlassBandWidth(halfMin,1.0f);
-   assert(GlassInteriorScale(0,halfMin,band)==1);
-   assert(GlassInteriorScale(band,halfMin,band)==1);
-   assert(std::abs(GlassInteriorScale(halfMin,halfMin,band)-0.92f)<0.00001f);
-   float previous=0;
-   for(int i=1;i<=1000;i++) {
-     const float x=halfMin*i/1000.0f;
-     const float scale=GlassInteriorScale(halfMin-x,halfMin,band);
-     assert(scale>=0.92f && scale<=1.0f);
-     const float sample=x*scale;
-     assert(sample>previous && sample<=x);
-     previous=sample;
-     if(halfMin-x<=band) assert(scale==1);
+ for(float dpr : {1.0f,1.5f,2.0f}) {
+   const float2 halfSize(190*dpr,92*dpr);
+   const float radius=44*dpr, band=GlassBandWidth(halfSize.y,dpr);
+   auto offset = [&](float2 p) {
+     return GlassInteriorOffset(p,halfSize,radius,-sdRoundRect(p,halfSize,radius),band);
+   };
+   const auto top=offset({100*dpr,-50*dpr}), side=offset({150*dpr,20*dpr});
+   assert(top.y>0 && std::abs(top.x)<top.y*0.1f);
+   assert(side.x<0 && std::abs(side.y)<-side.x*0.1f);
+   const auto corner=offset({160*dpr,-60*dpr});
+   assert(corner.x<0 && corner.y>0);
+   assert(length(offset({0,0}))==0);
+   for(int y=-90;y<=90;y+=2) for(int x=-188;x<=188;x+=2) {
+     const float2 p(x*dpr,y*dpr);
+     const float depth=-sdRoundRect(p,halfSize,radius);
+     if(depth<0) continue;
+     const auto delta=offset(p);
+     assert(std::isfinite(delta.x) && std::isfinite(delta.y));
+     assert(length(delta)<=0.08f*halfSize.y+0.0001f);
+     if(depth<=band) assert(length(delta)==0);
+     const auto mirror=offset(-p);
+     assert(length(delta+mirror)<0.0001f);
+     const float step=0.1f*dpr;
+     const auto dx=(offset(p+float2(step,0))-offset(p-float2(step,0)))/(2*step);
+     const auto dy=(offset(p+float2(0,step))-offset(p-float2(0,step)))/(2*step);
+     assert((1+dx.x)*(1+dy.y)-dx.y*dy.x>0.1f);
    }
-   const float step=halfMin*0.001f;
-   assert(std::abs(GlassInteriorScale(band+step,halfMin,band)-1.0f)<0.00001f);
-   assert(std::abs(GlassInteriorScale(halfMin-step,halfMin,band)-0.92f)<0.00001f);
  }
  const auto stops=LiquidGlassRimStops();
  assert(stops.front().position==0 && stops.back().position==1);
@@ -1209,7 +1256,7 @@ glass_test += '''int main() {
 (root/'glass-checks.cpp').write_text(glass_test,encoding='utf-8')
 subprocess.run([str(clang),'-std=c++23','-static',str(root/'glass-checks.cpp'),'-ld3dcompiler','-o',str(root/'glass-checks.exe')],cwd=compiler,check=True)
 subprocess.run([str(root/'glass-checks.exe')],check=True)
-print('Glass checks passed: shader compilation, preserved rim/RGB profile, interior lens continuity and monotonic sampling, gradient stops',flush=True)
+print('Glass checks passed: shader compilation, preserved rim/RGB profile, rounded-rectangle lens directions, symmetry and no folding, gradient stops',flush=True)
 brief_test = (root/'weather-checks.cpp').read_text(encoding='utf-8').split('bool ParseChinaWeather(')[0]
 brief_test += (root/'tomorrow-brief-checks.inc').read_text(encoding='utf-8')
 (root/'tomorrow-brief-checks.cpp').write_text(brief_test,encoding='utf-8')

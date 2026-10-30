@@ -292,7 +292,9 @@ def apply_media_features(src):
         if (primary.kind == IslandKind::Media && (g_settings.collapsedLyrics || CurrentDashboardTab(g_settings)==6 || g_settings.mediaTabLyrics))
             needsRender = true;
         const float normalIdleWidth = primary.width;''')
-    change('''        if (compactResize) widthSpring.StepExponential(dt * speed);''', '''        const bool lyricResize=primary.kind==IslandKind::Media && g_settings.collapsedLyrics && !secondary;
+    change('''        if (compactResize) widthSpring.StepExponential(dt * speed);''', '''        const bool lyricResize=primary.kind==IslandKind::Media && g_settings.collapsedLyrics && !secondary &&
+            !isHoverExpanded && !pinned && targetHeight>0 && targetHeight<=44.0f*g_settings.sizeScale+0.5f &&
+            std::fabs(heightSpring.value-targetHeight)<0.05f && std::fabs(heightSpring.velocity)<0.05f;
         static BOOL lyricMotionEnabled=TRUE;
         static double lyricMotionCheckedAt=-1;
         if (lyricResize && now-lyricMotionCheckedAt>=0.5) {

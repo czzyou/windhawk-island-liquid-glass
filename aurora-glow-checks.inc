@@ -9,6 +9,15 @@
 #include <string>
 #include <vector>
 
+// Control this external Windows setting without changing the host or runner.
+BOOL testSystemAnimations = TRUE;
+BOOL TestSystemParametersInfoW(UINT action, UINT, PVOID value, UINT) {
+    assert(action == SPI_GETCLIENTAREAANIMATION);
+    *static_cast<BOOL*>(value) = testSystemAnimations;
+    return TRUE;
+}
+#define SystemParametersInfoW TestSystemParametersInfoW
+
 float Clamp(float v, float lo, float hi) { return std::max(lo, std::min(hi, v)); }
 // COLOR_IMPLEMENTATION
 // BITMAP_IMPLEMENTATION
@@ -142,6 +151,16 @@ int main() {
     const float phaseBefore = renderer.glowPhase_;
     renderer.UpdateAmbientGlow(settings, true, true, 0.1);
     assert(std::fabs(renderer.glowPhase_ - phaseBefore - 0.055f) < 0.0001f);
+    testSystemAnimations = FALSE;
+    Renderer reduced;
+    reduced.UpdateAmbientGlow(settings, true, true, 0);
+    const float reducedPhase = reduced.glowPhase_;
+    assert(!reduced.UpdateAmbientGlow(settings, true, true, 0.1));
+    assert(reduced.glowPhase_ == reducedPhase);
+    testSystemAnimations = TRUE;
+    assert(reduced.UpdateAmbientGlow(settings, true, true, 1.1));
+    assert(reduced.glowPhase_ > reducedPhase);
+
     const float pausedPhase = renderer.glowPhase_;
     bool animating = true;
     for (int i = 1; i <= 120; ++i) animating = renderer.UpdateAmbientGlow(settings, true, false, i / 60.0);

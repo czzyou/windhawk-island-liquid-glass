@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.5.10
+// @version         1.5.11
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -1486,19 +1486,22 @@ float sdRoundRect(float2 p, float2 halfSize, float r) {
   return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
 }
 
-// Adapted from shuding/liquid-glass: nested smoothstep and center-relative scaling.
-// Keep the existing rim untouched; limit the added center-relative sampling contraction to 8%.
-float GlassInteriorScale(float depth, float halfMin, float bezel) {
-  float t = saturate((depth - bezel) / max(halfMin - bezel, 1e-4));
-  float displacement = t * t * (3.0 - 2.0 * t);
-  float scaled = displacement * displacement * (3.0 - 2.0 * displacement);
-  return 1.0 - 0.08 * scaled;
-}
-
 // Smooth max(q,0): the normal direction rotates continuously through corner
 // regions, removing the directional crease along the diagonal
 float2 softClamp(float2 q, float soft) {
   return 0.5 * (q + sqrt(q * q + soft * soft));
+}
+
+// Rounded-rectangle normals bend the whole inset surface; the original rim stays untouched.
+float2 GlassInteriorOffset(float2 p, float2 halfSize, float r, float depth, float bezel) {
+  float halfMin = min(halfSize.x, halfSize.y);
+  float t = saturate((depth - bezel) / max(halfMin - bezel, 1e-4));
+  float eased = t * t * (3.0 - 2.0 * t);
+  float profile = 4.0 * eased * (1.0 - eased);
+  float soft = max(r * 0.15, 1.0);
+  float2 qs = softClamp(abs(p) - halfSize + r, soft);
+  float2 direction = (qs / max(length(qs), 1e-4)) * (p / sqrt(p * p + soft * soft));
+  return -direction * (0.08 * halfMin * profile);
 }
 
 float2 toBlurUV(float2 px) {
@@ -1536,7 +1539,7 @@ float4 PSLens(float4 pos : SV_Position) : SV_Target {
     disp = nrm * (bump * maxBend * min(dispFactor, 1.0));
   }
 
-  float2 lensCss = css + p * (GlassInteriorScale(depth, min(halfSize.x, halfSize.y), bezel) - 1.0);
+  float2 lensCss = css + GlassInteriorOffset(p, halfSize, r, depth, bezel);
 
   // Integrate the compressed footprint; offsets vanish with the bump so the
   // five taps converge to the clear-center sample without a threshold jump.
@@ -21461,7 +21464,9 @@ DWORD WINAPI RenderThreadProc(void*) {
 
         const bool compactResize = compactEligible && !isHoverExpanded && !pinned &&
             targetHeight > 0.0f && heightSpring.value <= 36.0f * g_settings.sizeScale + 0.5f;
-        const bool lyricResize=primary.kind==IslandKind::Media && g_settings.collapsedLyrics && !secondary;
+        const bool lyricResize=primary.kind==IslandKind::Media && g_settings.collapsedLyrics && !secondary &&
+            !isHoverExpanded && !pinned && targetHeight>0 && targetHeight<=44.0f*g_settings.sizeScale+0.5f &&
+            std::fabs(heightSpring.value-targetHeight)<0.05f && std::fabs(heightSpring.velocity)<0.05f;
         static BOOL lyricMotionEnabled=TRUE;
         static double lyricMotionCheckedAt=-1;
         if (lyricResize && now-lyricMotionCheckedAt>=0.5) {
