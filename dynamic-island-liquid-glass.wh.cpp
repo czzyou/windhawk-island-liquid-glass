@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.5.11
+// @version         1.5.12
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -17882,7 +17882,23 @@ public:
                                               rect.left + artPadding + artSize, cy + artSize * 0.5f);
             DrawAlbumArt(state.media, artRect, now, artSize * 0.5f, false);
 
-            DrawCollapsedLyric(state, rect, settings, now);
+            if (!state.media.lyricsEligible) {
+                SYSTEMTIME local = {};
+                GetLocalTime(&local);
+                const auto clock = FormatIslandTime(local, settings.clockFollowSystem,
+                                                    settings.use24HourClock, settings.showSeconds);
+                const auto alignment = textFormat_->GetTextAlignment();
+                const auto paragraph = textFormat_->GetParagraphAlignment();
+                textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                textFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                target_->DrawTextW(clock.c_str(), static_cast<UINT32>(clock.size()), textFormat_.Get(),
+                                  D2D1::RectF(rect.left+44,rect.top,rect.right-44,rect.bottom),
+                                  textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                textFormat_->SetTextAlignment(alignment);
+                textFormat_->SetParagraphAlignment(paragraph);
+            } else {
+                DrawCollapsedLyric(state, rect, settings, now);
+            }
             float shiftX = 0.0f;
             if (state.system.micActive || state.system.cameraActive) {
                 shiftX = 22.0f;
@@ -21671,7 +21687,7 @@ DWORD WINAPI RenderThreadProc(void*) {
         // Idle dashboard clock changes once a minute
         static SYSTEMTIME prevTime = {};
         if ((primary.kind == IslandKind::Idle ||
-             (primary.kind == IslandKind::Media && NormalizedTabIndex(g_settings) == ClockTabIndex(g_settings))) && !isHidden) {
+             (primary.kind == IslandKind::Media && (!snapshot.media.lyricsEligible || NormalizedTabIndex(g_settings) == ClockTabIndex(g_settings)))) && !isHidden) {
             SYSTEMTIME local = {};
             GetLocalTime(&local);
             if (local.wMinute != prevTime.wMinute) {
@@ -21701,7 +21717,7 @@ DWORD WINAPI RenderThreadProc(void*) {
                                (secondary && secondary->kind == IslandKind::Timer);
         if ((timerShown || (primary.kind == IslandKind::Idle && g_settings.timerEnabled && snapshot.timer.active)) && snapshot.timer.running) {
             shownSecond = static_cast<int>(std::ceil(snapshot.timer.endsAt - now));
-        } else if (primary.kind == IslandKind::Idle && g_settings.showSeconds && !isHidden) {
+        } else if ((primary.kind == IslandKind::Idle || (primary.kind == IslandKind::Media && !snapshot.media.lyricsEligible)) && g_settings.showSeconds && !isHidden) {
             SYSTEMTIME st = {};
             GetLocalTime(&st);
             shownSecond = st.wSecond;

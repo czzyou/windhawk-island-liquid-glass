@@ -235,7 +235,28 @@ def apply_media_features(src):
 ''' + media[a:b] + '                }\n' + media[b:]
     media = media.replace('            // Pagination dots (Vertical on the right edge)', '            if (activeTabId == 0) DrawMediaSources(state, rect);\n\n            // Pagination dots (Vertical on the right edge)')
     media = media.replace('            g_idleTab = 0;\n', '')
-    media = media.replace('            float shiftX = 0.0f;', '            DrawCollapsedLyric(state, rect, settings, now);\n            float shiftX = 0.0f;')
+    media = media.replace('            float shiftX = 0.0f;', '''            if (!state.media.lyricsEligible) {
+                SYSTEMTIME local = {};
+                GetLocalTime(&local);
+                const auto clock = FormatIslandTime(local, settings.clockFollowSystem,
+                                                    settings.use24HourClock, settings.showSeconds);
+                const auto alignment = textFormat_->GetTextAlignment();
+                const auto paragraph = textFormat_->GetParagraphAlignment();
+                textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                textFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                target_->DrawTextW(clock.c_str(), static_cast<UINT32>(clock.size()), textFormat_.Get(),
+                                  D2D1::RectF(rect.left+44,rect.top,rect.right-44,rect.bottom),
+                                  textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                textFormat_->SetTextAlignment(alignment);
+                textFormat_->SetParagraphAlignment(paragraph);
+            } else {
+                DrawCollapsedLyric(state, rect, settings, now);
+            }
+            float shiftX = 0.0f;''')
+    change('primary.kind == IslandKind::Media && NormalizedTabIndex(g_settings) == ClockTabIndex(g_settings)',
+           'primary.kind == IslandKind::Media && (!snapshot.media.lyricsEligible || NormalizedTabIndex(g_settings) == ClockTabIndex(g_settings))')
+    change('primary.kind == IslandKind::Idle && g_settings.showSeconds && !isHidden',
+           '(primary.kind == IslandKind::Idle || (primary.kind == IslandKind::Media && !snapshot.media.lyricsEligible)) && g_settings.showSeconds && !isHidden')
     src = src[:start] + media + src[end:]
     src = src.replace('        mediaSourceIconBitmap_.Reset();',
                       '        mediaSourceIconBitmap_.Reset();\n        sourceDockBitmaps_.clear(); sourceDockGenerations_.clear();\n        lyricInk_.Reset(); lyricShade_.Reset(); lyricBlocks_.clear(); compactLyricLayout_.Reset();\n        lyricBlockData_=nullptr; collapsedMeasureFormat_.Reset(); collapsedMeasureLines_={}; collapsedLyricCache_.layout.Reset();')
