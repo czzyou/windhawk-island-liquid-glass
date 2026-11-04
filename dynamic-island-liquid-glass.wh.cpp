@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.5.12
+// @version         1.5.13
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -9193,9 +9193,14 @@ bool PublishCurrentVolume(IAudioEndpointVolume* endpoint, bool show) {
         g_state.volume.muted=muted!=FALSE;
         g_state.volume.deviceName=L"系统音量";
         if (settings.volume && (show || changed || g_volumeDragging.load())) {
-            wake=!g_state.volume.active || now>=g_state.volume.expiresAt || g_autoHiddenParked.load();
-            g_state.volume.active=true;
-            g_state.volume.expiresAt=now+1.0;
+            // Check at the event so a volume change cannot wake the island before fullscreen polling catches up.
+            if (settings.autoHideFullscreen && IsForegroundFullscreen(g_hwnd)) {
+                g_state.volume.active=false;
+            } else {
+                wake=!g_state.volume.active || now>=g_state.volume.expiresAt || g_autoHiddenParked.load();
+                g_state.volume.active=true;
+                g_state.volume.expiresAt=now+1.0;
+            }
         }
     }
     if (changed || !g_endpointVolumeKnown || show) {

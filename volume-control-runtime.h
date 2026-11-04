@@ -34,9 +34,14 @@ bool PublishCurrentVolume(IAudioEndpointVolume* endpoint, bool show) {
         g_state.volume.muted=muted!=FALSE;
         g_state.volume.deviceName=L"系统音量";
         if (settings.volume && (show || changed || g_volumeDragging.load())) {
-            wake=!g_state.volume.active || now>=g_state.volume.expiresAt || g_autoHiddenParked.load();
-            g_state.volume.active=true;
-            g_state.volume.expiresAt=now+1.0;
+            // Check at the event so a volume change cannot wake the island before fullscreen polling catches up.
+            if (settings.autoHideFullscreen && IsForegroundFullscreen(g_hwnd)) {
+                g_state.volume.active=false;
+            } else {
+                wake=!g_state.volume.active || now>=g_state.volume.expiresAt || g_autoHiddenParked.load();
+                g_state.volume.active=true;
+                g_state.volume.expiresAt=now+1.0;
+            }
         }
     }
     if (changed || !g_endpointVolumeKnown || show) {
