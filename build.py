@@ -945,6 +945,14 @@ weather_test += r'''int main(int argc,char** argv) {
  assert(!ParseChinaWeather("<html>rate limited</html>",forecast,now,false,result));
  assert(!ParseChinaWeather(current,"var fc={};",now,false,result));
  assert(!ParseChinaWeather(current,"var fc={\"f\":[{\"fi\":\"10/16\",\"fc\":\"1\",\"fd\":\"20\"}]};",now,false,result));
+ auto earlyMonth = current;
+ earlyMonth.replace(earlyMonth.find("10月16日"), std::string("10月16日").size(), "11月04日");
+ auto earlyForecast = forecast;
+ const std::string forecastDate = R"(10\/16)";
+ earlyForecast.replace(earlyForecast.find(forecastDate), forecastDate.size(), R"(11\/4)");
+ now.wMonth=11; now.wDay=4;
+ assert(ParseChinaWeather(earlyMonth,earlyForecast,now,false,result) && result.temperature==16.1f);
+ now.wDay=5; assert(!ParseChinaWeather(earlyMonth,earlyForecast,now,false,result));
  float value=17; assert(!ChinaWeatherTemperature(L"nan",value) && value==17);
  assert(!ChinaWeatherTemperature(L"99",value)); assert(!ChinaWeatherTemperature(L"",value));
  assert(ChinaWeatherTemperature(L"-22.5",value) && value==-22.5f);

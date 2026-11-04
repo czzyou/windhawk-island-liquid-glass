@@ -128,8 +128,13 @@ bool ParseChinaWeather(const std::string& currentScript, const std::string& fore
         auto field = [](const JsonObject& object, const wchar_t* name) {
             return std::wstring(object.GetNamedString(name, L""));
         };
-        const std::wstring today = std::to_wstring(now.wMonth) + L"月" + std::to_wstring(now.wDay) + L"日";
-        if (!field(current, L"date").starts_with(today)) return false;
+        auto observationDate = field(current, L"date");
+        const auto monthEnd = observationDate.find(L'月');
+        const auto dayEnd = observationDate.find(L'日');
+        if (dayEnd == std::wstring::npos || monthEnd >= dayEnd) return false;
+        observationDate.resize(dayEnd);
+        observationDate[monthEnd] = L'/';
+        if (!ChinaWeatherDateMatches(observationDate, now)) return false;
         const auto observation = field(current, L"time");
         int hour = -1, minute = -1;
         if (observation.size() != 5 || observation[2] != L':' ||
