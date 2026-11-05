@@ -1,60 +1,63 @@
 // Subtle ambient light, guided by https://developer.apple.com/videos/play/wwdc2025/219/.
 // Original field implementation, not Apple's material renderer.
-constexpr int kGlowFieldWidth = 160, kGlowFieldHeight = 48;
+constexpr int kGlowFieldWidth = 320, kGlowFieldHeight = 96;
 using GlowFieldPixels = std::array<uint8_t, kGlowFieldWidth * kGlowFieldHeight * 4>;
 
+// Constant-speed clockwise travel along straight edges and circular corners.
+static D2D1_POINT_2F AlbumGlowPoint(float position, float width, float height, float radius) {
+    const float r = (std::min)(radius, (std::min)(width, height) * 0.5f);
+    const float a = width * 0.5f - r, b = height * 0.5f - r;
+    const float quarter = a + b + 1.57079633f * r;
+    const float turn = (position - std::floor(position)) * 4.0f;
+    const int quadrant = static_cast<int>(turn);
+    const float fraction = turn - quadrant;
+    const float distance = ((quadrant & 1) ? 1.0f - fraction : fraction) * quarter;
+    float x, y;
+    if (distance <= a) {
+        x = distance; y = -height * 0.5f;
+    } else if (distance < a + 1.57079633f * r) {
+        const float angle = (distance - a) / r;
+        x = a + r * std::sin(angle); y = -b - r * std::cos(angle);
+    } else {
+        x = width * 0.5f; y = -b + distance - a - 1.57079633f * r;
+    }
+    if (quadrant >= 2) x = -x;
+    if (quadrant == 1 || quadrant == 2) y = -y;
+    return D2D1::Point2F(width * 0.5f + x, height * 0.5f + y);
+}
+
 static GlowFieldPixels BuildAlbumGlowField(const D2D1_COLOR_F* colors,
-    const float* weights, int count, float phase) {
-    struct Lobe { float x, y, rx, ry, weight; D2D1_COLOR_F color; };
-    std::array<Lobe, 10> lobes{};
-    count = (std::max)(0, (std::min)(5, count));
-    float weightSum = 0, accumulated = 0;
-    for (int j = 0; j < count; ++j) weightSum += (std::max)(0.0f, weights[j]);
+    const float* weights, int count, float phase, float width, float height, float radius,
+    float scale = 1.0f, float energy = 0.0f) {
+    count = (std::max)(0, (std::min)(2, count));
+    float total = 0;
+    std::array<D2D1_POINT_2F, 2> lights{};
     for (int j = 0; j < count; ++j) {
-        const float share = weightSum > 0 ? (std::max)(0.0f, weights[j]) / weightSum : 0;
-        const float center = accumulated + share * 0.5f;
-        accumulated += share;
-        const auto color = colors[j];
-        for (int k = 0; k < 2; ++k) {
-            const int i = j * 2 + k;
-            const float seed = i * 2.39996f;
-            const float t = phase * 0.55f + seed;
-            lobes[i] = {
-                (k ? 1.0f - center : center) + 0.085f * std::sin(t),
-                (k ? 0.85f : 0.15f) + 0.09f * std::sin(t * 0.79f),
-                (0.18f + 0.28f * std::sqrt(share)) * (1.0f + 0.06f * std::sin(t)),
-                0.65f + 0.04f * std::cos(t * 0.83f),
-                share * 0.5f, D2D1::ColorF(color.r * color.r, color.g * color.g, color.b * color.b)};
-        }
+        total += (std::max)(0.0f, weights[j]);
+        // Keep the weak cover color beside the main reflection, not mixed into it.
+        lights[j] = AlbumGlowPoint(phase / 6.28318531f - j * 0.05f, width, height, radius);
     }
     GlowFieldPixels pixels{};
+    if (total <= 0) return pixels;
+    const float spread = (12.0f + 12.0f * energy) * scale;
     for (int y = 0; y < kGlowFieldHeight; ++y) {
-        const float v = (y + 0.5f) / kGlowFieldHeight;
-        const float warpX = 0.14f * std::sin(phase * 0.61f) +
-            0.065f * std::sin(v * 3.0f + phase * 0.52f);
         for (int x = 0; x < kGlowFieldWidth; ++x) {
-            const float u = (x + 0.5f) / kGlowFieldWidth + warpX;
-            const float warpedV = v + 0.14f * std::sin(u * 4.2f - phase * 0.43f);
-            float r = 0, g = 0, b = 0, total = 0;
-            for (int i = 0; i < count * 2; ++i) {
-                const auto& lobe = lobes[i];
-                const float dx = (u - lobe.x) / lobe.rx, dy = (warpedV - lobe.y) / lobe.ry;
-                const float q = 1.0f + dx * dx + dy * dy;
-                const float influence = lobe.weight / (q * q);
-                total += influence;
-                r += lobe.color.r * influence; g += lobe.color.g * influence; b += lobe.color.b * influence;
+            float red = 0, green = 0, blue = 0, alpha = 0;
+            for (int j = 0; j < count; ++j) {
+                const float dx = (x + 0.5f) / kGlowFieldWidth * width - lights[j].x;
+                const float dy = (y + 0.5f) / kGlowFieldHeight * height - lights[j].y;
+                const float glow = (0.275f + 0.15f * energy) * weights[j] / total *
+                    std::exp(-(dx*dx + dy*dy) / (2 * spread * spread));
+                alpha += glow;
+                red += colors[j].r * glow; green += colors[j].g * glow; blue += colors[j].b * glow;
             }
-            const size_t index = (y * kGlowFieldWidth + x) * 4;
-            if (total > 0) {
-                // Gamma-2 light mixing avoids dark, muddy joins between saturated colours.
-                pixels[index] = static_cast<uint8_t>(std::sqrt(Clamp(b / total, 0, 1)) * 255 + 0.5f);
-                pixels[index + 1] = static_cast<uint8_t>(std::sqrt(Clamp(g / total, 0, 1)) * 255 + 0.5f);
-                pixels[index + 2] = static_cast<uint8_t>(std::sqrt(Clamp(r / total, 0, 1)) * 255 + 0.5f);
-                pixels[index + 3] = 255;
-            }
+            const size_t i = (y * kGlowFieldWidth + x) * 4;
+            pixels[i] = static_cast<uint8_t>(Clamp(blue, 0, 1) * 255 + 0.5f);
+            pixels[i+1] = static_cast<uint8_t>(Clamp(green, 0, 1) * 255 + 0.5f);
+            pixels[i+2] = static_cast<uint8_t>(Clamp(red, 0, 1) * 255 + 0.5f);
+            pixels[i+3] = static_cast<uint8_t>(Clamp(alpha, 0, 1) * 255 + 0.5f);
         }
     }
     return pixels;
 }
-
 // END_ALBUM_GLOW_FLUID

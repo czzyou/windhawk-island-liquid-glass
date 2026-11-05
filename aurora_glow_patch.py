@@ -63,6 +63,7 @@ def apply_aurora_glow(src):
     src = src[:sample] + '    SampleAlbumGlow(pixels);\n' + src[sample:]
 
     change('class Renderer {',
+           (Path(__file__).parent / 'album-glow-motion.h').read_text(encoding='utf-8') + '\n\n' +
            (Path(__file__).parent / 'album-glow-fluid.h').read_text(encoding='utf-8') + '\n\nclass Renderer {')
 
     # 5. Expand album color extraction spectrum (unlock moody darks, soft pastels, warm earthy & vivid tones)
@@ -118,9 +119,17 @@ def apply_aurora_glow(src):
     ComPtr<ID2D1Bitmap> auroraGlowBitmap_;
     double lastGlowFieldTime_ = -1.0;
     float lastGlowFieldPhase_ = -1.0f;
+    float lastGlowEnergy_ = -1.0f;
+    float lastGlowWidth_ = 0.0f, lastGlowHeight_ = 0.0f, lastGlowRadius_ = 0.0f;
     uint64_t lastGlowArt_ = 0;
     D2D1_COLOR_F lastGlowAccent_{};
     bool lastGlowAuto_ = true;
+    std::array<D2D1_COLOR_F, 2> glowColors_{};
+    std::array<D2D1_COLOR_F, 2> glowStartColors_{};
+    std::array<D2D1_COLOR_F, 2> glowTargetColors_{};
+    double glowColorStart_ = -1.0;
+    bool glowColorAnimating_ = false;
+    GlowMotionState glowMotion_{};
     float glowPhase_ = 0.0f;
     bool glowMotionEnabled_ = true;
     double lastGlowMotionCheck_ = -1.0;
@@ -138,30 +147,33 @@ def apply_aurora_glow(src):
     # 9. Add DrawAmbientAuroraGlow method right before DrawSoftShadow
     glow_method = '''    // Ambient Aurora Glow.
     // Update once per frame, independently of how many pills are painted.
-    bool UpdateAmbientGlow(const Settings& settings, bool mediaShown, bool playing, double now) {
+    bool UpdateAmbientGlow(const Settings& settings, bool mediaShown, bool playing, float amplitude, double now) {
         const float target = settings.ambientAuroraGlow && mediaShown &&
             settings.ambientGlowIntensity > 0.005f && settings.backdropMaterial == BackdropMaterial::None
-            ? (playing ? 1.0f : 0.65f) : 0.0f;
+            ? (playing ? 1.0f : 0.25f) : 0.0f;
         if (lastGlowMotionCheck_ < 0 || now - lastGlowMotionCheck_ >= 1.0) {
             BOOL enabled = TRUE;
             if (SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &enabled, 0))
                 glowMotionEnabled_ = enabled != FALSE;
             lastGlowMotionCheck_ = now;
         }
-        const bool flowing = target > 0 && playing && glowMotionEnabled_;
-        if (flowing && lastGlowTime_ >= 0)
-            glowPhase_ += static_cast<float>((std::max)(0.0, (std::min)(now - lastGlowTime_, 0.1))) * 0.55f;
+        const double dt = lastGlowTime_ < 0.0 ? 0.0 : (std::max)(0.0, (std::min)(now - lastGlowTime_, 0.1));
+        const bool motionAnimating = UpdateGlowMotion(glowMotion_, amplitude,
+            target > 0 && playing, glowMotionEnabled_, dt);
+        if (target > 0.0f && glowMotionEnabled_ && glowMotion_.playback > 0.0f)
+            glowPhase_ += static_cast<float>(dt) * 0.785398f * glowMotion_.playback;
         const float previous = auroraGlowBlend_;
-        if (lastGlowTime_ < 0.0) {
+        if (!glowMotionEnabled_) {
             auroraGlowBlend_ = target;
+        } else if (lastGlowTime_ < 0.0) {
+            auroraGlowBlend_ = 0.0f;
         } else {
-            const double dt = (std::max)(0.0, (std::min)(now - lastGlowTime_, 0.1));
-            const float k = 1.0f - static_cast<float>(std::exp(-dt / 0.18));
+            const float k = 1.0f - static_cast<float>(std::exp(-dt / 0.10));
             auroraGlowBlend_ += (target - auroraGlowBlend_) * k;
             if (std::fabs(target - auroraGlowBlend_) <= 0.005f) auroraGlowBlend_ = target;
         }
         lastGlowTime_ = now;
-        return flowing || previous != auroraGlowBlend_ || auroraGlowBlend_ != target;
+        return motionAnimating || (target > 0 && glowColorAnimating_) || previous != auroraGlowBlend_ || auroraGlowBlend_ != target;
     }
 
     void DrawAmbientAuroraGlow(D2D1_RECT_F rect, float radius,
@@ -201,7 +213,7 @@ def apply_aurora_glow(src):
         const float offsetRatio = flushTop ? 0.16f : 0.08f;
         const float availBottom = (std::max)(0.0f, bitmapHeight_ - rect.bottom - 3.5f);
         const float availTop = (std::max)(0.0f, rect.top - 3.5f);
-        float spreadY = (std::min)(Clamp(5.5f * settings.sizeScale, 2.5f, 6.5f),
+        float spreadY = (std::min)(Clamp(4.5f * settings.sizeScale, 2.0f, 5.5f),
                                    availBottom / (1.0f + offsetRatio));
         if (!flushTop) spreadY = (std::min)(spreadY, availTop / (0.70f - offsetRatio));
         const float yOffset = spreadY * offsetRatio;
@@ -213,21 +225,41 @@ def apply_aurora_glow(src):
         const bool paletteChanged = lastGlowArt_ != art.generation || lastGlowAuto_ != autoColor ||
             (!autoColor && (lastGlowAccent_.r != glowColor.r || lastGlowAccent_.g != glowColor.g ||
                            lastGlowAccent_.b != glowColor.b));
-        const bool fieldDue = lastGlowFieldTime_ < 0 || now - lastGlowFieldTime_ >= 1.0 / 30.0;
-        if (!auroraGlowBitmap_ || paletteChanged || (fieldDue && lastGlowFieldPhase_ != glowPhase_)) {
-            const int colorCount = autoColor ? art.glowColorCount : 0;
-            const int count = (std::max)(1, colorCount);
-            std::array<D2D1_COLOR_F, 5> colors{};
-            std::array<float, 5> weights{};
-            for (int j = 0; j < count; ++j) {
-                colors[j] = colorCount ? art.glowColors[j] : glowColor;
-                weights[j] = colorCount ? art.glowWeights[j] : 1.0f;
-                const float peak = (std::max)({colors[j].r, colors[j].g, colors[j].b});
+        if (paletteChanged || glowColorStart_ < 0) {
+            glowStartColors_ = glowColors_;
+            const int colorCount = autoColor ? (std::min)(2, art.glowColorCount) : 0;
+            for (int j = 0; j < 2; ++j) {
+                auto color = colorCount ? art.glowColors[(std::min)(j, colorCount - 1)] : glowColor;
+                const float peak = (std::max)({color.r, color.g, color.b});
                 if (peak > 0.001f && peak < 0.35f) {
-                    colors[j].r *= 0.35f / peak; colors[j].g *= 0.35f / peak; colors[j].b *= 0.35f / peak;
+                    color.r *= 0.35f / peak; color.g *= 0.35f / peak; color.b *= 0.35f / peak;
                 }
+                const float gray = 0.2126f * color.r + 0.7152f * color.g + 0.0722f * color.b;
+                color.r = gray + (color.r - gray) * 0.90f;
+                color.g = gray + (color.g - gray) * 0.90f;
+                color.b = gray + (color.b - gray) * 0.90f;
+                glowTargetColors_[j] = color;
             }
-            const auto pixels = BuildAlbumGlowField(colors.data(), weights.data(), count, glowPhase_);
+            if (glowColorStart_ < 0) glowStartColors_ = glowTargetColors_;
+            glowColorStart_ = now;
+            lastGlowArt_ = art.generation; lastGlowAccent_ = glowColor; lastGlowAuto_ = autoColor;
+        }
+        const float colorMix = glowMotionEnabled_ ?
+            Clamp(static_cast<float>((now - glowColorStart_) / 0.5), 0.0f, 1.0f) : 1.0f;
+        if (paletteChanged) glowColorAnimating_ = true;
+        const bool fieldDue = lastGlowFieldTime_ < 0 || now - lastGlowFieldTime_ >= 1.0 / 30.0;
+        const float fieldWidth = rect.right - rect.left, fieldHeight = rect.bottom - rect.top;
+        const bool shapeChanged = fieldWidth != lastGlowWidth_ || fieldHeight != lastGlowHeight_ || radius != lastGlowRadius_;
+        if (!auroraGlowBitmap_ || shapeChanged || (fieldDue && (paletteChanged || glowColorAnimating_ ||
+                                                lastGlowFieldPhase_ != glowPhase_ || lastGlowEnergy_ != glowMotion_.energy))) {
+            for (int j = 0; j < 2; ++j) {
+                glowColors_[j].r = glowStartColors_[j].r + (glowTargetColors_[j].r - glowStartColors_[j].r) * colorMix;
+                glowColors_[j].g = glowStartColors_[j].g + (glowTargetColors_[j].g - glowStartColors_[j].g) * colorMix;
+                glowColors_[j].b = glowStartColors_[j].b + (glowTargetColors_[j].b - glowStartColors_[j].b) * colorMix;
+            }
+            glowColorAnimating_ = colorMix < 1.0f;
+            const float weights[] = {0.8f, 0.2f};
+            const auto pixels = BuildAlbumGlowField(glowColors_.data(), weights, 2, glowPhase_, fieldWidth, fieldHeight, radius, settings.sizeScale, glowMotion_.energy);
             const UINT pitch = kGlowFieldWidth * 4;
             if (!auroraGlowBitmap_) {
                 if (FAILED(target_->CreateBitmap(D2D1::SizeU(kGlowFieldWidth, kGlowFieldHeight),
@@ -235,14 +267,13 @@ def apply_aurora_glow(src):
                         DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)), &auroraGlowBitmap_))) return;
             } else if (FAILED(auroraGlowBitmap_->CopyFromMemory(nullptr, pixels.data(), pitch))) return;
             lastGlowFieldTime_ = now; lastGlowFieldPhase_ = glowPhase_;
-            lastGlowArt_ = art.generation; lastGlowAccent_ = glowColor; lastGlowAuto_ = autoColor;
+            lastGlowEnergy_ = glowMotion_.energy;
+            lastGlowWidth_ = fieldWidth; lastGlowHeight_ = fieldHeight; lastGlowRadius_ = radius;
         }
         if (!auroraGlowBrush_ && FAILED(target_->CreateBitmapBrush(auroraGlowBitmap_.Get(), &auroraGlowBrush_))) return;
-        const float fieldTop = flushTop ? rect.top : rect.top - spreadY * 0.70f + yOffset;
         auroraGlowBrush_->SetTransform(D2D1::Matrix3x2F::Scale(
-            (rect.right - rect.left + spreadX * 2) / kGlowFieldWidth,
-            (rect.bottom + spreadY + yOffset - fieldTop) / kGlowFieldHeight) *
-            D2D1::Matrix3x2F::Translation(rect.left - spreadX, fieldTop));
+            fieldWidth / kGlowFieldWidth, fieldHeight / kGlowFieldHeight) *
+            D2D1::Matrix3x2F::Translation(rect.left, rect.top));
 
         constexpr int kSteps = 10;
         const float compactFade = 1.0f - g_idleCompactBlend.load();
@@ -253,7 +284,7 @@ def apply_aurora_glow(src):
 
             // Concentric smooth falloff
             const float falloff = (1.0f - t) * (1.0f - t);
-            const float alpha = Clamp(0.085f * falloff * totalIntensity * compactFade, 0.0f, 1.0f);
+            const float alpha = Clamp(0.18f * falloff * totalIntensity * compactFade, 0.0f, 1.0f);
             if (alpha <= 0.0015f) {
                 continue;
             }
@@ -267,8 +298,29 @@ def apply_aurora_glow(src):
                 rect.right + growX,
                 rect.bottom + growY + yOffset
             );
-            FillIslandShape(glowRect, radius + growY, settings.w11Style,
-                            settings.notchStyle, auroraGlowBrush_.Get());
+            DrawIslandShape(glowRect, radius + growY, settings.w11Style,
+                            settings.notchStyle, auroraGlowBrush_.Get(), settings.sizeScale);
+        }
+    }
+
+'''
+    glow_method += '''    void DrawAmbientAuroraRim(D2D1_RECT_F rect, float radius, IslandKind kind, const Settings& settings) {
+        if (kind != IslandKind::Media || settings.backdropMaterial != BackdropMaterial::None ||
+            !auroraGlowBrush_ || auroraGlowBlend_ <= 0.005f) return;
+        const float band = Clamp((std::min)(rect.right - rect.left, rect.bottom - rect.top) / 8.0f,
+                                 3.0f * settings.sizeScale, 10.0f * settings.sizeScale);
+        const float stroke = band / 10.0f;
+        const float normalization = 0.24f * (0.7f + 0.3f * glowMotion_.energy) /
+                                    (0.275f + 0.15f * glowMotion_.energy);
+        // Paint only the narrow rim; no cover-colored layer reaches the flat center.
+        for (int i = 0; i < 10; ++i) {
+            const float t = (i + 0.5f) / 10.0f;
+            const float inset = band * t;
+            const auto rim = D2D1::RectF(rect.left + inset, rect.top + inset, rect.right - inset, rect.bottom - inset);
+            auroraGlowBrush_->SetOpacity(Clamp(normalization * (1-t) * (1-t) *
+                settings.ambientGlowIntensity * auroraGlowBlend_ * settingsOpacity_, 0.0f, 1.0f));
+            DrawIslandShape(rim, (std::max)(0.0f, radius - inset), settings.w11Style, settings.notchStyle,
+                            auroraGlowBrush_.Get(), stroke);
         }
     }
 
@@ -280,7 +332,8 @@ def apply_aurora_glow(src):
 
     change('''        const bool continuousAnimation =
             mediaAnimating ||''', '''        const bool glowAnimating = renderer.UpdateAmbientGlow(
-            g_settings, mediaShown, snapshot.media.playing, now);
+            g_settings, mediaShown, snapshot.media.playing,
+            snapshot.waveformWrite ? snapshot.waveform[(snapshot.waveformWrite - 1) % snapshot.waveform.size()] : 0.0f, now);
         const bool continuousAnimation =
             glowAnimating || mediaAnimating ||''')
 
@@ -306,7 +359,11 @@ def apply_aurora_glow(src):
         DrawSoftShadow(rect, radius);''',
            '''        nativeGlass_.Sync(rect.left, rect.top, rect.right, rect.bottom, radius,
             settings.sizeScale, settings.pillOpacity);
-        DrawAmbientAuroraGlow(rect, radius, state, settings, activity.kind, now);
-        DrawSoftShadow(rect, radius);''')
+        DrawSoftShadow(rect, radius);
+        DrawAmbientAuroraGlow(rect, radius, state, settings, activity.kind, now);''')
+
+    change('''        DrawPillSurface(rect, radius, activity.kind, settings);''',
+           '''        DrawPillSurface(rect, radius, activity.kind, settings);
+        DrawAmbientAuroraRim(rect, radius, activity.kind, settings);''')
 
     return src

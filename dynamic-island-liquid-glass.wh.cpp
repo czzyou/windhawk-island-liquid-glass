@@ -2,7 +2,7 @@
 // @id              dynamic-island-liquid-glass
 // @name            灵动岛 · 液态玻璃
 // @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.5.15
+// @version         1.5.16
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -8868,8 +8868,8 @@ DWORD WINAPI AudioThreadProc(void*) {
     HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
     while (WaitForSingleObject(g_stopEvent, 0) == WAIT_TIMEOUT) {
-        // Don't touch the audio engine at all unless a playing waveform is
-        // actually going to be shown right now. Cheap poll, no capture open.
+        // Share loopback samples between the waveform and glass-edge lighting.
+        // The render loop gates capture on visible, playing media.
         if (!g_audioCaptureNeeded.load(std::memory_order_relaxed)) {
             WaitForSingleObject(g_stopEvent, 250);
             continue;
@@ -13352,65 +13352,99 @@ std::array<D2D1_GRADIENT_STOP, 7> LiquidGlassRimStops() {
     }};
 }
 
+struct GlowMotionState {
+    float energy = 0.0f;
+    float playback = 0.0f;
+    bool flowing = false;
+};
+
+static bool UpdateGlowMotion(GlowMotionState& state, float amplitude, bool playing,
+                             bool motionEnabled, double dt) {
+    state.flowing = playing && motionEnabled;
+    if (!motionEnabled) {
+        const bool changed = state.energy != 0.0f || state.playback != (playing ? 1.0f : 0.0f);
+        state.energy = 0.0f;
+        state.playback = playing ? 1.0f : 0.0f;
+        return changed;
+    }
+    const float target = playing ? std::sqrt((std::clamp)(amplitude, 0.0f, 1.0f)) : 0.0f;
+    const float previousEnergy = state.energy;
+    const float previousPlayback = state.playback;
+    // Integrate several audio samples so individual drum hits cannot flash the rim.
+    const float energyTime = target > state.energy ? 0.45f : 0.9f;
+    state.energy += (target - state.energy) * (1.0f - static_cast<float>(std::exp(-dt / energyTime)));
+    const float playbackTarget = playing ? 1.0f : 0.0f;
+    state.playback += (playbackTarget - state.playback) *
+        (1.0f - static_cast<float>(std::exp(-dt / 0.10)));
+    if (std::fabs(state.energy - target) < 0.001f) state.energy = target;
+    if (std::fabs(state.playback - playbackTarget) < 0.005f) state.playback = playbackTarget;
+    return state.flowing || state.energy != previousEnergy || state.playback != previousPlayback;
+}
+// END_ALBUM_GLOW_MOTION
+
+
 // Subtle ambient light, guided by https://developer.apple.com/videos/play/wwdc2025/219/.
 // Original field implementation, not Apple's material renderer.
-constexpr int kGlowFieldWidth = 160, kGlowFieldHeight = 48;
+constexpr int kGlowFieldWidth = 320, kGlowFieldHeight = 96;
 using GlowFieldPixels = std::array<uint8_t, kGlowFieldWidth * kGlowFieldHeight * 4>;
 
+// Constant-speed clockwise travel along straight edges and circular corners.
+static D2D1_POINT_2F AlbumGlowPoint(float position, float width, float height, float radius) {
+    const float r = (std::min)(radius, (std::min)(width, height) * 0.5f);
+    const float a = width * 0.5f - r, b = height * 0.5f - r;
+    const float quarter = a + b + 1.57079633f * r;
+    const float turn = (position - std::floor(position)) * 4.0f;
+    const int quadrant = static_cast<int>(turn);
+    const float fraction = turn - quadrant;
+    const float distance = ((quadrant & 1) ? 1.0f - fraction : fraction) * quarter;
+    float x, y;
+    if (distance <= a) {
+        x = distance; y = -height * 0.5f;
+    } else if (distance < a + 1.57079633f * r) {
+        const float angle = (distance - a) / r;
+        x = a + r * std::sin(angle); y = -b - r * std::cos(angle);
+    } else {
+        x = width * 0.5f; y = -b + distance - a - 1.57079633f * r;
+    }
+    if (quadrant >= 2) x = -x;
+    if (quadrant == 1 || quadrant == 2) y = -y;
+    return D2D1::Point2F(width * 0.5f + x, height * 0.5f + y);
+}
+
 static GlowFieldPixels BuildAlbumGlowField(const D2D1_COLOR_F* colors,
-    const float* weights, int count, float phase) {
-    struct Lobe { float x, y, rx, ry, weight; D2D1_COLOR_F color; };
-    std::array<Lobe, 10> lobes{};
-    count = (std::max)(0, (std::min)(5, count));
-    float weightSum = 0, accumulated = 0;
-    for (int j = 0; j < count; ++j) weightSum += (std::max)(0.0f, weights[j]);
+    const float* weights, int count, float phase, float width, float height, float radius,
+    float scale = 1.0f, float energy = 0.0f) {
+    count = (std::max)(0, (std::min)(2, count));
+    float total = 0;
+    std::array<D2D1_POINT_2F, 2> lights{};
     for (int j = 0; j < count; ++j) {
-        const float share = weightSum > 0 ? (std::max)(0.0f, weights[j]) / weightSum : 0;
-        const float center = accumulated + share * 0.5f;
-        accumulated += share;
-        const auto color = colors[j];
-        for (int k = 0; k < 2; ++k) {
-            const int i = j * 2 + k;
-            const float seed = i * 2.39996f;
-            const float t = phase * 0.55f + seed;
-            lobes[i] = {
-                (k ? 1.0f - center : center) + 0.085f * std::sin(t),
-                (k ? 0.85f : 0.15f) + 0.09f * std::sin(t * 0.79f),
-                (0.18f + 0.28f * std::sqrt(share)) * (1.0f + 0.06f * std::sin(t)),
-                0.65f + 0.04f * std::cos(t * 0.83f),
-                share * 0.5f, D2D1::ColorF(color.r * color.r, color.g * color.g, color.b * color.b)};
-        }
+        total += (std::max)(0.0f, weights[j]);
+        // Keep the weak cover color beside the main reflection, not mixed into it.
+        lights[j] = AlbumGlowPoint(phase / 6.28318531f - j * 0.05f, width, height, radius);
     }
     GlowFieldPixels pixels{};
+    if (total <= 0) return pixels;
+    const float spread = (12.0f + 12.0f * energy) * scale;
     for (int y = 0; y < kGlowFieldHeight; ++y) {
-        const float v = (y + 0.5f) / kGlowFieldHeight;
-        const float warpX = 0.14f * std::sin(phase * 0.61f) +
-            0.065f * std::sin(v * 3.0f + phase * 0.52f);
         for (int x = 0; x < kGlowFieldWidth; ++x) {
-            const float u = (x + 0.5f) / kGlowFieldWidth + warpX;
-            const float warpedV = v + 0.14f * std::sin(u * 4.2f - phase * 0.43f);
-            float r = 0, g = 0, b = 0, total = 0;
-            for (int i = 0; i < count * 2; ++i) {
-                const auto& lobe = lobes[i];
-                const float dx = (u - lobe.x) / lobe.rx, dy = (warpedV - lobe.y) / lobe.ry;
-                const float q = 1.0f + dx * dx + dy * dy;
-                const float influence = lobe.weight / (q * q);
-                total += influence;
-                r += lobe.color.r * influence; g += lobe.color.g * influence; b += lobe.color.b * influence;
+            float red = 0, green = 0, blue = 0, alpha = 0;
+            for (int j = 0; j < count; ++j) {
+                const float dx = (x + 0.5f) / kGlowFieldWidth * width - lights[j].x;
+                const float dy = (y + 0.5f) / kGlowFieldHeight * height - lights[j].y;
+                const float glow = (0.275f + 0.15f * energy) * weights[j] / total *
+                    std::exp(-(dx*dx + dy*dy) / (2 * spread * spread));
+                alpha += glow;
+                red += colors[j].r * glow; green += colors[j].g * glow; blue += colors[j].b * glow;
             }
-            const size_t index = (y * kGlowFieldWidth + x) * 4;
-            if (total > 0) {
-                // Gamma-2 light mixing avoids dark, muddy joins between saturated colours.
-                pixels[index] = static_cast<uint8_t>(std::sqrt(Clamp(b / total, 0, 1)) * 255 + 0.5f);
-                pixels[index + 1] = static_cast<uint8_t>(std::sqrt(Clamp(g / total, 0, 1)) * 255 + 0.5f);
-                pixels[index + 2] = static_cast<uint8_t>(std::sqrt(Clamp(r / total, 0, 1)) * 255 + 0.5f);
-                pixels[index + 3] = 255;
-            }
+            const size_t i = (y * kGlowFieldWidth + x) * 4;
+            pixels[i] = static_cast<uint8_t>(Clamp(blue, 0, 1) * 255 + 0.5f);
+            pixels[i+1] = static_cast<uint8_t>(Clamp(green, 0, 1) * 255 + 0.5f);
+            pixels[i+2] = static_cast<uint8_t>(Clamp(red, 0, 1) * 255 + 0.5f);
+            pixels[i+3] = static_cast<uint8_t>(Clamp(alpha, 0, 1) * 255 + 0.5f);
         }
     }
     return pixels;
 }
-
 // END_ALBUM_GLOW_FLUID
 
 
@@ -13501,30 +13535,33 @@ class Renderer {
 
     // Ambient Aurora Glow.
     // Update once per frame, independently of how many pills are painted.
-    bool UpdateAmbientGlow(const Settings& settings, bool mediaShown, bool playing, double now) {
+    bool UpdateAmbientGlow(const Settings& settings, bool mediaShown, bool playing, float amplitude, double now) {
         const float target = settings.ambientAuroraGlow && mediaShown &&
             settings.ambientGlowIntensity > 0.005f && settings.backdropMaterial == BackdropMaterial::None
-            ? (playing ? 1.0f : 0.65f) : 0.0f;
+            ? (playing ? 1.0f : 0.25f) : 0.0f;
         if (lastGlowMotionCheck_ < 0 || now - lastGlowMotionCheck_ >= 1.0) {
             BOOL enabled = TRUE;
             if (SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &enabled, 0))
                 glowMotionEnabled_ = enabled != FALSE;
             lastGlowMotionCheck_ = now;
         }
-        const bool flowing = target > 0 && playing && glowMotionEnabled_;
-        if (flowing && lastGlowTime_ >= 0)
-            glowPhase_ += static_cast<float>((std::max)(0.0, (std::min)(now - lastGlowTime_, 0.1))) * 0.55f;
+        const double dt = lastGlowTime_ < 0.0 ? 0.0 : (std::max)(0.0, (std::min)(now - lastGlowTime_, 0.1));
+        const bool motionAnimating = UpdateGlowMotion(glowMotion_, amplitude,
+            target > 0 && playing, glowMotionEnabled_, dt);
+        if (target > 0.0f && glowMotionEnabled_ && glowMotion_.playback > 0.0f)
+            glowPhase_ += static_cast<float>(dt) * 0.785398f * glowMotion_.playback;
         const float previous = auroraGlowBlend_;
-        if (lastGlowTime_ < 0.0) {
+        if (!glowMotionEnabled_) {
             auroraGlowBlend_ = target;
+        } else if (lastGlowTime_ < 0.0) {
+            auroraGlowBlend_ = 0.0f;
         } else {
-            const double dt = (std::max)(0.0, (std::min)(now - lastGlowTime_, 0.1));
-            const float k = 1.0f - static_cast<float>(std::exp(-dt / 0.18));
+            const float k = 1.0f - static_cast<float>(std::exp(-dt / 0.10));
             auroraGlowBlend_ += (target - auroraGlowBlend_) * k;
             if (std::fabs(target - auroraGlowBlend_) <= 0.005f) auroraGlowBlend_ = target;
         }
         lastGlowTime_ = now;
-        return flowing || previous != auroraGlowBlend_ || auroraGlowBlend_ != target;
+        return motionAnimating || (target > 0 && glowColorAnimating_) || previous != auroraGlowBlend_ || auroraGlowBlend_ != target;
     }
 
     bool Render(const SharedState& state, const Settings& settings, const Activity& primary,
@@ -14273,10 +14310,11 @@ class Renderer {
         }
         nativeGlass_.Sync(rect.left, rect.top, rect.right, rect.bottom, radius,
             settings.sizeScale, settings.pillOpacity);
-        DrawAmbientAuroraGlow(rect, radius, state, settings, activity.kind, now);
         DrawSoftShadow(rect, radius);
+        DrawAmbientAuroraGlow(rect, radius, state, settings, activity.kind, now);
 
         DrawPillSurface(rect, radius, activity.kind, settings);
+        DrawAmbientAuroraRim(rect, radius, activity.kind, settings);
 
         if (activity.kind == IslandKind::Progress) {
             DrawProgressRing(rect, state.progress.percent);
@@ -14406,7 +14444,7 @@ class Renderer {
         const float offsetRatio = flushTop ? 0.16f : 0.08f;
         const float availBottom = (std::max)(0.0f, bitmapHeight_ - rect.bottom - 3.5f);
         const float availTop = (std::max)(0.0f, rect.top - 3.5f);
-        float spreadY = (std::min)(Clamp(5.5f * settings.sizeScale, 2.5f, 6.5f),
+        float spreadY = (std::min)(Clamp(4.5f * settings.sizeScale, 2.0f, 5.5f),
                                    availBottom / (1.0f + offsetRatio));
         if (!flushTop) spreadY = (std::min)(spreadY, availTop / (0.70f - offsetRatio));
         const float yOffset = spreadY * offsetRatio;
@@ -14418,21 +14456,41 @@ class Renderer {
         const bool paletteChanged = lastGlowArt_ != art.generation || lastGlowAuto_ != autoColor ||
             (!autoColor && (lastGlowAccent_.r != glowColor.r || lastGlowAccent_.g != glowColor.g ||
                            lastGlowAccent_.b != glowColor.b));
-        const bool fieldDue = lastGlowFieldTime_ < 0 || now - lastGlowFieldTime_ >= 1.0 / 30.0;
-        if (!auroraGlowBitmap_ || paletteChanged || (fieldDue && lastGlowFieldPhase_ != glowPhase_)) {
-            const int colorCount = autoColor ? art.glowColorCount : 0;
-            const int count = (std::max)(1, colorCount);
-            std::array<D2D1_COLOR_F, 5> colors{};
-            std::array<float, 5> weights{};
-            for (int j = 0; j < count; ++j) {
-                colors[j] = colorCount ? art.glowColors[j] : glowColor;
-                weights[j] = colorCount ? art.glowWeights[j] : 1.0f;
-                const float peak = (std::max)({colors[j].r, colors[j].g, colors[j].b});
+        if (paletteChanged || glowColorStart_ < 0) {
+            glowStartColors_ = glowColors_;
+            const int colorCount = autoColor ? (std::min)(2, art.glowColorCount) : 0;
+            for (int j = 0; j < 2; ++j) {
+                auto color = colorCount ? art.glowColors[(std::min)(j, colorCount - 1)] : glowColor;
+                const float peak = (std::max)({color.r, color.g, color.b});
                 if (peak > 0.001f && peak < 0.35f) {
-                    colors[j].r *= 0.35f / peak; colors[j].g *= 0.35f / peak; colors[j].b *= 0.35f / peak;
+                    color.r *= 0.35f / peak; color.g *= 0.35f / peak; color.b *= 0.35f / peak;
                 }
+                const float gray = 0.2126f * color.r + 0.7152f * color.g + 0.0722f * color.b;
+                color.r = gray + (color.r - gray) * 0.90f;
+                color.g = gray + (color.g - gray) * 0.90f;
+                color.b = gray + (color.b - gray) * 0.90f;
+                glowTargetColors_[j] = color;
             }
-            const auto pixels = BuildAlbumGlowField(colors.data(), weights.data(), count, glowPhase_);
+            if (glowColorStart_ < 0) glowStartColors_ = glowTargetColors_;
+            glowColorStart_ = now;
+            lastGlowArt_ = art.generation; lastGlowAccent_ = glowColor; lastGlowAuto_ = autoColor;
+        }
+        const float colorMix = glowMotionEnabled_ ?
+            Clamp(static_cast<float>((now - glowColorStart_) / 0.5), 0.0f, 1.0f) : 1.0f;
+        if (paletteChanged) glowColorAnimating_ = true;
+        const bool fieldDue = lastGlowFieldTime_ < 0 || now - lastGlowFieldTime_ >= 1.0 / 30.0;
+        const float fieldWidth = rect.right - rect.left, fieldHeight = rect.bottom - rect.top;
+        const bool shapeChanged = fieldWidth != lastGlowWidth_ || fieldHeight != lastGlowHeight_ || radius != lastGlowRadius_;
+        if (!auroraGlowBitmap_ || shapeChanged || (fieldDue && (paletteChanged || glowColorAnimating_ ||
+                                                lastGlowFieldPhase_ != glowPhase_ || lastGlowEnergy_ != glowMotion_.energy))) {
+            for (int j = 0; j < 2; ++j) {
+                glowColors_[j].r = glowStartColors_[j].r + (glowTargetColors_[j].r - glowStartColors_[j].r) * colorMix;
+                glowColors_[j].g = glowStartColors_[j].g + (glowTargetColors_[j].g - glowStartColors_[j].g) * colorMix;
+                glowColors_[j].b = glowStartColors_[j].b + (glowTargetColors_[j].b - glowStartColors_[j].b) * colorMix;
+            }
+            glowColorAnimating_ = colorMix < 1.0f;
+            const float weights[] = {0.8f, 0.2f};
+            const auto pixels = BuildAlbumGlowField(glowColors_.data(), weights, 2, glowPhase_, fieldWidth, fieldHeight, radius, settings.sizeScale, glowMotion_.energy);
             const UINT pitch = kGlowFieldWidth * 4;
             if (!auroraGlowBitmap_) {
                 if (FAILED(target_->CreateBitmap(D2D1::SizeU(kGlowFieldWidth, kGlowFieldHeight),
@@ -14440,14 +14498,13 @@ class Renderer {
                         DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)), &auroraGlowBitmap_))) return;
             } else if (FAILED(auroraGlowBitmap_->CopyFromMemory(nullptr, pixels.data(), pitch))) return;
             lastGlowFieldTime_ = now; lastGlowFieldPhase_ = glowPhase_;
-            lastGlowArt_ = art.generation; lastGlowAccent_ = glowColor; lastGlowAuto_ = autoColor;
+            lastGlowEnergy_ = glowMotion_.energy;
+            lastGlowWidth_ = fieldWidth; lastGlowHeight_ = fieldHeight; lastGlowRadius_ = radius;
         }
         if (!auroraGlowBrush_ && FAILED(target_->CreateBitmapBrush(auroraGlowBitmap_.Get(), &auroraGlowBrush_))) return;
-        const float fieldTop = flushTop ? rect.top : rect.top - spreadY * 0.70f + yOffset;
         auroraGlowBrush_->SetTransform(D2D1::Matrix3x2F::Scale(
-            (rect.right - rect.left + spreadX * 2) / kGlowFieldWidth,
-            (rect.bottom + spreadY + yOffset - fieldTop) / kGlowFieldHeight) *
-            D2D1::Matrix3x2F::Translation(rect.left - spreadX, fieldTop));
+            fieldWidth / kGlowFieldWidth, fieldHeight / kGlowFieldHeight) *
+            D2D1::Matrix3x2F::Translation(rect.left, rect.top));
 
         constexpr int kSteps = 10;
         const float compactFade = 1.0f - g_idleCompactBlend.load();
@@ -14458,7 +14515,7 @@ class Renderer {
 
             // Concentric smooth falloff
             const float falloff = (1.0f - t) * (1.0f - t);
-            const float alpha = Clamp(0.085f * falloff * totalIntensity * compactFade, 0.0f, 1.0f);
+            const float alpha = Clamp(0.18f * falloff * totalIntensity * compactFade, 0.0f, 1.0f);
             if (alpha <= 0.0015f) {
                 continue;
             }
@@ -14472,8 +14529,28 @@ class Renderer {
                 rect.right + growX,
                 rect.bottom + growY + yOffset
             );
-            FillIslandShape(glowRect, radius + growY, settings.w11Style,
-                            settings.notchStyle, auroraGlowBrush_.Get());
+            DrawIslandShape(glowRect, radius + growY, settings.w11Style,
+                            settings.notchStyle, auroraGlowBrush_.Get(), settings.sizeScale);
+        }
+    }
+
+    void DrawAmbientAuroraRim(D2D1_RECT_F rect, float radius, IslandKind kind, const Settings& settings) {
+        if (kind != IslandKind::Media || settings.backdropMaterial != BackdropMaterial::None ||
+            !auroraGlowBrush_ || auroraGlowBlend_ <= 0.005f) return;
+        const float band = Clamp((std::min)(rect.right - rect.left, rect.bottom - rect.top) / 8.0f,
+                                 3.0f * settings.sizeScale, 10.0f * settings.sizeScale);
+        const float stroke = band / 10.0f;
+        const float normalization = 0.24f * (0.7f + 0.3f * glowMotion_.energy) /
+                                    (0.275f + 0.15f * glowMotion_.energy);
+        // Paint only the narrow rim; no cover-colored layer reaches the flat center.
+        for (int i = 0; i < 10; ++i) {
+            const float t = (i + 0.5f) / 10.0f;
+            const float inset = band * t;
+            const auto rim = D2D1::RectF(rect.left + inset, rect.top + inset, rect.right - inset, rect.bottom - inset);
+            auroraGlowBrush_->SetOpacity(Clamp(normalization * (1-t) * (1-t) *
+                settings.ambientGlowIntensity * auroraGlowBlend_ * settingsOpacity_, 0.0f, 1.0f));
+            DrawIslandShape(rim, (std::max)(0.0f, radius - inset), settings.w11Style, settings.notchStyle,
+                            auroraGlowBrush_.Get(), stroke);
         }
     }
 
@@ -19424,9 +19501,17 @@ public:
     ComPtr<ID2D1Bitmap> auroraGlowBitmap_;
     double lastGlowFieldTime_ = -1.0;
     float lastGlowFieldPhase_ = -1.0f;
+    float lastGlowEnergy_ = -1.0f;
+    float lastGlowWidth_ = 0.0f, lastGlowHeight_ = 0.0f, lastGlowRadius_ = 0.0f;
     uint64_t lastGlowArt_ = 0;
     D2D1_COLOR_F lastGlowAccent_{};
     bool lastGlowAuto_ = true;
+    std::array<D2D1_COLOR_F, 2> glowColors_{};
+    std::array<D2D1_COLOR_F, 2> glowStartColors_{};
+    std::array<D2D1_COLOR_F, 2> glowTargetColors_{};
+    double glowColorStart_ = -1.0;
+    bool glowColorAnimating_ = false;
+    GlowMotionState glowMotion_{};
     float glowPhase_ = 0.0f;
     bool glowMotionEnabled_ = true;
     double lastGlowMotionCheck_ = -1.0;
@@ -21641,7 +21726,8 @@ DWORD WINAPI RenderThreadProc(void*) {
         const bool countdownBarsOn = g_settings.statusCountdownProgress;
 
         const bool glowAnimating = renderer.UpdateAmbientGlow(
-            g_settings, mediaShown, snapshot.media.playing, now);
+            g_settings, mediaShown, snapshot.media.playing,
+            snapshot.waveformWrite ? snapshot.waveform[(snapshot.waveformWrite - 1) % snapshot.waveform.size()] : 0.0f, now);
         const bool continuousAnimation =
             glowAnimating || mediaAnimating || isTransientPill(primary.kind) ||
             (secondary && isTransientPill(secondary->kind)) ||

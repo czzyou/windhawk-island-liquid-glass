@@ -323,6 +323,10 @@ from native_glass_patch import apply_native_glass
 src = apply_native_glass(src)
 from aurora_glow_patch import apply_aurora_glow
 src = apply_aurora_glow(src)
+replace('''        // Don't touch the audio engine at all unless a playing waveform is
+        // actually going to be shown right now. Cheap poll, no capture open.''',
+        '''        // Share loopback samples between the waveform and glass-edge lighting.
+        // The render loop gates capture on visible, playing media.''')
 from timer_patch import apply_timer
 src = apply_timer(src)
 from timer_ui_patch import apply_timer_ui
@@ -441,6 +445,7 @@ clang=compiler/'bin/clang++.exe'
 
 glow_test = (root/'aurora-glow-checks.inc').read_text(encoding='utf-8')
 for marker, begin, end in (
+    ('MOTION', 'struct GlowMotionState {', '// END_ALBUM_GLOW_MOTION'),
     ('FLUID', 'constexpr int kGlowFieldWidth =', '// END_ALBUM_GLOW_FLUID'),
     ('BITMAP', 'struct BitmapPixels {', '\n\n'),
     ('PALETTE', 'static void SampleAlbumGlow(', '\n\nbool DecodeImageBytesToPixels('),
@@ -456,7 +461,7 @@ assert 'glowAnimating || mediaAnimating' in src
 (root/'aurora-glow-checks.cpp').write_text(glow_test, encoding='utf-8')
 subprocess.run([str(clang),'-std=c++23','-static',str(root/'aurora-glow-checks.cpp'),'-o',str(root/'aurora-glow-checks.exe')],cwd=compiler,check=True)
 subprocess.run([str(root/'aurora-glow-checks.exe')],check=True)
-print('Aurora glow checks passed: area-weighted palette, liquid motion, pause, toggle, contrast and bounds', flush=True)
+print('Aurora glow checks passed: glass-edge motion, music smoothing, pause, reduced motion, palette transition and bounds', flush=True)
 
 waveform_start = src.index('    void DrawWaveform(')
 waveform_end = src.index('\n    void DrawCountdownProgress', waveform_start)
