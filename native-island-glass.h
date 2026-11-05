@@ -74,7 +74,7 @@ public:
         params.cornerRadius = radius;
         params.blurSigma = 0.9f * dpr;
         params.displacementScale = 70;
-        params.aberrationIntensity = 0.7f;
+        params.aberrationIntensity = 0.03f;
         params.saturation = 1.08f;
         params.opacity = opacity;
         auto& session = GlassSession::Instance();

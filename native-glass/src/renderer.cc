@@ -55,22 +55,19 @@ float sdRoundRect(float2 p, float2 halfSize, float r) {
   return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
 }
 
-// Smooth max(q,0): the normal direction rotates continuously through corner
-// regions, removing the directional crease along the diagonal
-float2 softClamp(float2 q, float soft) {
-  return 0.5 * (q + sqrt(q * q + soft * soft));
+float GlassRimProfile(float t) {
+  return pow(1.0 - saturate(t), 2.6);
 }
 
-// Rounded-rectangle normals bend the whole inset surface; the original rim stays untouched.
-float2 GlassInteriorOffset(float2 p, float2 halfSize, float r, float depth, float bezel) {
-  float halfMin = min(halfSize.x, halfSize.y);
-  float t = saturate((depth - bezel) / max(halfMin - bezel, 1e-4));
-  float eased = t * t * (3.0 - 2.0 * t);
-  float profile = 4.0 * eased * (1.0 - eased);
-  float soft = max(r * 0.15, 1.0);
-  float2 qs = softClamp(abs(p) - halfSize + r, soft);
-  float2 direction = (qs / max(length(qs), 1e-4)) * (p / sqrt(p * p + soft * soft));
-  return -direction * (0.08 * halfMin * profile);
+// A thick inward-facing rim; the flat center never displaces the backdrop.
+float2 GlassRimOffset(float2 p, float2 halfSize, float r, float depth, float bezel, float maxBend) {
+  if (depth < 0.0 || depth >= bezel) return float2(0, 0);
+  float2 q = abs(p) - halfSize + r;
+  float2 direction = max(q, 0.0);
+  float len = length(direction);
+  direction = len > 1e-4 ? direction / len : (q.x > q.y ? float2(1, 0) : float2(0, 1));
+  direction = direction * (p / max(abs(p), 1e-4));
+  return -direction * (maxBend * GlassRimProfile(depth / bezel));
 }
 
 float2 toBlurUV(float2 px) {
@@ -89,67 +86,34 @@ float4 PSLens(float4 pos : SV_Position) : SV_Target {
   float coverage = saturate(0.5 - sd);
   if (coverage <= 0.0) return float4(0, 0, 0, 0);
 
-  // C2 meniscus profile joins both the boundary and clear center without a crease.
   float depth = -sd;
-  float2 disp = float2(0, 0);
-  float2 nrm = float2(0, 0);
-  float bump = 0.0;
-  float edgeW = 0.0;
-  if (depth > 0.0 && depth < bezel) {
-    float2 q = abs(p) - halfSize + r;
-    // Normal direction blends smoothly through corners (softness on the order
-    // of the corner radius); displacement rotates continuously in corner areas
-    float2 qs = softClamp(q, max(r * 0.8, 1.0));
-    nrm = (qs / max(length(qs), 1e-4)) * sign(p + float2(1e-6, 1e-6));
-    float t = depth / bezel;
-    edgeW = (1.0 - t) * (1.0 - t);
-    float u = saturate(t < 0.42 ? t / 0.42 : (1.0 - t) / 0.58);
-    bump = u * u * u * (u * (u * 6.0 - 15.0) + 10.0);
-    disp = nrm * (bump * maxBend * min(dispFactor, 1.0));
-  }
-
-  float2 lensCss = css + GlassInteriorOffset(p, halfSize, r, depth, bezel);
-
-  // Integrate the compressed footprint; offsets vanish with the bump so the
-  // five taps converge to the clear-center sample without a threshold jump.
-  float3 c;
-  float dispLen2 = dot(disp, disp);
-  float2 chroma = nrm * (bump * aberration);
-  if (bump > 0.0) {
-    float2 tangent = float2(nrm.y, -nrm.x) * sqrt(dispLen2);
-    float rs = 0.05 + 0.10 * bump;
-    float radial[5] = { 1.0 - 2.0 * rs, 1.0 - rs, 1.0, 1.0 + rs, 1.0 + 2.0 * rs };
-    const float lateral[5] = { -0.36, 0.18, 0.0, -0.18, 0.36 };
-    const float wts[5] = { 0.14, 0.22, 0.28, 0.22, 0.14 };
-    c = float3(0, 0, 0);
-    [unroll] for (int i = 0; i < 5; ++i) {
-      float2 d = disp * radial[i] + tangent * lateral[i];
-      c += wts[i] * float3(
-          tex.Sample(smp, toBlurUV(lensCss + d + chroma)).r,
-          tex.Sample(smp, toBlurUV(lensCss + d)).g,
-          tex.Sample(smp, toBlurUV(lensCss + d - chroma)).b);
-    }
-  } else {
-    c = tex.Sample(smp, toBlurUV(lensCss + disp)).rgb;
-  }
+  float2 disp = GlassRimOffset(p, halfSize, r, depth, bezel, maxBend) * min(dispFactor, 1.0);
+  float2 nrm = -disp / max(length(disp), 1e-4);
+  float edgeW = pow(1.0 - saturate(depth / bezel), 2.0);
+  float2 lensCss = css;
+  float2 chroma = disp * aberration;
+  float3 c = float3(
+      tex.Sample(smp, toBlurUV(lensCss + disp + chroma)).r,
+      tex.Sample(smp, toBlurUV(lensCss + disp)).g,
+      tex.Sample(smp, toBlurUV(lensCss + disp - chroma)).b);
   // Clear glass keeps full-resolution detail throughout, with a little interior softness.
   float3 sharp = float3(
       sharpTex.Sample(smp, toBlurUV(lensCss + disp + chroma)).r,
       sharpTex.Sample(smp, toBlurUV(lensCss + disp)).g,
       sharpTex.Sample(smp, toBlurUV(lensCss + disp - chroma)).b);
   if (hdrSource > 0.5) sharp = scRGBToDisplay(sharp);
-  float sharpMix = 0.85 + 0.15 * (1.0 - smoothstep(0.0, 1.0, saturate(depth / bezel)));
+  float sharpMix = 0.80 + 0.20 * (1.0 - smoothstep(0.0, 1.0, saturate(depth / bezel)));
   c = lerp(c, sharp, sharpMix);
   float lum = dot(c, float3(0.213, 0.715, 0.072));
   c = lerp(lum.xxx, c, saturation);
 
   // Broad rim lighting hugging the boundary (light from top-left): a soft
-  // specular lift on the light-facing rim and a faint shade opposite — the
+  // specular lift on the light-facing rim and a softer fill opposite — the
   // "physical thickness" cue of iOS glass. Weighted by edgeW (max at the
   // boundary, C¹ fade inward) independently of the displacement bump. Thin
   // sharp border rings stay the content layer's job.
   float lightDot = dot(nrm, float2(-0.40, -0.92));
-  c = saturate(c + edgeW * (0.09 * saturate(lightDot) - 0.04 * saturate(-lightDot)));
+  c = saturate(c + edgeW * (0.10 * saturate(lightDot) + 0.015 * saturate(-lightDot)));
 
   float a = coverage * alpha;
   return float4(c * a, a);
@@ -413,11 +377,9 @@ void GlassRenderer::RunPasses(ID3D11DeviceContext* ctx, GlassPanel& panel, float
     const float panelH = static_cast<float>(pb.bottom - pb.top);
     const float margin = kBlurMarginCss * dpr;
 
-    // Keep the rim narrow, with RGB center-sample slope capped below 0.6:
-    // smootherstep's peak derivative is 1.875, so 1.875/0.42 * (0.04+0.09) < 0.6.
     const float halfMin = std::min(panelW, panelH) / 2.0f;
-    const float bezel = std::min(18.0f * dpr, halfMin * 0.40f);
-    const float maxBend = 0.04f * bezel;
+    const float bezel = std::max(4.0f * dpr, std::min(44.0f * dpr, halfMin * 2.0f / 3.5f));
+    const float maxBend = halfMin < 16.0f * dpr ? 0.0f : 1.1f * bezel;
 
     ShaderParams params{};
     params.glassSize[0] = panelW;
@@ -426,7 +388,7 @@ void GlassRenderer::RunPasses(ID3D11DeviceContext* ctx, GlassPanel& panel, float
     params.bezel = bezel;
     params.maxBend = maxBend;
     params.dispFactor = gp.displacementScale / 70.0f;
-    params.aberration = std::min(gp.aberrationIntensity * 4.0f * dpr, bezel * 0.09f);
+    params.aberration = gp.aberrationIntensity;
     params.saturation = gp.saturation;
     params.margin = margin;
     params.alpha = panel.opacity() * gp.opacity;

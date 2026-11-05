@@ -1156,8 +1156,7 @@ glass_renderer = (root/'native-glass/src/renderer.cc').read_text(encoding='utf-8
 glass_panel = (root/'native-glass/src/panel.cc').read_text(encoding='utf-8')
 glass_test += glass_panel[glass_panel.index('SIZE GlassSurfaceCapacity('):glass_panel.index('HRESULT GlassPanel::EnsureSwapchain(')]
 glass_test += glass_renderer[glass_renderer.index('const char kShaderSource[]'):glass_renderer.index('\nstruct ShaderParams {')]
-glass_profile = glass_renderer[glass_renderer.index('    float u = saturate('):glass_renderer.index('    disp = nrm')]
-glass_test += 'float saturate(float x) { return std::clamp(x, 0.0f, 1.0f); }\nfloat GlassRimProfile(float t) { float bump = 0;\n' + glass_profile + '\nreturn bump; }\n'
+glass_test += 'float saturate(float x) { return std::clamp(x, 0.0f, 1.0f); }\n'
 # Run the actual HLSL geometry functions with small vector/operator equivalents.
 glass_test += r'''using std::min; using std::max;
 struct float2 { float x,y; float2(float a,float b):x(a),y(b){} };
@@ -1179,10 +1178,16 @@ glass_interior = glass_renderer[glass_renderer.index('float sdRoundRect('):glass
 glass_test += re.sub(r'(?<![\w.])(\d+\.\d+(?:e[+-]?\d+)?|\d+e[+-]?\d+)(?![\w.])', r'\1f', glass_interior)
 glass_band = re.search(r'    const float bezel = ([^;]+);', glass_renderer).group(1)
 glass_test += 'float GlassBandWidth(float halfMin, float dpr) { return ' + glass_band + '; }\n'
+glass_bend = re.search(r'    const float maxBend = ([^;]+);', glass_renderer).group(1)
+glass_test += 'float GlassMaxBend(float halfMin, float dpr, float bezel) { return ' + glass_bend + '; }\n'
+glass_split = re.search(r'params.aberrationIntensity = ([^;]+);', glass_contrast).group(1)
+glass_test += 'constexpr float kGlassSplit = ' + glass_split + ';\n'
 glass_test += '''int main() {
  for(float dpr : {1.0f,1.5f,2.0f}) {
-   assert(std::abs(GlassBandWidth(18*dpr,dpr)/dpr-7.2f)<0.001f);
-   assert(std::abs(GlassBandWidth(100*dpr,dpr)/dpr-18.0f)<0.001f);
+   assert(std::abs(GlassBandWidth(18*dpr,dpr)/dpr-36.0f/3.5f)<0.001f);
+   assert(std::abs(GlassBandWidth(100*dpr,dpr)/dpr-44.0f)<0.001f);
+   assert(std::abs(GlassBandWidth(3*dpr,dpr)/dpr-4.0f)<0.001f);
+   assert(GlassMaxBend(15*dpr,dpr,GlassBandWidth(15*dpr,dpr))==0);
  }
  UINT capacityWidth=420, capacityHeight=220;
  int allocations=0;
@@ -1215,40 +1220,41 @@ glass_test += '''int main() {
    assert(SUCCEEDED(hr));
    code->Release();
  }
- assert(GlassRimProfile(0)==0 && GlassRimProfile(1)==0);
- assert(GlassRimProfile(0.42f)>0.99999f && GlassRimProfile(0.42f)<1.00001f);
+ assert(GlassRimProfile(0)==1 && GlassRimProfile(1)==0);
+ assert(std::abs(GlassRimProfile(0.5f)-std::pow(0.5f,2.6f))<0.00001f);
  for(int i=1;i<=1000;i++) {
    const float t=i/1000.0f, value=GlassRimProfile(t);
    assert(value>=-0.00001f && value<=1.00001f);
-   const float slope=(value-GlassRimProfile(t-0.001f))/0.001f;
-   assert(slope*0.13f<0.6f);
+   assert(value<=GlassRimProfile(t-0.001f));
  }
  for(float dpr : {1.0f,1.5f,2.0f}) {
    const float2 halfSize(190*dpr,92*dpr);
    const float radius=44*dpr, band=GlassBandWidth(halfSize.y,dpr);
+   const float bend=GlassMaxBend(halfSize.y,dpr,band);
    auto offset = [&](float2 p) {
-     return GlassInteriorOffset(p,halfSize,radius,-sdRoundRect(p,halfSize,radius),band);
+     return GlassRimOffset(p,halfSize,radius,-sdRoundRect(p,halfSize,radius),band,bend);
    };
-   const auto top=offset({100*dpr,-50*dpr}), side=offset({150*dpr,20*dpr});
+   const auto top=offset({100*dpr,-80*dpr}), side=offset({180*dpr,20*dpr});
    assert(top.y>0 && std::abs(top.x)<top.y*0.1f);
    assert(side.x<0 && std::abs(side.y)<-side.x*0.1f);
-   const auto corner=offset({160*dpr,-60*dpr});
+   const auto corner=offset({175*dpr,-75*dpr});
    assert(corner.x<0 && corner.y>0);
    assert(length(offset({0,0}))==0);
+   const auto edge=offset({100*dpr,-92*dpr});
+   assert(std::abs(edge.y-1.1f*band)<0.0001f);
+   assert(std::abs(edge.y*(1+kGlassSplit)-1.133f*band)<0.0001f);
+   assert(std::abs(edge.y*(1-kGlassSplit)-1.067f*band)<0.0001f);
    for(int y=-90;y<=90;y+=2) for(int x=-188;x<=188;x+=2) {
      const float2 p(x*dpr,y*dpr);
      const float depth=-sdRoundRect(p,halfSize,radius);
      if(depth<0) continue;
      const auto delta=offset(p);
      assert(std::isfinite(delta.x) && std::isfinite(delta.y));
-     assert(length(delta)<=0.08f*halfSize.y+0.0001f);
-     if(depth<=band) assert(length(delta)==0);
+     assert(length(delta)<=bend+0.0001f);
+     if(depth>=band) assert(length(delta)==0);
+     assert(delta.x*p.x<=0 && delta.y*p.y<=0);
      const auto mirror=offset(-p);
      assert(length(delta+mirror)<0.0001f);
-     const float step=0.1f*dpr;
-     const auto dx=(offset(p+float2(step,0))-offset(p-float2(step,0)))/(2*step);
-     const auto dy=(offset(p+float2(0,step))-offset(p-float2(0,step)))/(2*step);
-     assert((1+dx.x)*(1+dy.y)-dx.y*dy.x>0.1f);
    }
  }
  const auto stops=LiquidGlassRimStops();
@@ -1264,7 +1270,7 @@ glass_test += '''int main() {
 (root/'glass-checks.cpp').write_text(glass_test,encoding='utf-8')
 subprocess.run([str(clang),'-std=c++23','-static',str(root/'glass-checks.cpp'),'-ld3dcompiler','-o',str(root/'glass-checks.exe')],cwd=compiler,check=True)
 subprocess.run([str(root/'glass-checks.exe')],check=True)
-print('Glass checks passed: shader compilation, preserved rim/RGB profile, rounded-rectangle lens directions, symmetry and no folding, gradient stops',flush=True)
+print('Glass checks passed: shader compilation, inward rim profile, flat center, RGB split, DPI sizing, symmetry, gradient stops',flush=True)
 brief_test = (root/'weather-checks.cpp').read_text(encoding='utf-8').split('bool ParseChinaWeather(')[0]
 brief_test += (root/'tomorrow-brief-checks.inc').read_text(encoding='utf-8')
 (root/'tomorrow-brief-checks.cpp').write_text(brief_test,encoding='utf-8')

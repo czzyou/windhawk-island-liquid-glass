@@ -20,7 +20,7 @@ struct GlassParams {
     float cornerRadius = 20.0f;       // physical pixels
     float blurSigma = 5.0f;           // physical pixels
     float displacementScale = 70.0f;
-    float aberrationIntensity = 2.0f;
+    float aberrationIntensity = 0.03f; // fractional RGB displacement split
     float saturation = 1.4f;
     float opacity = 1.0f;
     float sdrWhiteScale = 1.0f;
