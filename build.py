@@ -417,6 +417,10 @@ if '--release' in sys.argv:
     build_version = release['version']
 from file_tray_patch import apply_file_tray
 src = apply_file_tray(src)
+from localization_patch import apply_localization
+src = apply_localization(src)
+from glass_menu_patch import apply_glass_menu
+src = apply_glass_menu(src)
 settings_yaml = src.split('// ==WindhawkModSettings==', 1)[1].split('/*', 1)[1].split('*/', 1)[0]
 assert isinstance(yaml.safe_load(settings_yaml), list)
 print('Windhawk settings YAML parsed successfully', flush=True)
@@ -442,6 +446,64 @@ if '--release' in sys.argv:
 windhawk=Path(os.environ.get('WINDHAWK_PATH', r'C:\Program Files\Windhawk'))
 compiler=windhawk/'Compiler'
 clang=compiler/'bin/clang++.exe'
+
+language_start = src.index('enum class UiLanguage {')
+loc_start = src.index('const wchar_t* Loc(')
+language_test = '''#include <windows.h>
+#include <atomic>
+#include <cassert>
+#include <cwchar>
+#include <string>
+#include <string_view>
+''' + src[src.index('struct WeatherSnapshot {'):src.index('struct DoNotDisturbSnapshot {')] + src[language_start:src.index('// ── Clock / date presentation', language_start)] + src[src.index('std::wstring WeatherCityForUi('):src.index('enum class WeatherVisual {')] + src[loc_start:src.index('// ── Media dashboard hit-testing', loc_start)] + '''
+int main() {
+    assert(IsChineseUiLanguage(MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED)));
+    assert(IsChineseUiLanguage(MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL)));
+    assert(!IsChineseUiLanguage(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US)));
+    assert(!IsChineseUiLanguage(MAKELANGID(LANG_JAPANESE, SUBLANG_DEFAULT)));
+    g_uiLanguage.store(static_cast<int>(UiLanguage::ChineseSimplified));
+    assert(wcscmp(UiText(L"Wind", L"风速"), L"风速") == 0);
+    assert(wcscmp(Loc(L"Wind"), L"风速") == 0 && wcscmp(Loc(L"Humidity"), L"湿度") == 0);
+    assert(WeatherTextForUi(L"小雨转多云") == L"小雨转多云");
+    WeatherSnapshot weather; weather.city=L"沈阳"; weather.cityEnglish=L"shenyang";
+    weather.weatherDesc=L"晴"; weather.weatherDescEnglish=L"Sunny";
+    assert(WeatherCityForUi(weather)==L"沈阳" && WeatherCurrentDescriptionForUi(weather)==L"晴");
+    g_uiLanguage.store(static_cast<int>(UiLanguage::English));
+    assert(wcscmp(UiText(L"Wind", L"风速"), L"Wind") == 0);
+    assert(wcscmp(Loc(L"Wind"), L"Wind") == 0 && wcscmp(Loc(L"Humidity"), L"Humidity") == 0);
+    assert(WeatherTextForUi(L"小雨转多云") == L"Light rain to Cloudy");
+    assert(WeatherCityForUi(weather)==L"Shenyang" && WeatherCurrentDescriptionForUi(weather)==L"Sunny");
+    weather.cityEnglish.clear(); weather.weatherDescEnglish.clear();
+    assert(WeatherCityForUi(weather)==L"沈阳" && WeatherCurrentDescriptionForUi(weather)==L"Clear");
+}
+'''
+(root/'language-checks.cpp').write_text(language_test, encoding='utf-8')
+subprocess.run([str(clang),'-std=c++23','-static',str(root/'language-checks.cpp'),'-o',str(root/'language-checks.exe')],cwd=compiler,check=True)
+subprocess.run([str(root/'language-checks.exe')],check=True)
+print('Language checks passed: Windows display language and Chinese/English text',flush=True)
+
+menu_test = '''#include <windows.h>
+#include <dwmapi.h>
+#include <oleacc.h>
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <vector>
+#include <cassert>
+constexpr UINT kMediaSourceMenuBase=1000, kMediaSourceMenuLimit=2000;
+namespace Backdrop {
+enum CompositionAttribute : int { WCA_ACCENT_POLICY=19 };
+enum AccentState : int { ACCENT_ENABLE_ACRYLICBLURBEHIND=4 };
+struct AccentPolicy { AccentState state; DWORD flags, gradientColor, animationId; };
+struct CompositionAttributeData { CompositionAttribute attribute; void* data; SIZE_T dataSize; };
+using Setter = BOOL (WINAPI*)(HWND, CompositionAttributeData*);
+Setter Resolve() { return nullptr; }
+}
+''' + (root/'glass-menu.h').read_text(encoding='utf-8') + (root/'glass-menu-checks.inc').read_text(encoding='utf-8')
+(root/'glass-menu-checks.cpp').write_text(menu_test, encoding='utf-8')
+subprocess.run([str(clang),'-std=c++23','-static','-DWINVER=0x0A00','-D_WIN32_WINNT=0x0A00','-DNTDDI_VERSION=0x0A000008',str(root/'glass-menu-checks.cpp'),'-ldwmapi','-lgdi32','-o',str(root/'glass-menu-checks.exe')],cwd=compiler,check=True)
+subprocess.run([str(root/'glass-menu-checks.exe')],check=True)
+print('Glass menu checks passed: items, submenus, accessibility names, states and drawing',flush=True)
 
 glow_test = (root/'aurora-glow-checks.inc').read_text(encoding='utf-8')
 for marker, begin, end in (
@@ -890,10 +952,13 @@ print('Motion checks passed at 30/60/144/240fps, including reduced motion and re
 original=(root/'original.wh.cpp').read_text(encoding='utf-8-sig')
 formats=original[original.index('std::wstring FormatIslandTime('):original.index('const wchar_t* Loc(')]
 clock_test = '''#include <windows.h>
+#include <atomic>
 #include <string>
+#include <string_view>
 #include <cassert>
 struct Settings { bool clockFollowSystem=false, use24HourClock=true, showSeconds=false, dateFirst=true; std::wstring dateFormat=L"MM-dd"; };
-''' + formats + clock_helper + '''int main() {
+''' + src[language_start:src.index('// ── Clock / date presentation', language_start)] + formats + src[src.index('std::wstring FormatIslandStripClock('):src.index('float IdleDashboardExpandedAlpha(', src.index('std::wstring FormatIslandStripClock('))] + '''int main() {
+ g_uiLanguage.store(static_cast<int>(UiLanguage::English));
  SYSTEMTIME t{2024,2,4,29,0,0,0,0}; Settings s;
  assert(FormatIslandStripClock(t,s)==L"Thu, Feb 29 · 00:00");
  t.wHour=23; t.wMinute=59; t.wSecond=58; s.showSeconds=true;
@@ -902,11 +967,13 @@ struct Settings { bool clockFollowSystem=false, use24HourClock=true, showSeconds
  assert(FormatIslandStripClock(t,s)==L"23:59:58 · Thu, Feb 29");
  s.dateFormat=L"";
  assert(FormatIslandStripClock(t,s).find(L"Thu, Feb 29")!=std::wstring::npos);
+ g_uiLanguage.store(static_cast<int>(UiLanguage::ChineseSimplified));
+ assert(FormatIslandStripClock(t,s).find(L"2月29日")!=std::wstring::npos);
 }'''
 (root/'clock-checks.cpp').write_text(clock_test,encoding='utf-8')
 subprocess.run([str(clang),'-std=c++23','-static',str(root/'clock-checks.cpp'),'-o',str(root/'clock-checks.exe')],cwd=compiler,check=True)
 subprocess.run([str(root/'clock-checks.exe')],check=True)
-print('4 date/time formatting assertions passed',flush=True)
+print('Date/time formatting checks passed for English and Chinese',flush=True)
 weather_test = r'''#include <windows.h>
 #include <winrt/Windows.Data.Json.h>
 #include <algorithm>
@@ -940,6 +1007,7 @@ weather_test += r'''int main(int argc,char** argv) {
  assert(ParseChinaWeather(current,forecast,now,false,result));
  assert(std::abs(result.temperature-16.1f)<0.01f && result.lowTemperature==6 && result.highTemperature==18);
  assert(result.city==L"沈阳" && result.weatherDesc==L"晴" && result.hasDailyRange);
+ assert(result.cityEnglish==L"shenyang" && result.weatherDescEnglish==L"Sunny");
 ''' + (root/'weather-page-checks.inc').read_text(encoding='utf-8') + r'''
  for (const auto* rainCode : {L"d301", L"n301", L"301"}) assert(ChinaWeatherVisualCode(rainCode)==296);
  assert(ChinaWeatherVisualCode(L"d07")==296 && ChinaWeatherVisualCode(L"d00")==113);

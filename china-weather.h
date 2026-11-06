@@ -146,6 +146,8 @@ bool ParseChinaWeather(const std::string& currentScript, const std::string& fore
         if (!ChinaWeatherTemperature(field(current, L"temp"), parsed.temperature)) return false;
         parsed.city = field(current, L"cityname");
         parsed.weatherDesc = field(current, L"weather");
+        parsed.cityEnglish = field(current, L"nameen");
+        parsed.weatherDescEnglish = field(current, L"weathere");
         if (parsed.city.empty() || parsed.weatherDesc.empty()) return false;
         parsed.weatherCode = ChinaWeatherVisualCode(field(current, L"weathercode"));
         parsed.observationTime = observation;

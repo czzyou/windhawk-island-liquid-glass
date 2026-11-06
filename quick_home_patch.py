@@ -28,16 +28,37 @@ def apply_quick_home(src):
             mutedBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
         const wchar_t* titles[4] = {L"截图", state.system.volumeMuted ? L"声音" : L"静音", L"专注 25′", L"休息 5′"};
         const wchar_t glyphs[4] = {0xE722, state.system.volumeMuted ? wchar_t(0xE74F) : wchar_t(0xE767), 0xE916, 0xE708};
+        D2D1_GRADIENT_STOP glassStops[] = {
+            {0.0f, WithAlpha(material_.textPrimary, 0.30f)},
+            {0.5f, WithAlpha(material_.textPrimary, 0.08f)},
+            {1.0f, WithAlpha(material_.textPrimary, 0.20f)}
+        };
+        ComPtr<ID2D1GradientStopCollection> glassColors;
+        ComPtr<ID2D1LinearGradientBrush> glass;
+        target_->CreateGradientStopCollection(glassStops, ARRAYSIZE(glassStops), &glassColors);
+        if (glassColors) target_->CreateLinearGradientBrush(
+            D2D1::LinearGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(0, 1)),
+            glassColors.Get(), &glass);
+        ComPtr<ID2D1SolidColorBrush> disc;
+        if (!glass) target_->CreateSolidColorBrush(WithAlpha(material_.textPrimary, 1.0f), &disc);
         for (int i = 0; i < 4; ++i) {
             auto box = QuickHomeButtonBounds(i, rect.right - rect.left);
             box.left += rect.left; box.right += rect.left;
             box.top += rect.top; box.bottom += rect.top;
             const bool hovered = g_hoveredQuickAction.load() == i;
             const D2D1_POINT_2F center{(box.left + box.right) * 0.5f, rect.top + 64};
-            ComPtr<ID2D1SolidColorBrush> disc;
-            target_->CreateSolidColorBrush(WithAlpha(hovered ? material_.accent : material_.textPrimary,
-                (hovered ? 0.15f : 0.055f) * settingsOpacity_), &disc);
-            if (disc) target_->FillEllipse(D2D1::Ellipse(center, 21, 21), disc.Get());
+            const auto button = D2D1::Ellipse(center, 21, 21);
+            if (glass) {
+                glass->SetStartPoint(D2D1::Point2F(center.x, center.y - 21));
+                glass->SetEndPoint(D2D1::Point2F(center.x, center.y + 21));
+                glass->SetOpacity((hovered ? 0.10f : 0.0f) * settingsOpacity_);
+                target_->FillEllipse(button, glass.Get());
+                glass->SetOpacity((hovered ? 1.0f : 0.75f) * settingsOpacity_);
+                target_->DrawEllipse(button, glass.Get(), 0.9f);
+            } else if (disc) {
+                disc->SetOpacity((hovered ? 0.15f : 0.055f) * settingsOpacity_);
+                target_->FillEllipse(button, disc.Get());
+            }
             if (iconFormat_) {
                 iconFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                 iconFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);

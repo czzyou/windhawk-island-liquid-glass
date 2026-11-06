@@ -1,8 +1,12 @@
 // ==WindhawkMod==
 // @id              dynamic-island-liquid-glass
-// @name            灵动岛 · 液态玻璃
-// @description     A living, breathing pill overlay inspired by iPhone's Dynamic Island. Reacts to media, downloads, clipboard, battery, and more.
-// @version         1.5.16
+// @name            Dynamic Island · Liquid Glass
+// @name:zh-CN      灵动岛 · 液态玻璃
+// @name:zh-TW      灵动岛 · 液态玻璃
+// @description     A liquid-glass island for media, weather, calendar, timers and system status.
+// @description:zh-CN 液态玻璃灵动岛，显示媒体、天气、日历、计时器和系统状态。
+// @description:zh-TW 液态玻璃灵动岛，显示媒体、天气、日历、计时器和系统状态。
+// @version         1.5.17
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -45,411 +49,976 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
     $name: Position
     $description: Where the island should appear on your screen.
     $options:
-      - top-center: Top Center
-      - top-left: Top Left
-      - top-right: Top Right
-      - bottom-center: Bottom Center
-      - bottom-left: Bottom Left
-      - bottom-right: Bottom Right
+    - top-center: Top Center
+    - top-left: Top Left
+    - top-right: Top Right
+    - bottom-center: Bottom Center
+    - bottom-left: Bottom Left
+    - bottom-right: Bottom Right
+    $name:zh-CN: 位置
+    $description:zh-CN: 选择灵动岛在屏幕上的位置。
+    $name:zh-TW: 位置
+    $description:zh-TW: 选择灵动岛在屏幕上的位置。
+    $options:zh-CN:
+    - top-center: 顶部居中
+    - top-left: 左上
+    - top-right: 右上
+    - bottom-center: 底部居中
+    - bottom-left: 左下
+    - bottom-right: 右下
+    $options:zh-TW:
+    - top-center: 顶部居中
+    - top-left: 左上
+    - top-right: 右上
+    - bottom-center: 底部居中
+    - bottom-left: 左下
+    - bottom-right: 右下
   - TargetMonitor: primary
     $name: Target Monitor
     $description: Select the screen to display the island. If a display isn't found, it safely falls back to the Primary Monitor.(Extra Displays are given even if they don't exist because windhawk settings are static)
     $options:
-      - 'primary': Primary Monitor
-      - '1': Display 1
-      - '2': Display 2
-      - '3': Display 3
-      - '4': Display 4
-      - '5': Display 5
-      - 'follow': Follow Mouse (Active Monitor)
+    - primary: Primary Monitor
+    - '1': Display 1
+    - '2': Display 2
+    - '3': Display 3
+    - '4': Display 4
+    - '5': Display 5
+    - follow: Follow Mouse (Active Monitor)
+    $name:zh-CN: 目标显示器
+    $description:zh-CN: 选择显示器；未找到时回退到主显示器。
+    $name:zh-TW: 目标显示器
+    $description:zh-TW: 选择显示器；未找到时回退到主显示器。
+    $options:zh-CN:
+    - primary: 主显示器
+    - '1': 显示器 1
+    - '2': 显示器 2
+    - '3': 显示器 3
+    - '4': 显示器 4
+    - '5': 显示器 5
+    - follow: 跟随鼠标所在显示器
+    $options:zh-TW:
+    - primary: 主显示器
+    - '1': 显示器 1
+    - '2': 显示器 2
+    - '3': 显示器 3
+    - '4': 显示器 4
+    - '5': 显示器 5
+    - follow: 跟随鼠标所在显示器
   - OffsetX: 0
     $name: Offset X
     $description: Adjust the horizontal position (in pixels). Positive values move it right, negative values move it left.
+    $name:zh-CN: 水平偏移
+    $description:zh-CN: 水平位置偏移，单位为像素；正数向右，负数向左。
+    $name:zh-TW: 水平偏移
+    $description:zh-TW: 水平位置偏移，单位为像素；正数向右，负数向左。
   - OffsetY: 0
     $name: Offset Y
     $description: Adjust the vertical position (in pixels). Positive values move it down, negative values move it up. Applies to every state unless the separate expanded offset below is turned on, in which case this becomes the collapsed/idle offset.
+    $name:zh-CN: 垂直偏移
+    $description:zh-CN: 垂直位置偏移，单位为像素；正数向下，负数向上。启用单独的展开偏移后，此值用于收起状态。
+    $name:zh-TW: 垂直偏移
+    $description:zh-TW: 垂直位置偏移，单位为像素；正数向下，负数向上。启用单独的展开偏移后，此值用于收起状态。
   - SeparateExpandedOffsetY: false
     $name: Use a separate Offset Y when expanded
     $description: Lets the island sit at one height while collapsed and a different one while expanded. Useful for tucking the idle pill up near the screen edge while keeping the expanded dashboard somewhere comfortable to interact with.
+    $name:zh-CN: 展开时使用单独的垂直偏移
+    $description:zh-CN: 为展开和收起状态分别设置高度，切换时平滑过渡。
+    $name:zh-TW: 展开时使用单独的垂直偏移
+    $description:zh-TW: 为展开和收起状态分别设置高度，切换时平滑过渡。
   - OffsetYExpanded: 0
     $name: Offset Y (expanded)
     $description: Vertical position in pixels while the island is expanded. Only used when the separate expanded offset above is on. The island eases between this and Offset Y as it expands and collapses, so the two never snap.
+    $name:zh-CN: 展开时的垂直偏移
+    $description:zh-CN: 仅在启用单独的展开偏移时生效，单位为像素。
+    $name:zh-TW: 展开时的垂直偏移
+    $description:zh-TW: 仅在启用单独的展开偏移时生效，单位为像素。
   - BorderMergedMode: false
     $name: Border-Merged Mode
     $description: Attach the island flush to the top edge of the monitor without a floating gap.
+    $name:zh-CN: 贴合屏幕边缘
+    $description:zh-CN: 将灵动岛贴合屏幕顶部，不留悬浮间隙。
+    $name:zh-TW: 贴合屏幕边缘
+    $description:zh-TW: 将灵动岛贴合屏幕顶部，不留悬浮间隙。
   - ShapeStyle: default
     $name: Island Shape Style
     $description: Change the overall shape of the island (Pill, Windows 11, or macOS Notch).
     $options:
-      - default: Default (Apple Pill)
-      - w11: Windows 11 (Rounded Box)
-      - notch: macOS Notch (Top Edge Flush)
+    - default: Default (Apple Pill)
+    - w11: Windows 11 (Rounded Box)
+    - notch: macOS Notch (Top Edge Flush)
+    $name:zh-CN: 灵动岛形状
+    $description:zh-CN: 选择胶囊、Windows 11 圆角矩形或 macOS 刘海形状。
+    $name:zh-TW: 灵动岛形状
+    $description:zh-TW: 选择胶囊、Windows 11 圆角矩形或 macOS 刘海形状。
+    $options:zh-CN:
+    - default: 默认胶囊
+    - w11: Windows 11 圆角矩形
+    - notch: macOS 刘海（贴合顶部）
+    $options:zh-TW:
+    - default: 默认胶囊
+    - w11: Windows 11 圆角矩形
+    - notch: macOS 刘海（贴合顶部）
   - SizeScale: '1.0'
     $name: Size scale
     $description: Scales the entire island and its contents. Small desktops automatically reduce the base size by up to 25%.
     $options:
-      - '0.8': 0.8x
-      - '1.0': 1.0x
-      - '1.2': 1.2x
-      - '1.5': 1.5x
-      - '1.8': 1.8x
-      - '2.0': 2.0x
-      - '2.5': 2.5x
+    - '0.8': 0.8x
+    - '1.0': 1.0x
+    - '1.2': 1.2x
+    - '1.5': 1.5x
+    - '1.8': 1.8x
+    - '2.0': 2.0x
+    - '2.5': 2.5x
+    $name:zh-CN: 整体大小
+    $description:zh-CN: 缩放灵动岛及其内容；小屏幕会自动缩小基础尺寸，最多缩小 25%。
+    $name:zh-TW: 整体大小
+    $description:zh-TW: 缩放灵动岛及其内容；小屏幕会自动缩小基础尺寸，最多缩小 25%。
+    $options:zh-CN:
+    - '0.8': 0.8x
+    - '1.0': 1.0x
+    - '1.2': 1.2x
+    - '1.5': 1.5x
+    - '1.8': 1.8x
+    - '2.0': 2.0x
+    - '2.5': 2.5x
+    $options:zh-TW:
+    - '0.8': 0.8x
+    - '1.0': 1.0x
+    - '1.2': 1.2x
+    - '1.5': 1.5x
+    - '1.8': 1.8x
+    - '2.0': 2.0x
+    - '2.5': 2.5x
   - AutoDpiScale: true
     $name: Auto DPI scaling
     $description: Automatically scales the island to match your monitor's DPI. Recommended for 4K screens.
+    $name:zh-CN: 自动 DPI 缩放
+    $description:zh-CN: 根据显示器 DPI 自动缩放，适合高分辨率屏幕。
+    $name:zh-TW: 自动 DPI 缩放
+    $description:zh-TW: 根据显示器 DPI 自动缩放，适合高分辨率屏幕。
   $name: Appearance & Position
+  $name:zh-CN: 外观与位置
+  $name:zh-TW: 外观与位置
 - Behavior:
   - AlwaysOnTop: true
     $name: Always on top
     $description: Keeps the island above all other windows. Turn this off if it blocks other apps.
+    $name:zh-CN: 窗口置顶
+    $description:zh-CN: 让灵动岛显示在其他窗口上方。
+    $name:zh-TW: 窗口置顶
+    $description:zh-TW: 让灵动岛显示在其他窗口上方。
   - ExpandOnHover: true
     $name: Expand on hover
     $description: Expand the island automatically when hovered. If disabled, click to expand.
+    $name:zh-CN: 悬停展开
+    $description:zh-CN: 鼠标悬停时自动展开；关闭后点击展开。
+    $name:zh-TW: 悬停展开
+    $description:zh-TW: 鼠标悬停时自动展开；关闭后点击展开。
   - AutoHideIdleSeconds: '0'
     $name: Auto-hide island (all states)
     $description: Hide the island (including idle, media, and other states) after this many seconds of inactivity. 0 to disable.
     $options:
-      - '-1': Hide instantly
-      - '0': Never hide (default)
-      - '5': Hide after 5 seconds
-      - '10': Hide after 10 seconds
-      - '30': Hide after 30 seconds
-      - '60': Hide after 60 seconds
+    - '-1': Hide instantly
+    - '0': Never hide (default)
+    - '5': Hide after 5 seconds
+    - '10': Hide after 10 seconds
+    - '30': Hide after 30 seconds
+    - '60': Hide after 60 seconds
+    $name:zh-CN: 自动隐藏时间
+    $description:zh-CN: 所有状态在指定秒数无操作后隐藏；0 表示不隐藏。
+    $name:zh-TW: 自动隐藏时间
+    $description:zh-TW: 所有状态在指定秒数无操作后隐藏；0 表示不隐藏。
+    $options:zh-CN:
+    - '-1': 立即隐藏
+    - '0': 从不隐藏（默认）
+    - '5': 5 秒后隐藏
+    - '10': 10 秒后隐藏
+    - '30': 30 秒后隐藏
+    - '60': 60 秒后隐藏
+    $options:zh-TW:
+    - '-1': 立即隐藏
+    - '0': 从不隐藏（默认）
+    - '5': 5 秒后隐藏
+    - '10': 10 秒后隐藏
+    - '30': 30 秒后隐藏
+    - '60': 60 秒后隐藏
   - AutoHideFullscreen: true
     $name: Hide on full screen
     $description: Automatically hide the island when playing a video or app in full screen mode.
+    $name:zh-CN: 全屏时隐藏
+    $description:zh-CN: 应用或视频全屏时自动隐藏。
+    $name:zh-TW: 全屏时隐藏
+    $description:zh-TW: 应用或视频全屏时自动隐藏。
   - UnhideOnHover: true
     $name: Unhide on hover
     $description: Allow the hidden island to reappear when you hover your mouse over it.
+    $name:zh-CN: 悬停时重新显示
+    $description:zh-CN: 将鼠标移到隐藏位置时重新显示灵动岛。
+    $name:zh-TW: 悬停时重新显示
+    $description:zh-TW: 将鼠标移到隐藏位置时重新显示灵动岛。
   $name: Behavior & Visibility
+  $name:zh-CN: 行为与显示
+  $name:zh-TW: 行为与显示
 - Animations:
   - TargetFPS: auto
     $name: Refresh rate / FPS
     $description: Set the animation frame rate. Choose Auto to dynamically match your active monitor's refresh rate (up to 360Hz/500Hz), or select a fixed FPS.
     $options:
-      - auto: Auto (Match Monitor Refresh Rate)
-      - '60': 60 FPS (Eco / Standard)
-      - '90': 90 FPS
-      - '120': 120 FPS
-      - '144': 144 FPS
-      - '165': 165 FPS
-      - '240': 240 FPS
-      - '360': 360 FPS (Ultra Smooth)
-      - '500': 500 FPS (Maximum / Uncapped)
+    - auto: Auto (Match Monitor Refresh Rate)
+    - '60': 60 FPS (Eco / Standard)
+    - '90': 90 FPS
+    - '120': 120 FPS
+    - '144': 144 FPS
+    - '165': 165 FPS
+    - '240': 240 FPS
+    - '360': 360 FPS (Ultra Smooth)
+    - '500': 500 FPS (Maximum / Uncapped)
+    $name:zh-CN: 刷新率 / FPS
+    $description:zh-CN: 自动匹配当前显示器刷新率，或选择固定帧率。
+    $name:zh-TW: 刷新率 / FPS
+    $description:zh-TW: 自动匹配当前显示器刷新率，或选择固定帧率。
+    $options:zh-CN:
+    - auto: 自动匹配显示器刷新率
+    - '60': 60 FPS（节能 / 标准）
+    - '90': 90 FPS
+    - '120': 120 FPS
+    - '144': 144 FPS
+    - '165': 165 FPS
+    - '240': 240 FPS
+    - '360': 360 FPS（极致流畅）
+    - '500': 500 FPS（最高）
+    $options:zh-TW:
+    - auto: 自动匹配显示器刷新率
+    - '60': 60 FPS（节能 / 标准）
+    - '90': 90 FPS
+    - '120': 120 FPS
+    - '144': 144 FPS
+    - '165': 165 FPS
+    - '240': 240 FPS
+    - '360': 360 FPS（极致流畅）
+    - '500': 500 FPS（最高）
   - AnimationStyle: default
     $name: Animation bounciness / style
     $description: Control the spring physics and feel of the animation.
     $options:
-      - smooth: Smooth (No bounciness / Critically damped)
-      - default: Default (Balanced Apple-like spring)
-      - bouncy: Bouncy (Dynamic elastic spring)
-      - snappy: Snappy (High stiffness, quick settle)
+    - smooth: Smooth (No bounciness / Critically damped)
+    - default: Default (Balanced Apple-like spring)
+    - bouncy: Bouncy (Dynamic elastic spring)
+    - snappy: Snappy (High stiffness, quick settle)
+    $name:zh-CN: 动画风格
+    $description:zh-CN: 控制展开与收起动画的弹性。
+    $name:zh-TW: 动画风格
+    $description:zh-TW: 控制展开与收起动画的弹性。
+    $options:zh-CN:
+    - smooth: 平滑（无弹性）
+    - default: 默认（均衡弹性）
+    - bouncy: 弹性
+    - snappy: 迅捷
+    $options:zh-TW:
+    - smooth: 平滑（无弹性）
+    - default: 默认（均衡弹性）
+    - bouncy: 弹性
+    - snappy: 迅捷
   - AnimationSpeed: normal
     $name: Animation speed
     $description: How fast the island expands and collapses.
     $options:
-      - very-slow: Very Slow (0.5x)
-      - slow: Slow (0.75x)
-      - normal: Normal (1.0x)
-      - fast: Fast (1.35x)
-      - very-fast: Very Fast (1.65x)
-      - ultra-fast: Ultra Fast (2.0x)
+    - very-slow: Very Slow (0.5x)
+    - slow: Slow (0.75x)
+    - normal: Normal (1.0x)
+    - fast: Fast (1.35x)
+    - very-fast: Very Fast (1.65x)
+    - ultra-fast: Ultra Fast (2.0x)
+    $name:zh-CN: 动画速度
+    $description:zh-CN: 控制灵动岛展开和收起的速度。
+    $name:zh-TW: 动画速度
+    $description:zh-TW: 控制灵动岛展开和收起的速度。
+    $options:zh-CN:
+    - very-slow: 非常慢（0.5x）
+    - slow: 慢（0.75x）
+    - normal: 正常（1.0x）
+    - fast: 快（1.35x）
+    - very-fast: 非常快（1.65x）
+    - ultra-fast: 极快（2.0x）
+    $options:zh-TW:
+    - very-slow: 非常慢（0.5x）
+    - slow: 慢（0.75x）
+    - normal: 正常（1.0x）
+    - fast: 快（1.35x）
+    - very-fast: 非常快（1.65x）
+    - ultra-fast: 极快（2.0x）
   $name: Animations & Performance
+  $name:zh-CN: 动画与性能
+  $name:zh-TW: 动画与性能
 - Themes:
   - ThemePreset: custom
     $name: Theme preset
     $description: Select a curated color theme, or choose Custom to use your own hex colors below.
     $options:
-      - obsidian: Obsidian - true black (Default)
-      - graphite: Graphite - neutral Windows 11 dark
-      - slate: Slate - cool blue-grey
-      - nord: Nord - the Nord palette
-      - evergreen: Evergreen - deep green
-      - espresso: Espresso - warm brown
-      - plum: Plum - muted mauve
-      - porcelain: Porcelain - light theme
-      - custom: Custom Colors (Use Hex Below)
+    - obsidian: Obsidian - true black (Default)
+    - graphite: Graphite - neutral Windows 11 dark
+    - slate: Slate - cool blue-grey
+    - nord: Nord - the Nord palette
+    - evergreen: Evergreen - deep green
+    - espresso: Espresso - warm brown
+    - plum: Plum - muted mauve
+    - porcelain: Porcelain - light theme
+    - custom: Custom Colors (Use Hex Below)
+    $name:zh-CN: 主题预设
+    $description:zh-CN: 选择预设主题，或使用下方的自定义十六进制颜色。
+    $name:zh-TW: 主题预设
+    $description:zh-TW: 选择预设主题，或使用下方的自定义十六进制颜色。
+    $options:zh-CN:
+    - obsidian: 黑曜石（纯黑）
+    - graphite: 石墨（深灰）
+    - slate: 石板（蓝灰）
+    - nord: Nord 配色
+    - evergreen: 常青（深绿）
+    - espresso: 浓咖啡（暖棕）
+    - plum: 梅紫
+    - porcelain: 瓷白（浅色）
+    - custom: 自定义颜色
+    $options:zh-TW:
+    - obsidian: 黑曜石（纯黑）
+    - graphite: 石墨（深灰）
+    - slate: 石板（蓝灰）
+    - nord: Nord 配色
+    - evergreen: 常青（深绿）
+    - espresso: 浓咖啡（暖棕）
+    - plum: 梅紫
+    - porcelain: 瓷白（浅色）
+    - custom: 自定义颜色
   - PillOpacity: 100
     $name: Pill transparency
     $description: 35 to 100. Lower values make the island more see-through.
+    $name:zh-CN: 灵动岛不透明度
+    $description:zh-CN: 范围 35～100，数值越低越透明。
+    $name:zh-TW: 灵动岛不透明度
+    $description:zh-TW: 范围 35～100，数值越低越透明。
   - LiquidGlass: true
     $name: Refractive Liquid Glass
     $description: 'Custom theme, backdrop Off: render live desktop refraction on the GPU. The effect excludes itself only from its desktop-duplication source to prevent feedback; ordinary screenshots remain available.'
+    $name:zh-CN: 折射液态玻璃
+    $description:zh-CN: 自定义主题且背景材质关闭时，使用 GPU 实时折射桌面；普通截图仍可使用。
+    $name:zh-TW: 折射液态玻璃
+    $description:zh-TW: 自定义主题且背景材质关闭时，使用 GPU 实时折射桌面；普通截图仍可使用。
   - TintIntensity: 0
     $name: Background tint intensity
     $description: 0 to 100. Controls how dark the background tint behind the island is.
+    $name:zh-CN: 背景着色强度
+    $description:zh-CN: 范围 0～100，控制灵动岛背景着色深浅。
+    $name:zh-TW: 背景着色强度
+    $description:zh-TW: 范围 0～100，控制灵动岛背景着色深浅。
   - BackdropMaterial: none
     $name: Backdrop material (real Windows blur)
     $description: Paints genuine Windows blur or acrylic behind the island so your desktop and windows show through it. Acrylic adds the frosted noise texture Windows uses for its own surfaces. Requires Windows 10 1803 or newer; on unsupported builds the island simply stays opaque. When this is on, use Backdrop fill opacity below to control how much of the blur comes through.
     $options:
-      - none: Off (solid background)
-      - blur: Blur
-      - acrylic: Acrylic (frosted)
+    - none: Off (solid background)
+    - blur: Blur
+    - acrylic: Acrylic (frosted)
+    $name:zh-CN: 背景材质
+    $description:zh-CN: 使用 Windows 模糊或亚克力背景；不支持时使用不透明背景。
+    $name:zh-TW: 背景材质
+    $description:zh-TW: 使用 Windows 模糊或亚克力背景；不支持时使用不透明背景。
+    $options:zh-CN:
+    - none: 关闭（实色背景）
+    - blur: 模糊
+    - acrylic: 亚克力（磨砂）
+    $options:zh-TW:
+    - none: 关闭（实色背景）
+    - blur: 模糊
+    - acrylic: 亚克力（磨砂）
   - BackdropFillOpacity: 15
     $name: Backdrop fill opacity
     $description: 0 to 100. Only used when a Backdrop material is enabled. How opaque the island's own background stays on top of the blur - lower values let more of the blurred desktop through. Has no effect when the backdrop is Off.
+    $name:zh-CN: 背景填充不透明度
+    $description:zh-CN: 范围 0～100；启用背景材质时，数值越低越能透出模糊背景。
+    $name:zh-TW: 背景填充不透明度
+    $description:zh-TW: 范围 0～100；启用背景材质时，数值越低越能透出模糊背景。
   - BackdropTint: 14
     $name: Acrylic tint strength
     $description: 0 to 100. Only used by the Acrylic backdrop. How strongly your background colour tints the frosted layer.
+    $name:zh-CN: 亚克力着色强度
+    $description:zh-CN: 范围 0～100，仅用于亚克力背景。
+    $name:zh-TW: 亚克力着色强度
+    $description:zh-TW: 范围 0～100，仅用于亚克力背景。
   - MaterialDepth: false
     $name: Depth shading
     $description: Adds soft downward shading and the accent wash so the island has depth instead of looking like one flat fill. No edge highlights or rim lighting are involved. Turn off for a completely flat look.
+    $name:zh-CN: 深度阴影
+    $description:zh-CN: 添加柔和的深度阴影与强调色；关闭后使用平面效果。
+    $name:zh-TW: 深度阴影
+    $description:zh-TW: 添加柔和的深度阴影与强调色；关闭后使用平面效果。
   - DropShadow: false
     $name: Soft drop shadow
     $description: Casts a soft shadow beneath the island to lift it off the desktop.
+    $name:zh-CN: 柔和投影
+    $description:zh-CN: 在灵动岛下方绘制投影。
+    $name:zh-TW: 柔和投影
+    $description:zh-TW: 在灵动岛下方绘制投影。
   - AmbientAuroraGlow: true
-    $name: 专辑氛围背光
+    $name: Album ambient glow
     $description: Casts a soft, breathing ambient glow around the island blending the main album colors in proportion to their visible area.
+    $name:zh-CN: 专辑氛围背光
+    $description:zh-CN: 根据专辑主要颜色和占比，在灵动岛周围绘制柔和的呼吸背光。
+    $name:zh-TW: 专辑氛围背光
+    $description:zh-TW: 根据专辑主要颜色和占比，在灵动岛周围绘制柔和的呼吸背光。
   - AmbientGlowIntensity: 100
-    $name: 氛围背光强度
+    $name: Ambient glow intensity
     $description: 0 to 200. Controls how brightly the ambient aurora glow radiates around the island.
-
+    $name:zh-CN: 氛围背光强度
+    $description:zh-CN: 范围 0～200，控制专辑氛围背光亮度。
+    $name:zh-TW: 氛围背光强度
+    $description:zh-TW: 范围 0～200，控制专辑氛围背光亮度。
   - AccentBloom: 0
     $name: Accent bloom intensity
     $description: 0 to 200. Strength of the soft accent-coloured wash bleeding in from the top of the island. Driven by album art when the accent mode is Auto. Set to 0 to remove it.
+    $name:zh-CN: 强调色光晕强度
+    $description:zh-CN: 范围 0～200；自动模式使用专辑颜色，设为 0 可关闭。
+    $name:zh-TW: 强调色光晕强度
+    $description:zh-TW: 范围 0～200；自动模式使用专辑颜色，设为 0 可关闭。
   - TextScale: 100
     $name: Text size
     $description: 70 to 160. Scales all island text independently of the overall Size scale, so you can keep the island compact while making the clock and labels easier to read.
+    $name:zh-CN: 文字大小
+    $description:zh-CN: 范围 70～160，独立于整体尺寸缩放文字。
+    $name:zh-TW: 文字大小
+    $description:zh-TW: 范围 70～160，独立于整体尺寸缩放文字。
   - AccentColorMode: auto
     $name: Accent color mode
     $description: How the glowing accent color is chosen. Auto extracts it from album art.
     $options:
-      - auto: Auto, from album art
-      - system: System (Device Accent)
-      - custom: Custom hex
-  - CustomAccentHex: "#4cc9f0"
+    - auto: Auto, from album art
+    - system: System (Device Accent)
+    - custom: Custom hex
+    $name:zh-CN: 强调色模式
+    $description:zh-CN: 选择强调色来源；自动模式从专辑封面提取。
+    $name:zh-TW: 强调色模式
+    $description:zh-TW: 选择强调色来源；自动模式从专辑封面提取。
+    $options:zh-CN:
+    - auto: 自动提取专辑颜色
+    - system: 系统强调色
+    - custom: 自定义颜色
+    $options:zh-TW:
+    - auto: 自动提取专辑颜色
+    - system: 系统强调色
+    - custom: 自定义颜色
+  - CustomAccentHex: '#4cc9f0'
     $name: Custom accent hex
     $description: The hex color to use when the accent mode is set to Custom.
+    $name:zh-CN: 自定义强调色
+    $description:zh-CN: 自定义模式使用的十六进制颜色。
+    $name:zh-TW: 自定义强调色
+    $description:zh-TW: 自定义模式使用的十六进制颜色。
   - CalendarAccent: red
     $name: Calendar accent color
     $description: Accent color used in the calendar view for month name, weekends, and today's date highlight.
     $options:
-      - red: Default Red
-      - system: System (Device Accent)
+    - red: Default Red
+    - system: System (Device Accent)
+    $name:zh-CN: 日历强调色
+    $description:zh-CN: 设置日历月份、周末和当天标记的强调色。
+    $name:zh-TW: 日历强调色
+    $description:zh-TW: 设置日历月份、周末和当天标记的强调色。
+    $options:zh-CN:
+    - red: 默认红色
+    - system: 系统强调色
+    $options:zh-TW:
+    - red: 默认红色
+    - system: 系统强调色
   - ClockAccentGlow: false
     $name: Show clock background circle/glow
     $description: Display the soft accent circle/glow behind the time in the expanded clock view. Turn off for a clean, minimal clock without background glow.
-  - FontFamily: "SF Pro Text"
+    $name:zh-CN: 显示时钟背景光晕
+    $description:zh-CN: 在展开的时钟后显示柔和光晕。
+    $name:zh-TW: 显示时钟背景光晕
+    $description:zh-TW: 在展开的时钟后显示柔和光晕。
+  - FontFamily: SF Pro Text
     $name: Font family
     $description: Custom font family for island text (e.g. Segoe UI, Arial, Aptos, Consolas). Leave empty for system default.
+    $name:zh-CN: 字体
+    $description:zh-CN: 指定灵动岛字体；留空使用系统默认字体。
+    $name:zh-TW: 字体
+    $description:zh-TW: 指定灵动岛字体；留空使用系统默认字体。
   - ContourBorderMode: default
     $name: Contour border
     $description: Choose the island's border style. Default uses the theme's matching border, Auto extracts the border color from album art, and Borderless removes all outer border outlines.
     $options:
-      - default: Default
-      - auto: Auto (From album art)
-      - borderless: Borderless
-  - ContourBorderHex: "#E0E0E069"
+    - default: Default
+    - auto: Auto (From album art)
+    - borderless: Borderless
+    $name:zh-CN: 外轮廓边框
+    $description:zh-CN: 选择主题默认边框、专辑自动取色或无边框。
+    $name:zh-TW: 外轮廓边框
+    $description:zh-TW: 选择主题默认边框、专辑自动取色或无边框。
+    $options:zh-CN:
+    - default: 默认
+    - auto: 自动提取专辑颜色
+    - borderless: 无边框
+    $options:zh-TW:
+    - default: 默认
+    - auto: 自动提取专辑颜色
+    - borderless: 无边框
+  - ContourBorderHex: '#E0E0E069'
     $name: Contour border hex color
-    $description: 'Hex color for the island contour stroke. Changing it from the default overrides the selected Theme preset; restore the default to go back to the preset.'
-  - PillBgColor: "#10101024"
+    $description: Hex color for the island contour stroke. Changing it from the default overrides the selected Theme preset; restore the default to go back to the preset.
+    $name:zh-CN: 轮廓颜色
+    $description:zh-CN: 十六进制轮廓颜色；修改默认值会覆盖主题预设。
+    $name:zh-TW: 轮廓颜色
+    $description:zh-TW: 十六进制轮廓颜色；修改默认值会覆盖主题预设。
+  - PillBgColor: '#10101024'
     $name: Pill background color
-    $description: 'Hex color for the island background. Accepts 3, 4, 6 or 8 hex digits, so use the 8-digit RRGGBBAA form for a translucent background (for example 0D0D0FB0) while keeping the text and icons opaque. Changing it from the default overrides the selected Theme preset; restore the default to go back to the preset.'
-  - TextPrimaryColor: "#F2F2F7"
+    $description: Hex color for the island background. Accepts 3, 4, 6 or 8 hex digits, so use the 8-digit RRGGBBAA form for a translucent background (for example 0D0D0FB0) while keeping the text and icons opaque. Changing it from the default overrides the selected Theme preset; restore the default to go back to the preset.
+    $name:zh-CN: 背景颜色
+    $description:zh-CN: 支持 3、4、6 或 8 位十六进制颜色；8 位 RRGGBBAA 可设置透明度。修改默认值会覆盖主题预设。
+    $name:zh-TW: 背景颜色
+    $description:zh-TW: 支持 3、4、6 或 8 位十六进制颜色；8 位 RRGGBBAA 可设置透明度。修改默认值会覆盖主题预设。
+  - TextPrimaryColor: '#F2F2F7'
     $name: Primary text color
-    $description: 'Accessible hex color for titles and main text. Changing it from the default overrides the selected Theme preset; restore the default to go back to the preset.'
-  - TextSecondaryColor: "#D1D1D6"
+    $description: Accessible hex color for titles and main text. Changing it from the default overrides the selected Theme preset; restore the default to go back to the preset.
+    $name:zh-CN: 主要文字颜色
+    $description:zh-CN: 标题和主要文字的十六进制颜色；修改默认值会覆盖主题预设。
+    $name:zh-TW: 主要文字颜色
+    $description:zh-TW: 标题和主要文字的十六进制颜色；修改默认值会覆盖主题预设。
+  - TextSecondaryColor: '#D1D1D6'
     $name: Secondary text color
-    $description: 'Accessible hex color for artist names and muted labels. Changing it from the default overrides the selected Theme preset; restore the default to go back to the preset.'
+    $description: Accessible hex color for artist names and muted labels. Changing it from the default overrides the selected Theme preset; restore the default to go back to the preset.
+    $name:zh-CN: 次要文字颜色
+    $description:zh-CN: 艺术家名称和次要文字的十六进制颜色；修改默认值会覆盖主题预设。
+    $name:zh-TW: 次要文字颜色
+    $description:zh-TW: 艺术家名称和次要文字的十六进制颜色；修改默认值会覆盖主题预设。
   $name: Colors & Theming
+  $name:zh-CN: 颜色与主题
+  $name:zh-TW: 颜色与主题
 - Indicators:
   - PrivacyDots: true
     $name: Show privacy indicators (Mic & Camera)
     $description: Master toggle to display the iOS-style privacy dots when microphone or camera is in use.
+    $name:zh-CN: 显示隐私指示
+    $description:zh-CN: 摄像头或麦克风使用时显示隐私圆点。
+    $name:zh-TW: 显示隐私指示
+    $description:zh-TW: 摄像头或麦克风使用时显示隐私圆点。
   - PrivacyDotsMic: true
     $name: Show microphone indicator (Orange dot)
     $description: Show the orange dot when microphone is in use. Turn off if background apps (like Discord/OBS) keep it permanently active.
-  - PrivacyDotsMicHex: "#FF9500"
+    $name:zh-CN: 显示麦克风指示
+    $description:zh-CN: 麦克风使用时显示橙色圆点。
+    $name:zh-TW: 显示麦克风指示
+    $description:zh-TW: 麦克风使用时显示橙色圆点。
+  - PrivacyDotsMicHex: '#FF9500'
     $name: Microphone dot color
     $description: Custom hex color for microphone privacy indicator.
+    $name:zh-CN: 麦克风指示颜色
+    $description:zh-CN: 麦克风隐私圆点的十六进制颜色。
+    $name:zh-TW: 麦克风指示颜色
+    $description:zh-TW: 麦克风隐私圆点的十六进制颜色。
   - PrivacyDotsCam: true
     $name: Show camera indicator (Green dot)
     $description: Show the green dot when webcam is in use.
-  - PrivacyDotsCamHex: "#34C759"
+    $name:zh-CN: 显示摄像头指示
+    $description:zh-CN: 摄像头使用时显示绿色圆点。
+    $name:zh-TW: 显示摄像头指示
+    $description:zh-TW: 摄像头使用时显示绿色圆点。
+  - PrivacyDotsCamHex: '#34C759'
     $name: Camera dot color
     $description: Custom hex color for camera privacy indicator.
+    $name:zh-CN: 摄像头指示颜色
+    $description:zh-CN: 摄像头隐私圆点的十六进制颜色。
+    $name:zh-TW: 摄像头指示颜色
+    $description:zh-TW: 摄像头隐私圆点的十六进制颜色。
   $name: Privacy Indicators
+  $name:zh-CN: 隐私指示
+  $name:zh-TW: 隐私指示
 - Modules:
   - Media: true
     $name: Media module
     $description: Shows album art, song info, and playback controls when music is playing.
+    $name:zh-CN: 媒体模块
+    $description:zh-CN: 播放媒体时显示封面、歌曲信息和播放控制。
+    $name:zh-TW: 媒体模块
+    $description:zh-TW: 播放媒体时显示封面、歌曲信息和播放控制。
   - MediaAutoExpand: false
     $name: Auto-expand on track change
     $description: Automatically expand the island when a new song or video starts playing. If disabled, album art updates smoothly in the collapsed pill without unprompted expansion.
+    $name:zh-CN: 切歌时自动展开
+    $description:zh-CN: 歌曲或视频切换时自动展开；关闭后在收起状态平滑更新。
+    $name:zh-TW: 切歌时自动展开
+    $description:zh-TW: 歌曲或视频切换时自动展开；关闭后在收起状态平滑更新。
   - Volume: true
     $name: Volume slider flyout
     $description: Shows a volume slider banner on the island when adjusting system volume. Disable if you prefer the default Windows volume flyout.
+    $name:zh-CN: 音量滑条
+    $description:zh-CN: 调整系统音量时显示灵动岛音量面板。
+    $name:zh-TW: 音量滑条
+    $description:zh-TW: 调整系统音量时显示灵动岛音量面板。
   - CapsLock: true
     $name: Caps Lock module
     $description: Shows an indicator when Caps Lock or Num Lock state changes.
+    $name:zh-CN: 大小写锁定提示
+    $description:zh-CN: 显示 Caps Lock 和 Num Lock 的状态变化。
+    $name:zh-TW: 大小写锁定提示
+    $description:zh-TW: 显示 Caps Lock 和 Num Lock 的状态变化。
   - Battery: true
     $name: Battery module
     $description: Shows an alert when your laptop battery is running low.
+    $name:zh-CN: 电池模块
+    $description:zh-CN: 笔记本电量较低时显示提醒。
+    $name:zh-TW: 电池模块
+    $description:zh-TW: 笔记本电量较低时显示提醒。
   - BluetoothIndicator: true
     $name: Bluetooth connect/disconnect indicator
     $description: Shows a card with the device name, category icon, and battery level (if available) when a Bluetooth device connects or disconnects.
+    $name:zh-CN: 蓝牙连接提示
+    $description:zh-CN: 蓝牙设备连接或断开时显示设备名称、图标和可用电量。
+    $name:zh-TW: 蓝牙连接提示
+    $description:zh-TW: 蓝牙设备连接或断开时显示设备名称、图标和可用电量。
   - BluetoothShowBattery: true
     $name: Show Bluetooth battery level
     $description: Reads battery level over BLE GATT when the device supports it. Not all classic Bluetooth devices report battery this way — when unavailable, only a Connected/Disconnected label is shown.
+    $name:zh-CN: 显示蓝牙电量
+    $description:zh-CN: 通过 BLE GATT 读取支持的设备电量；不支持时只显示连接状态。
+    $name:zh-TW: 显示蓝牙电量
+    $description:zh-TW: 通过 BLE GATT 读取支持的设备电量；不支持时只显示连接状态。
   - Progress: true
     $name: Progress module
     $description: Shows a progress ring around the island for downloads or file copies.
+    $name:zh-CN: 进度模块
+    $description:zh-CN: 为下载或文件复制显示进度环。
+    $name:zh-TW: 进度模块
+    $description:zh-TW: 为下载或文件复制显示进度环。
   - TimerModule: true
     $name: Focus Timer module
     $description: Enables a Pomodoro-style focus/break timer, startable from the island's right-click menu.
+    $name:zh-CN: 专注计时器
+    $description:zh-CN: 启用专注 / 休息计时器，可通过右键菜单启动。
+    $name:zh-TW: 专注计时器
+    $description:zh-TW: 启用专注 / 休息计时器，可通过右键菜单启动。
   - NBAScores: false
     $name: NBA live scores
-    $description: 默认关闭，启动时不询问球队。启用此总开关后，从右键菜单打开 NBA 主队设置并选择开启；无直播时显示普通时钟。
+    $description: Off by default. Enable this and choose favorites from the island menu; the clock is shown when no game is live.
+    $name:zh-CN: NBA 实时比分
+    $description:zh-CN: 默认关闭；启用后从右键菜单设置主队，无直播时显示普通时钟。
+    $name:zh-TW: NBA 实时比分
+    $description:zh-TW: 默认关闭；启用后从右键菜单设置主队，无直播时显示普通时钟。
   - Clipboard: true
     $name: Clipboard module
     $description: Shows a quick preview of the text or images you just copied.
+    $name:zh-CN: 剪贴板模块
+    $description:zh-CN: 快速预览刚复制的文字或图片。
+    $name:zh-TW: 剪贴板模块
+    $description:zh-TW: 快速预览刚复制的文字或图片。
   - StatusCountdownProgress: false
     $name: Status countdown progress bar
     $description: Shows a subtle countdown progress bar at the bottom of temporary status alert cards (such as Clipboard and Device alerts). Disabled by default.
+    $name:zh-CN: 状态提示倒计时
+    $description:zh-CN: 在临时状态提示底部显示倒计时进度条。
+    $name:zh-TW: 状态提示倒计时
+    $description:zh-TW: 在临时状态提示底部显示倒计时进度条。
   - DoNotDisturbIndicator: true
     $name: Do Not Disturb status alert
     $description: Shows a status alert card when Do Not Disturb is toggled in the Windows notification panel.
+    $name:zh-CN: 勿扰状态提示
+    $description:zh-CN: Windows 勿扰模式切换时显示提示。
+    $name:zh-TW: 勿扰状态提示
+    $description:zh-TW: Windows 勿扰模式切换时显示提示。
   - HardwareMonitorModule: true
     $name: Include Hardware Monitor in scroll loop
     $description: Add CPU, GPU, RAM, FPS and Network stats card to mouse-wheel scroll loop.
+    $name:zh-CN: 硬件监视页面
+    $description:zh-CN: 在滚动页面中显示 CPU、GPU、内存、磁盘及网络信息。
+    $name:zh-TW: 硬件监视页面
+    $description:zh-TW: 在滚动页面中显示 CPU、GPU、内存、磁盘及网络信息。
   - GameOverlay: false
     $name: Enable game overlay mode
     $description: Replaces the clock with live stats like FPS, CPU, and RAM usage.
+    $name:zh-CN: 游戏悬浮窗
+    $description:zh-CN: 用实时 FPS、CPU 和内存等信息替代时钟。
+    $name:zh-TW: 游戏悬浮窗
+    $description:zh-TW: 用实时 FPS、CPU 和内存等信息替代时钟。
   - ShowMetricText: false
     $name: Show labels in metric chips
     $description: Adds text labels (like "CPU") inside the game overlay bars.
+    $name:zh-CN: 显示指标标签
+    $description:zh-CN: 在游戏悬浮窗指标中显示 CPU 等文字。
+    $name:zh-TW: 显示指标标签
+    $description:zh-TW: 在游戏悬浮窗指标中显示 CPU 等文字。
   - Weather: true
     $name: Weather module
     $description: Shows the weather on the right side of the pill. Turn off to only show the clock.
-  - WeatherCity: ""
-    $name: 天气城市（留空按公网 IP 定位）
-    $description: '留空自动定位；代理或 VPN 可能影响结果。手动覆盖可填九位中国天气网城市编号，例如北京 101010100。'
+    $name:zh-CN: 天气模块
+    $description:zh-CN: 在灵动岛中显示天气；关闭后只显示时钟。
+    $name:zh-TW: 天气模块
+    $description:zh-TW: 在灵动岛中显示天气；关闭后只显示时钟。
+  - WeatherCity: ''
+    $name: 'Weather city (blank: locate by public IP)'
+    $description: Leave blank for IP location; proxies and VPNs can affect it. Or enter a nine-digit China Weather city code, such as Beijing 101010100.
+    $name:zh-CN: 天气城市（留空按公网 IP 定位）
+    $description:zh-CN: 留空自动定位；代理或 VPN 可能影响结果。也可填写九位中国天气网城市编号，例如北京 101010100。
+    $name:zh-TW: 天气城市（留空按公网 IP 定位）
+    $description:zh-TW: 留空自动定位；代理或 VPN 可能影响结果。也可填写九位中国天气网城市编号，例如北京 101010100。
   - MealReminders: true
-    $name: 吃饭提醒
-    $description: 按本机时间提醒午饭和晚饭。
-  - LunchTime: "11:00"
-    $name: 午饭时间
-    $description: 使用 24 小时制 HH:mm，留空或格式错误则不提醒。
-  - DinnerTime: "17:00"
-    $name: 晚饭时间
-    $description: 使用 24 小时制 HH:mm，留空或格式错误则不提醒。
+    $name: Meal reminders
+    $description: Remind for lunch and dinner using local time.
+    $name:zh-CN: 吃饭提醒
+    $description:zh-CN: 按本机时间提醒午饭和晚饭。
+    $name:zh-TW: 吃饭提醒
+    $description:zh-TW: 按本机时间提醒午饭和晚饭。
+  - LunchTime: '11:00'
+    $name: Lunch time
+    $description: Use 24-hour HH:mm. Blank or invalid values disable the reminder.
+    $name:zh-CN: 午饭时间
+    $description:zh-CN: 使用 24 小时制 HH:mm，留空或格式错误则不提醒。
+    $name:zh-TW: 午饭时间
+    $description:zh-TW: 使用 24 小时制 HH:mm，留空或格式错误则不提醒。
+  - DinnerTime: '17:00'
+    $name: Dinner time
+    $description: Use 24-hour HH:mm. Blank or invalid values disable the reminder.
+    $name:zh-CN: 晚饭时间
+    $description:zh-CN: 使用 24 小时制 HH:mm，留空或格式错误则不提醒。
+    $name:zh-TW: 晚饭时间
+    $description:zh-TW: 使用 24 小时制 HH:mm，留空或格式错误则不提醒。
   - WeatherFahrenheit: false
     $name: Use Fahrenheit
     $description: Display weather temperature and wind speed in imperial units.
-  - Language: auto
-    $name: Language
-    $description: Language for the island's own text labels. Auto follows your Windows display language.
-    $options:
-      - auto: Auto (Follow Windows)
-      - en: English
-      - fr: Français (French)
-      - es: Español (Spanish)
-      - de: Deutsch (German)
-      - pt: Português (Portuguese)
-      - it: Italiano (Italian)
-      - ru: Русский (Russian)
-      - tr: Türkçe (Turkish)
-      - hi: हिन्दी (Hindi)
-      - zh: 简体中文 (Simplified Chinese)
-      - ja: 日本語 (Japanese)
-      - ko: 한국어 (Korean)
+    $name:zh-CN: 使用华氏度
+    $description:zh-CN: 温度使用华氏度，风速使用英制单位。
+    $name:zh-TW: 使用华氏度
+    $description:zh-TW: 温度使用华氏度，风速使用英制单位。
   - ClockFormat: system
     $name: Clock format
     $description: Choose 12-hour or 24-hour time, or follow your Windows locale setting.
     $options:
-      - system: Follow Windows locale
-      - 12h: 12-hour (3:07 PM)
-      - 24h: 24-hour (15:07)
+    - system: Follow Windows locale
+    - 12h: 12-hour (3:07 PM)
+    - 24h: 24-hour (15:07)
+    $name:zh-CN: 时钟格式
+    $description:zh-CN: 选择 12 小时制、24 小时制或跟随 Windows 区域格式。
+    $name:zh-TW: 时钟格式
+    $description:zh-TW: 选择 12 小时制、24 小时制或跟随 Windows 区域格式。
+    $options:zh-CN:
+    - system: 跟随 Windows 区域格式
+    - 12h: 12 小时制（下午 3:07）
+    - 24h: 24 小时制（15:07）
+    $options:zh-TW:
+    - system: 跟随 Windows 区域格式
+    - 12h: 12 小时制（下午 3:07）
+    - 24h: 24 小时制（15:07）
   - ShowSeconds: false
     $name: Show seconds on the clock
     $description: Include seconds in the expanded clock. Costs a little more CPU because the clock then redraws every second.
-  - DateFormat: ""
+    $name:zh-CN: 显示秒数
+    $description:zh-CN: 在时钟中显示秒数，可能略微增加 CPU 使用。
+    $name:zh-TW: 显示秒数
+    $description:zh-TW: 在时钟中显示秒数，可能略微增加 CPU 使用。
+  - DateFormat: ''
     $name: Custom date format
-    $description: 'Custom date pattern for the idle dashboard. Leave empty to follow your Windows locale. Supports yyyy (year), MM / M (month), dd / d (day), MMM (short month name), MMMM (full month name), ddd / dddd (weekday). Any other characters are printed as-is, so CJK formats like yyyy年MM月dd日 work.'
+    $description: Custom date pattern for the idle dashboard. Leave empty to follow your Windows locale. Supports yyyy (year), MM / M (month), dd / d (day), MMM (short month name), MMMM (full month name), ddd / dddd (weekday). Any other characters are printed as-is, so CJK formats like yyyy年MM月dd日 work.
+    $name:zh-CN: 自定义日期格式
+    $description:zh-CN: 留空跟随系统；支持 yyyy、MM、M、dd、d、MMM、MMMM、ddd、dddd。
+    $name:zh-TW: 自定义日期格式
+    $description:zh-TW: 留空跟随系统；支持 yyyy、MM、M、dd、d、MMM、MMMM、ddd、dddd。
   - DateFirst: false
     $name: Show date above the time
     $description: Swap the idle dashboard so the date is the headline and the time sits beneath it.
+    $name:zh-CN: 日期显示在时间前
+    $description:zh-CN: 交换日期与时间的显示顺序。
+    $name:zh-TW: 日期显示在时间前
+    $description:zh-TW: 交换日期与时间的显示顺序。
   - Lyrics: true
-    $name: 实时歌词
-    $description: 仅网易云音乐、QQ 音乐、酷狗、酷我、Spotify、Apple Music 客户端支持歌词；浏览器不显示歌词。歌词通过网易云、QQ、酷狗和 LRCLIB 匹配。
+    $name: Live lyrics
+    $description: Supports NetEase, QQ Music, Kugou, Kuwo, Spotify and Apple Music desktop apps, not browsers. Lyrics are matched using NetEase, QQ, Kugou and LRCLIB.
+    $name:zh-CN: 实时歌词
+    $description:zh-CN: 支持网易云、QQ 音乐、酷狗、酷我、Spotify 和 Apple Music 客户端；浏览器不显示歌词。
+    $name:zh-TW: 实时歌词
+    $description:zh-TW: 支持网易云、QQ 音乐、酷狗、酷我、Spotify 和 Apple Music 客户端；浏览器不显示歌词。
   - CollapsedLyrics: true
-    $name: 收起时显示歌词
-    $description: 播放音乐且胶囊收起时，平滑自适应显示当前句歌词；右键菜单亦可随时切换。
+    $name: Show lyrics when collapsed
+    $description: Show the current lyric while the island is collapsed; also available in the right-click menu.
+    $name:zh-CN: 收起时显示歌词
+    $description:zh-CN: 播放音乐且胶囊收起时显示当前歌词，也可在右键菜单切换。
+    $name:zh-TW: 收起时显示歌词
+    $description:zh-TW: 播放音乐且胶囊收起时显示当前歌词，也可在右键菜单切换。
   - MediaTabLyrics: false
-    $name: 媒体页内显示歌词
+    $name: Show lyrics on media page
+    $name:zh-CN: 媒体页内显示歌词
+    $name:zh-TW: 媒体页内显示歌词
   - LyricsCache: true
-    $name: 缓存歌词到本机
+    $name: Cache lyrics locally
+    $name:zh-CN: 缓存歌词到本机
+    $name:zh-TW: 缓存歌词到本机
   - LyricsCacheMaxMB: '25'
-    $name: 歌词缓存容量
+    $name: Lyrics cache limit
     $options:
-      - '0': 关闭磁盘缓存
-      - '10': 10 MB
-      - '25': 25 MB
-      - '100': 100 MB
+    - '0': Disable disk cache
+    - '10': 10 MB
+    - '25': 25 MB
+    - '100': 100 MB
+    $name:zh-CN: 歌词缓存容量
+    $name:zh-TW: 歌词缓存容量
+    $options:zh-CN:
+    - '0': 关闭磁盘缓存
+    - '10': 10 MB
+    - '25': 25 MB
+    - '100': 100 MB
+    $options:zh-TW:
+    - '0': 关闭磁盘缓存
+    - '10': 10 MB
+    - '25': 25 MB
+    - '100': 100 MB
   - LyricsOffsetMs: 0
-    $name: 歌词偏移（扬声器／有线，毫秒）
-    $description: -3000 到 3000；正数提前，负数延后。
+    $name: Lyrics offset (speaker / wired, ms)
+    $description: -3000 to 3000; positive values advance and negative values delay lyrics.
+    $name:zh-CN: 歌词偏移（扬声器 / 有线，毫秒）
+    $description:zh-CN: 范围 -3000～3000；正数提前，负数延后。
+    $name:zh-TW: 歌词偏移（扬声器 / 有线，毫秒）
+    $description:zh-TW: 范围 -3000～3000；正数提前，负数延后。
   - LyricsOffsetBluetoothMs: 0
-    $name: 歌词偏移（蓝牙，毫秒）
+    $name: Lyrics offset (Bluetooth, ms)
+    $name:zh-CN: 歌词偏移（蓝牙，毫秒）
+    $name:zh-TW: 歌词偏移（蓝牙，毫秒）
   - QuickLookup: true
-    $name: 快捷查词
-    $description: 英中、中英词典；输入停顿后向有道请求候选及拼写建议，Enter 查询。最近记录仅存内存。
+    $name: Quick lookup
+    $description: English–Chinese dictionary. Suggestions are requested from Youdao after typing; press Enter to look up. Recent queries stay in memory.
+    $name:zh-CN: 快捷查词
+    $description:zh-CN: 支持英中、中英词典；输入暂停后向有道请求候选，Enter 查询。最近记录仅存内存。
+    $name:zh-TW: 快捷查词
+    $description:zh-TW: 支持英中、中英词典；输入暂停后向有道请求候选，Enter 查询。最近记录仅存内存。
   - FileTrayModule: true
-    $name: File Tray (drag & drop shelf)
-    $description: 拖入文件可暂存路径，单击打开、按住拖出。点击 × 后，本机普通文件会在 7 天后永久删除原文件（不进回收站）；七天内重新拖入可取消。文件被修改或替换时取消删除。退出期间不执行，下次启动补查。文件夹仅移除入口；右键清空也仅移除入口。
+    $name: File tray (drag and drop)
+    $description: Dragging files stores their paths; click to open or drag them out. Clicking × schedules permanent deletion of a local original file after 7 days, without the Recycle Bin. Re-add within 7 days to cancel; modified or replaced files are protected. Deletion resumes after restart. Folders and clearing from the menu only remove entries.
+    $name:zh-CN: 文件托盘
+    $description:zh-CN: 拖入文件暂存路径，单击打开、按住拖出。点击 × 后，本机普通文件将在 7 天后永久删除原文件（不进入回收站）；七天内重新拖入可取消，文件修改或替换后也会取消。退出期间不执行，下次启动补查。文件夹和右键清空只移除入口。
+    $name:zh-TW: 文件托盘
+    $description:zh-TW: 拖入文件暂存路径，单击打开、按住拖出。点击 × 后，本机普通文件将在 7 天后永久删除原文件（不进入回收站）；七天内重新拖入可取消，文件修改或替换后也会取消。退出期间不执行，下次启动补查。文件夹和右键清空只移除入口。
   - FileTrayMaxItems: 10
     $name: File Tray capacity
     $description: 1 to 25. How many files the shelf keeps before the oldest one drops off.
-  - MediaExpandBlocklist: ""
+    $name:zh-CN: 文件托盘容量
+    $description:zh-CN: 范围 1～25，超过容量时移除最旧的入口。
+    $name:zh-TW: 文件托盘容量
+    $description:zh-TW: 范围 1～25，超过容量时移除最旧的入口。
+  - MediaExpandBlocklist: ''
     $name: Never auto-expand for these apps
     $description: 'Comma-separated list of app or site names that should never make the island expand on a track change, while still updating quietly in the collapsed pill. Matched loosely against the media source and title, for example: chrome, tiktok, youtube.'
+    $name:zh-CN: 这些应用切歌时不自动展开
+    $description:zh-CN: 用逗号分隔应用或网站名称，例如 chrome、tiktok、youtube；收起状态仍会更新。
+    $name:zh-TW: 这些应用切歌时不自动展开
+    $description:zh-TW: 用逗号分隔应用或网站名称，例如 chrome、tiktok、youtube；收起状态仍会更新。
   - GameOverlayShowFps: true
     $name: Game overlay - show FPS
     $description: Include the frame rate in the game overlay strip.
+    $name:zh-CN: 游戏悬浮窗：显示 FPS
+    $description:zh-CN: 显示帧率。
+    $name:zh-TW: 游戏悬浮窗：显示 FPS
+    $description:zh-TW: 显示帧率。
   - GameOverlayShowCpu: true
     $name: Game overlay - show CPU
     $description: Include CPU utilization in the game overlay strip.
+    $name:zh-CN: 游戏悬浮窗：显示 CPU
+    $description:zh-CN: 显示 CPU 使用率。
+    $name:zh-TW: 游戏悬浮窗：显示 CPU
+    $description:zh-TW: 显示 CPU 使用率。
   - GameOverlayShowGpu: true
     $name: Game overlay - show GPU
     $description: Include GPU utilization in the game overlay strip.
+    $name:zh-CN: 游戏悬浮窗：显示 GPU
+    $description:zh-CN: 显示 GPU 使用率。
+    $name:zh-TW: 游戏悬浮窗：显示 GPU
+    $description:zh-TW: 显示 GPU 使用率。
   - GameOverlayShowRam: true
     $name: Game overlay - show RAM
     $description: Include memory usage in the game overlay strip.
+    $name:zh-CN: 游戏悬浮窗：显示内存
+    $description:zh-CN: 显示内存使用率。
+    $name:zh-TW: 游戏悬浮窗：显示内存
+    $description:zh-TW: 显示内存使用率。
   - GameOverlayShowDisk: true
     $name: Game overlay - show disk
     $description: Include disk usage in the game overlay strip.
+    $name:zh-CN: 游戏悬浮窗：显示磁盘
+    $description:zh-CN: 显示磁盘使用率。
+    $name:zh-TW: 游戏悬浮窗：显示磁盘
+    $description:zh-TW: 显示磁盘使用率。
   - GameOverlayCompact: false
     $name: Game overlay - compact size
     $description: Shrink the game overlay to a narrow strip that fits neatly inside the taskbar area.
+    $name:zh-CN: 游戏悬浮窗：紧凑尺寸
+    $description:zh-CN: 缩小为适合任务栏的窄条。
+    $name:zh-TW: 游戏悬浮窗：紧凑尺寸
+    $description:zh-TW: 缩小为适合任务栏的窄条。
   $name: Modules & Features
+  $name:zh-CN: 模块与功能
+  $name:zh-TW: 模块与功能
 - Shortcuts:
   - HideShowHotkeyEnabled: true
     $name: Enable hide/show hotkey
     $description: Toggle the island's visibility instantly with a keyboard shortcut. The hotkey is the only way to bring a hidden island back, so leave this on unless you're comfortable re-enabling it from Windhawk settings.
+    $name:zh-CN: 启用显示 / 隐藏快捷键
+    $description:zh-CN: 隐藏后只能使用快捷键重新显示；关闭前请确认能在设置中重新启用。
+    $name:zh-TW: 启用显示 / 隐藏快捷键
+    $description:zh-TW: 隐藏后只能使用快捷键重新显示；关闭前请确认能在设置中重新启用。
   - HideShowModifiers: ctrl_alt
     $name: Hotkey modifiers
     $description: Modifier keys combined with the letter/number key below.
     $options:
-      - ctrl_alt: Ctrl + Alt
-      - ctrl_shift: Ctrl + Shift
-      - alt_shift: Alt + Shift
-      - win_alt: Win + Alt
-      - ctrl_alt_shift: Ctrl + Alt + Shift
+    - ctrl_alt: Ctrl + Alt
+    - ctrl_shift: Ctrl + Shift
+    - alt_shift: Alt + Shift
+    - win_alt: Win + Alt
+    - ctrl_alt_shift: Ctrl + Alt + Shift
+    $name:zh-CN: 显示 / 隐藏快捷键修饰键
+    $description:zh-CN: 与下方字母或数字组合使用。
+    $name:zh-TW: 显示 / 隐藏快捷键修饰键
+    $description:zh-TW: 与下方字母或数字组合使用。
+    $options:zh-CN:
+    - ctrl_alt: Ctrl + Alt
+    - ctrl_shift: Ctrl + Shift
+    - alt_shift: Alt + Shift
+    - win_alt: Win + Alt
+    - ctrl_alt_shift: Ctrl + Alt + Shift
+    $options:zh-TW:
+    - ctrl_alt: Ctrl + Alt
+    - ctrl_shift: Ctrl + Shift
+    - alt_shift: Alt + Shift
+    - win_alt: Win + Alt
+    - ctrl_alt_shift: Ctrl + Alt + Shift
   - LookupModifiers: alt
-    $name: 查词快捷键修饰键
+    $name: Lookup hotkey modifiers
     $options:
-      - alt: Alt
-      - ctrl_alt: Ctrl + Alt
-      - ctrl_shift: Ctrl + Shift
-      - alt_shift: Alt + Shift
-      - win_alt: Win + Alt
+    - alt: Alt
+    - ctrl_alt: Ctrl + Alt
+    - ctrl_shift: Ctrl + Shift
+    - alt_shift: Alt + Shift
+    - win_alt: Win + Alt
+    $name:zh-CN: 查词快捷键修饰键
+    $name:zh-TW: 查词快捷键修饰键
+    $options:zh-CN:
+    - alt: Alt
+    - ctrl_alt: Ctrl + Alt
+    - ctrl_shift: Ctrl + Shift
+    - alt_shift: Alt + Shift
+    - win_alt: Win + Alt
+    $options:zh-TW:
+    - alt: Alt
+    - ctrl_alt: Ctrl + Alt
+    - ctrl_shift: Ctrl + Shift
+    - alt_shift: Alt + Shift
+    - win_alt: Win + Alt
   - LookupKey: Space
-    $name: 查词快捷键（Space 或 A-Z、0-9）
-  - HideShowKey: "D"
+    $name: Lookup hotkey (Space or A-Z, 0-9)
+    $name:zh-CN: 查词快捷键（Space 或 A-Z、0-9）
+    $name:zh-TW: 查词快捷键（Space 或 A-Z、0-9）
+  - HideShowKey: D
     $name: Hotkey letter/number key
     $description: A single A-Z or 0-9 key combined with the modifiers above. Falls back to "D" if left blank or invalid.
+    $name:zh-CN: 显示 / 隐藏快捷键
+    $description:zh-CN: 使用 A-Z 或 0-9 单个字符；无效时回退到 D。
+    $name:zh-TW: 显示 / 隐藏快捷键
+    $description:zh-TW: 使用 A-Z 或 0-9 单个字符；无效时回退到 D。
   $name: Shortcuts & Hotkeys
+  $name:zh-CN: 快捷键
+  $name:zh-TW: 快捷键
+
 */
 // ==/WindhawkModSettings==
 
@@ -467,6 +1036,7 @@ hicccc77/electron-liquid-glass（MIT，完整许可保留在源码中）。
 #include <unknwn.h>
 #include <dwmapi.h>
 #include <shellapi.h>
+#include <oleacc.h>
 #include <shlobj.h>
 #include <setupapi.h>
 #include <devpropdef.h>
@@ -2450,6 +3020,8 @@ public:
 };
 
 namespace {
+bool UiChinese();
+const wchar_t* UiText(const wchar_t* english, const wchar_t* chinese);
 
 constexpr wchar_t kWindowClass[] = L"Windhawk.DynamicIslandForWindows";
 constexpr UINT WM_APP_LAYOUT_CHANGED = WM_APP + 0x442;
@@ -2959,9 +3531,9 @@ inline std::wstring NormalizeNbaTeam(std::wstring value) {
 inline std::wstring NbaPeriodText(int period, const std::wstring& clock) {
     std::wstring label;
     if (period >= 1 && period <= 4) {
-        label = L"第" + std::to_wstring(period) + L"节";
+        label = std::wstring(UiText(L"Q", L"第")) + std::to_wstring(period) + UiText(L"", L"节");
     } else if (period > 4) {
-        label = period == 5 ? L"加时" : L"加时" + std::to_wstring(period - 4);
+        label = period == 5 ? UiText(L"OT", L"加时") : UiText(L"OT", L"加时") + std::to_wstring(period - 4);
     }
     if (!clock.empty() && clock != L"0:00") {
         if (!label.empty()) label += L" ";
@@ -3043,6 +3615,20 @@ inline int NbaFavoriteRank(const NbaSnapshot& game, const std::wstring& favorite
     }
     return (std::numeric_limits<int>::max)();
 }
+inline std::wstring NbaDisplayTeam(const std::wstring& code, const std::wstring& fallback = L"") {
+    static constexpr const wchar_t* names[] = {
+        L"Hawks", L"Celtics", L"Nets", L"Hornets", L"Bulls", L"Cavaliers", L"Mavericks", L"Nuggets",
+        L"Pistons", L"Warriors", L"Rockets", L"Pacers", L"Clippers", L"Lakers", L"Grizzlies", L"Heat",
+        L"Bucks", L"Timberwolves", L"Pelicans", L"Knicks", L"Thunder", L"Magic", L"76ers", L"Suns",
+        L"Trail Blazers", L"Kings", L"Spurs", L"Raptors", L"Jazz", L"Wizards"
+    };
+    static_assert(std::size(names) == std::size(kNbaTeams));
+    const auto canonical = CanonicalNbaTeam(code);
+    for (size_t i = 0; i < std::size(kNbaTeams); ++i)
+        if (canonical == kNbaTeams[i].code) return UiChinese() ? kNbaTeams[i].name : names[i];
+    return fallback.empty() ? code : fallback;
+}
+
 inline std::wstring NbaFavoritesLabel(const std::wstring& favorites) {
     std::wstring result;
     size_t begin = 0;
@@ -3051,12 +3637,12 @@ inline std::wstring NbaFavoritesLabel(const std::wstring& favorites) {
         const auto code = favorites.substr(begin, end == std::wstring::npos ? end : end - begin);
         for (const auto& team : kNbaTeams) if (code == team.code) {
             if (!result.empty()) result += L"、";
-            result += team.name;
+            result += NbaDisplayTeam(code);
         }
         if (end == std::wstring::npos) break;
         begin = end + 1;
     }
-    return result.empty() ? L"全部球队" : result;
+    return result.empty() ? UiText(L"All teams", L"全部球队") : result;
 }
 
 std::wstring ReadNbaSetup() {
@@ -3160,7 +3746,7 @@ inline bool ParseNbaGames(const std::string& body, std::vector<NbaSnapshot>* out
             candidate.matchup = awayAbbr + L" @ " + homeAbbr;
             candidate.live = state == L"in";
             candidate.finished = state == L"post";
-            candidate.status = candidate.live ? NbaPeriodText(period, clock) : L"已结束";
+            candidate.status = candidate.live ? NbaPeriodText(period, clock) : UiText(L"Finished", L"已结束");
             if (event.HasKey(L"links")) {
                 const JsonArray links = event.GetNamedArray(L"links");
                 for (uint32_t k = 0; k < links.Size(); ++k) {
@@ -3616,7 +4202,9 @@ struct WeatherSnapshot {
     float temperature = 0.0f;
     int weatherCode = 0;
     std::wstring city;
+    std::wstring cityEnglish;
     std::wstring weatherDesc;
+    std::wstring weatherDescEnglish;
     std::wstring windSpeed;
     std::wstring windDir;
     std::wstring humidity;
@@ -4319,13 +4907,52 @@ UiLanguage LanguageFromTag(std::wstring_view tag) {
     return UiLanguage::English;
 }
 
-// Resolves the "auto" language setting from the user's Windows UI language.
+bool IsChineseUiLanguage(LANGID language) {
+    return PRIMARYLANGID(language) == LANG_CHINESE;
+}
+
 UiLanguage DetectSystemLanguage() {
-    wchar_t name[LOCALE_NAME_MAX_LENGTH] = {};
-    if (GetUserDefaultLocaleName(name, ARRAYSIZE(name)) > 0) {
-        return LanguageFromTag(name);
+    return IsChineseUiLanguage(GetUserDefaultUILanguage())
+        ? UiLanguage::ChineseSimplified : UiLanguage::English;
+}
+
+bool UiChinese() {
+    return g_uiLanguage.load(std::memory_order_relaxed) == static_cast<int>(UiLanguage::ChineseSimplified);
+}
+
+const wchar_t* UiText(const wchar_t* english, const wchar_t* chinese) {
+    return UiChinese() ? chinese : english;
+}
+
+std::wstring WeatherTextForUi(std::wstring text) {
+    if (UiChinese()) return text;
+    struct Translation { const wchar_t* chinese; const wchar_t* english; };
+    static constexpr Translation words[] = {
+        {L"雷阵雨伴冰雹", L"Thundershowers with hail"}, {L"大暴雨到特大暴雨", L"Very heavy to extreme rain"},
+        {L"暴雨到大暴雨", L"Heavy to very heavy rain"}, {L"大到暴雨", L"Heavy rain to rainstorm"},
+        {L"中到大雨", L"Moderate to heavy rain"}, {L"小到中雨", L"Light to moderate rain"},
+        {L"小到中雪", L"Light to moderate snow"}, {L"中到大雪", L"Moderate to heavy snow"},
+        {L"大到暴雪", L"Heavy snow to blizzard"}, {L"特大暴雨", L"Extreme rainstorm"},
+        {L"大暴雨", L"Very heavy rain"}, {L"雷阵雨", L"Thundershowers"}, {L"雨夹雪", L"Sleet"},
+        {L"强沙尘暴", L"Severe dust storm"}, {L"沙尘暴", L"Dust storm"}, {L"阵雪", L"Snow showers"},
+        {L"小雪", L"Light snow"}, {L"中雪", L"Moderate snow"}, {L"大雪", L"Heavy snow"},
+        {L"暴雪", L"Blizzard"}, {L"阵雨", L"Showers"}, {L"小雨", L"Light rain"},
+        {L"中雨", L"Moderate rain"}, {L"大雨", L"Heavy rain"}, {L"暴雨", L"Rainstorm"},
+        {L"冻雨", L"Freezing rain"}, {L"多云", L"Cloudy"}, {L"浮尘", L"Dust"}, {L"扬沙", L"Blowing sand"},
+        {L"东北风", L"NE wind"}, {L"东南风", L"SE wind"}, {L"西北风", L"NW wind"}, {L"西南风", L"SW wind"},
+        {L"东风", L"E wind"}, {L"南风", L"S wind"}, {L"西风", L"W wind"}, {L"北风", L"N wind"},
+        {L"无持续风向", L"Variable wind"}, {L"小于", L"<"}, {L"级", L" level"},
+        {L"晴", L"Clear"}, {L"阴", L"Overcast"}, {L"雾", L"Fog"}, {L"霾", L"Haze"},
+        {L"雨", L"Rain"}, {L"雪", L"Snow"}, {L"转", L" to "}, {L"未知", L"Unknown"}
+    };
+    for (const auto& word : words) {
+        size_t position = 0;
+        while ((position = text.find(word.chinese, position)) != std::wstring::npos) {
+            text.replace(position, wcslen(word.chinese), word.english);
+            position += wcslen(word.english);
+        }
     }
-    return UiLanguage::English;
+    return text;
 }
 
 // ── Clock / date presentation (#61) ──────────────────────────────────────────
@@ -4383,7 +5010,7 @@ std::wstring FormatIslandStripClock(const SYSTEMTIME& local, const Settings& set
     const auto time = FormatIslandTime(local, settings.clockFollowSystem,
                                       settings.use24HourClock, settings.showSeconds);
     wchar_t dateBuffer[64]{};
-    const std::wstring date = GetDateFormatEx(L"en-US", 0, &local, L"ddd, MMM d",
+    const std::wstring date = GetDateFormatEx(UiText(L"en-US", L"zh-CN"), 0, &local, UiText(L"ddd, MMM d", L"M月d日 ddd"),
         dateBuffer, ARRAYSIZE(dateBuffer), nullptr) > 0 ? dateBuffer :
         FormatIslandDate(local, L"MM-dd", L"MM-dd");
     return settings.dateFirst ? date + L" · " + time : time + L" · " + date;
@@ -5411,14 +6038,8 @@ void LoadSettings() {
 
     // ── Localization (#35) ───────────────────────────────────────────────────
     {
-        std::wstring langTag = GetStringSettingCopy(L"Modules.Language");
-        if (langTag.empty()) {
-            langTag = L"auto";
-        }
-        next.language = langTag;
-        const UiLanguage resolved = EqualsNoCase(langTag, L"auto") ? DetectSystemLanguage()
-                                                                  : LanguageFromTag(langTag);
-        g_uiLanguage.store(static_cast<int>(resolved), std::memory_order_relaxed);
+        next.language = L"auto";
+        g_uiLanguage.store(static_cast<int>(DetectSystemLanguage()), std::memory_order_relaxed);
     }
 
     // ── File tray (#33) ──────────────────────────────────────────────────────
@@ -8438,6 +9059,8 @@ bool ParseChinaWeather(const std::string& currentScript, const std::string& fore
         if (!ChinaWeatherTemperature(field(current, L"temp"), parsed.temperature)) return false;
         parsed.city = field(current, L"cityname");
         parsed.weatherDesc = field(current, L"weather");
+        parsed.cityEnglish = field(current, L"nameen");
+        parsed.weatherDescEnglish = field(current, L"weathere");
         if (parsed.city.empty() || parsed.weatherDesc.empty()) return false;
         parsed.weatherCode = ChinaWeatherVisualCode(field(current, L"weathercode"));
         parsed.observationTime = observation;
@@ -8627,9 +9250,9 @@ inline TomorrowBrief MakeMealReminder(const SYSTEMTIME& local, int lunchShown, i
     result.meal = slot;
     result.date = date;
     result.key = std::to_wstring(date) + L":" + std::to_wstring(slot);
-    result.title = slot == 1 ? L"午饭提醒 · 11:00" : L"晚饭提醒 · 17:00";
-    result.body = slot == 1 ? L"该吃午饭了" : L"该吃晚饭了";
-    result.detail = L"歇一会儿，按时吃饭";
+    result.title = slot == 1 ? UiText(L"Lunch reminder · 11:00", L"午饭提醒 · 11:00") : UiText(L"Dinner reminder · 17:00", L"晚饭提醒 · 17:00");
+    result.body = slot == 1 ? UiText(L"Time for lunch", L"该吃午饭了") : UiText(L"Time for dinner", L"该吃晚饭了");
+    result.detail = UiText(L"Take a break and have a meal", L"歇一会儿，按时吃饭");
     return result;
 }
 
@@ -8675,10 +9298,10 @@ inline TomorrowBrief ParseTomorrowWeather(const std::string& script, const SYSTE
             swprintf_s(range, L"%s°～%s°%s", WeatherTemperatureText(low).c_str(),
                 WeatherTemperatureText(high).c_str(), fahrenheit ? L"F" : L"C");
             result.date = BriefDateKey(target);
-            result.title = std::wstring(showTomorrow ? L"明天天气 · " : L"今天天气 · ") + (city.empty() ? std::wstring(L"自动定位") : city);
-            result.body = description + L"  " + range;
-            result.detail = std::wstring(item.GetNamedString(L"fe", L"")) + L" " +
-                std::wstring(item.GetNamedString(L"fg", L""));
+            result.title = std::wstring(showTomorrow ? UiText(L"Tomorrow's weather · ", L"明天天气 · ") : UiText(L"Today's weather · ", L"今天天气 · ")) + (city.empty() ? std::wstring(UiText(L"Automatic location", L"自动定位")) : city);
+            result.body = WeatherTextForUi(description) + L"  " + range;
+            result.detail = WeatherTextForUi(std::wstring(item.GetNamedString(L"fe", L"")) + L" " +
+                std::wstring(item.GetNamedString(L"fg", L"")));
             if (result.detail.size() > 80) return {};
             result.key = (showTomorrow ? L"" : L"today:") + std::to_wstring(result.date) + L":" + city;
             return result;
@@ -8711,9 +9334,9 @@ inline TomorrowBrief MakeTomorrowNba(const std::vector<NbaSnapshot>& games, cons
         return std::wstring(time) + L"  " + game.awayAbbr + L" vs " + game.homeAbbr;
     };
     result.date = BriefDateKey(tomorrow);
-    result.title = L"明天 NBA · " + std::to_wstring(selected.size()) + L" 场关注比赛";
+    result.title = std::wstring(UiText(L"Tomorrow's NBA · ", L"明天 NBA · ")) + std::to_wstring(selected.size()) + UiText(L" favorite games", L" 场关注比赛");
     result.body = label(selected[0]);
-    result.detail = selected.size() > 1 ? label(selected[1]) : L"开赛时间为本地时间";
+    result.detail = selected.size() > 1 ? label(selected[1]) : UiText(L"Times shown in local time", L"开赛时间为本地时间");
     result.key = std::to_wstring(result.date) + L":" + favorites;
     result.games.assign(selected.begin(), selected.begin() + (std::min)(selected.size(), size_t{2}));
     return result;
@@ -8726,7 +9349,7 @@ inline int InferImportantKind(const std::wstring& title) {
 }
 
 inline const wchar_t* ImportantKindName(int kind) {
-    return kind==1 ? L"考试" : kind==2 ? L"生日" : L"其他";
+    return kind==1 ? UiText(L"Exam", L"考试") : kind==2 ? UiText(L"Birthday", L"生日") : UiText(L"Other", L"其他");
 }
 
 inline SYSTEMTIME ImportantDate(int date) {
@@ -8807,9 +9430,11 @@ inline TomorrowBrief MakeImportantReminder(const ImportantDay& day, const SYSTEM
     result.important=true;
     result.date=BriefDateKey(local);
     result.key=day.id;
-    result.title=L"重要日子 · "+(remaining==0 ? std::wstring(L"今天") : remaining==1 ? std::wstring(L"明天") : L"还有 "+std::to_wstring(remaining)+L" 天");
+    result.title=std::wstring(UiText(L"Important date · ", L"重要日子 · "))+
+        (remaining==0 ? std::wstring(UiText(L"Today", L"今天")) : remaining==1 ? std::wstring(UiText(L"Tomorrow", L"明天")) :
+         std::wstring(UiText(L"In ", L"还有 "))+std::to_wstring(remaining)+UiText(L" days", L" 天"));
     result.body=day.title;
-    wchar_t date[32]{}; swprintf_s(date,L"%04d 年 %02d 月 %02d 日",day.date/10000,(day.date/100)%100,day.date%100);
+    wchar_t date[32]{}; swprintf_s(date,UiText(L"%04d-%02d-%02d", L"%04d 年 %02d 月 %02d 日"),day.date/10000,(day.date/100)%100,day.date%100);
     result.detail=date;
     return result;
 }
@@ -9158,7 +9783,7 @@ bool PublishCurrentVolume(IAudioEndpointVolume* endpoint, bool show) {
         g_state.muted=muted!=FALSE;
         g_state.volume.percent=percent;
         g_state.volume.muted=muted!=FALSE;
-        g_state.volume.deviceName=L"系统音量";
+        g_state.volume.deviceName=UiText(L"System volume", L"系统音量");
         if (settings.volume && (show || changed || g_volumeDragging.load())) {
             // Check at the event so a volume change cannot wake the island before fullscreen polling catches up.
             if (settings.autoHideFullscreen && IsForegroundFullscreen(g_hwnd)) {
@@ -10134,7 +10759,7 @@ void RefreshImportantDaysList(ImportantDaysDialog& state) {
     for (const auto& day:state.days) {
         const auto label=std::to_wstring(day.date/10000)+L"-"+std::to_wstring((day.date/100)%100)+L"-"+
             std::to_wstring(day.date%100)+L"    【"+ImportantKindName(day.kind)+L"】"+day.title+L"    "+
-            (day.advance ? L"提前 "+std::to_wstring(day.advance)+L" 天及当天" : std::wstring(L"仅当天"));
+            (day.advance ? std::wstring(UiText(L"", L"提前 "))+std::to_wstring(day.advance)+UiText(L" days before and on the day", L" 天及当天") : std::wstring(UiText(L"On the day", L"仅当天")));
         SendMessageW(state.list,LB_ADDSTRING,0,reinterpret_cast<LPARAM>(label.c_str()));
     }
 }
@@ -10144,7 +10769,7 @@ INT_PTR CALLBACK ImportantDaysDialogProc(HWND hwnd, UINT message, WPARAM wParam,
     if (message==WM_INITDIALOG) {
         state=reinterpret_cast<ImportantDaysDialog*>(lParam);
         SetWindowLongPtrW(hwnd,DWLP_USER,reinterpret_cast<LONG_PTR>(state));
-        SetWindowTextW(hwnd,L"重要日子");
+        SetWindowTextW(hwnd,UiText(L"Important dates", L"重要日子"));
         const float scale=GetDpiForWindow(hwnd)/96.0f;
         SetWindowPos(hwnd,nullptr,0,0,static_cast<int>(560*scale),static_cast<int>(470*scale),SWP_NOMOVE|SWP_NOZORDER);
         RECT client{}; GetClientRect(hwnd,&client);
@@ -10156,31 +10781,31 @@ INT_PTR CALLBACK ImportantDaysDialogProc(HWND hwnd, UINT message, WPARAM wParam,
             if (item) SendMessageW(item,WM_SETFONT,reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)),TRUE);
             return item;
         };
-        control(L"STATIC",L"选择日期和提前量；临近日期时主动展开，每个提醒阶段只展示一次。",0,18,14,width,24,0);
+        control(L"STATIC",UiText(L"Choose a date and advance notice. Each reminder is shown once.", L"选择日期和提前量；临近日期时主动展开，每个提醒阶段只展示一次。"),0,18,14,width,24,0);
         state->list=control(L"LISTBOX",L"",WS_BORDER|WS_VSCROLL|WS_TABSTOP|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT,18,44,width,126,100);
-        control(L"STATIC",L"名称：",0,18,187,56,24,0);
+        control(L"STATIC",UiText(L"Name:", L"名称："),0,18,187,56,24,0);
         state->title=control(L"EDIT",L"",WS_BORDER|WS_TABSTOP|ES_AUTOHSCROLL,76,183,width-58,28,101);
         SendMessageW(state->title,EM_SETLIMITTEXT,40,0);
-        control(L"STATIC",L"日期：",0,18,226,56,24,0);
+        control(L"STATIC",UiText(L"Date:", L"日期："),0,18,226,56,24,0);
         state->date=control(DATETIMEPICK_CLASSW,L"",WS_TABSTOP|DTS_SHORTDATEFORMAT,76,222,160,28,102);
         SendMessageW(state->date,DTM_SETFORMATW,0,reinterpret_cast<LPARAM>(L"yyyy-MM-dd"));
-        control(L"STATIC",L"提醒：",0,248,226,50,24,0);
+        control(L"STATIC",UiText(L"Remind:", L"提醒："),0,248,226,50,24,0);
         state->advance=control(L"COMBOBOX",L"",WS_TABSTOP|CBS_DROPDOWNLIST,300,222,width-282,160,103);
-        for (const auto* text:{L"仅当天",L"提前 1 天及当天",L"提前 3 天及当天",L"提前 7 天及当天"})
+        for (const auto* text:{UiText(L"On the day", L"仅当天"),UiText(L"1 day before and on the day", L"提前 1 天及当天"),UiText(L"3 days before and on the day", L"提前 3 天及当天"),UiText(L"7 days before and on the day", L"提前 7 天及当天")})
             SendMessageW(state->advance,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(text));
         SendMessageW(state->advance,CB_SETCURSEL,1,0);
-        control(L"STATIC",L"类型：",0,18,266,56,24,0);
+        control(L"STATIC",UiText(L"Type:", L"类型："),0,18,266,56,24,0);
         state->kind=control(L"COMBOBOX",L"",WS_TABSTOP|CBS_DROPDOWNLIST,76,262,200,140,106);
-        for (const auto* text:{L"其他 · 小圆点",L"考试 · 手绘圈",L"生日 · 蛋糕"})
+        for (const auto* text:{UiText(L"Other · dot", L"其他 · 小圆点"),UiText(L"Exam · circle", L"考试 · 手绘圈"),UiText(L"Birthday · cake", L"生日 · 蛋糕")})
             SendMessageW(state->kind,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(text));
         SendMessageW(state->kind,CB_SETCURSEL,0,0);
-        control(L"BUTTON",L"添加",WS_TABSTOP|BS_DEFPUSHBUTTON,18,310,80,32,104);
-        control(L"BUTTON",L"保存选中",WS_TABSTOP,110,310,110,32,107);
-        control(L"BUTTON",L"删除选中",WS_TABSTOP,232,310,110,32,105);
-        control(L"BUTTON",L"完成",WS_TABSTOP,18+width-100,310,100,32,IDCANCEL);
-        control(L"STATIC",L"每次添加或删除立即保存。饭点：11:00、17:00，提前 10 分钟提醒。",0,18,357,width,36,0);
+        control(L"BUTTON",UiText(L"Add", L"添加"),WS_TABSTOP|BS_DEFPUSHBUTTON,18,310,80,32,104);
+        control(L"BUTTON",UiText(L"Save selected", L"保存选中"),WS_TABSTOP,110,310,110,32,107);
+        control(L"BUTTON",UiText(L"Delete selected", L"删除选中"),WS_TABSTOP,232,310,110,32,105);
+        control(L"BUTTON",UiText(L"Done", L"完成"),WS_TABSTOP,18+width-100,310,100,32,IDCANCEL);
+        control(L"STATIC",UiText(L"Changes are saved immediately. Meal reminders use the configured times.", L"每次添加或删除立即保存。饭点：11:00、17:00，提前 10 分钟提醒。"),0,18,357,width,36,0);
         if (!state->list || !state->title || !state->date || !state->advance || !state->kind) {
-            MessageBoxW(hwnd,L"无法创建日期管理控件，已有日程未修改。",L"重要日子",MB_OK|MB_ICONERROR);
+            MessageBoxW(hwnd,UiText(L"Unable to create date controls. Existing dates are unchanged.", L"无法创建日期管理控件，已有日程未修改。"),UiText(L"Important dates", L"重要日子"),MB_OK|MB_ICONERROR);
             EndDialog(hwnd,0); return TRUE;
         }
         RefreshImportantDaysList(*state);
@@ -10223,16 +10848,16 @@ INT_PTR CALLBACK ImportantDaysDialogProc(HWND hwnd, UINT message, WPARAM wParam,
             if (FAILED(CoCreateGuid(&guid)) || !StringFromGUID2(guid,guidText,ARRAYSIZE(guidText))) return TRUE;
             day.id=id==107 ? state->days[editing].id : guidText;
             if (!ImportantDayValid(day) || (id!=107 && state->days.size()>=32)) {
-                MessageBoxW(hwnd,L"请填写有效名称和日期；最多保存 32 个重要日子。",L"重要日子",MB_OK|MB_ICONINFORMATION);
+                MessageBoxW(hwnd,UiText(L"Enter a valid name and date; up to 32 dates are supported.", L"请填写有效名称和日期；最多保存 32 个重要日子。"),UiText(L"Important dates", L"重要日子"),MB_OK|MB_ICONINFORMATION);
                 return TRUE;
             }
             if (std::any_of(state->days.begin(),state->days.end(),[&](const auto& other){return other.id!=day.id && other.date==day.date && other.title==day.title;})) {
-                MessageBoxW(hwnd,L"这个名称和日期已经添加。",L"重要日子",MB_OK|MB_ICONINFORMATION); return TRUE;
+                MessageBoxW(hwnd,UiText(L"This name and date have already been added.", L"这个名称和日期已经添加。"),UiText(L"Important dates", L"重要日子"),MB_OK|MB_ICONINFORMATION); return TRUE;
             }
             auto next=state->days;
             if (id==107) next[editing]=day; else next.push_back(day);
             if (!Wh_SetStringValue(L"ImportantDays",EncodeImportantDays(next).c_str())) {
-                MessageBoxW(hwnd,L"保存失败，已有日程未修改。",L"重要日子",MB_OK|MB_ICONERROR); return TRUE;
+                MessageBoxW(hwnd,UiText(L"Unable to save. Existing dates are unchanged.", L"保存失败，已有日程未修改。"),UiText(L"Important dates", L"重要日子"),MB_OK|MB_ICONERROR); return TRUE;
             }
             state->days=std::move(next); RefreshImportantDaysList(*state);
             SetWindowTextW(state->title,L""); SetFocus(state->title);
@@ -10243,7 +10868,7 @@ INT_PTR CALLBACK ImportantDaysDialogProc(HWND hwnd, UINT message, WPARAM wParam,
             if (selected<0 || static_cast<size_t>(selected)>=state->days.size()) return TRUE;
             auto next=state->days; next.erase(next.begin()+selected);
             if (!Wh_SetStringValue(L"ImportantDays",EncodeImportantDays(next).c_str())) {
-                MessageBoxW(hwnd,L"保存失败，日程未删除。",L"重要日子",MB_OK|MB_ICONERROR); return TRUE;
+                MessageBoxW(hwnd,UiText(L"Unable to save. The date was not deleted.", L"保存失败，日程未删除。"),UiText(L"Important dates", L"重要日子"),MB_OK|MB_ICONERROR); return TRUE;
             }
             state->days=std::move(next); RefreshImportantDaysList(*state);
             return TRUE;
@@ -10258,7 +10883,7 @@ void ShowImportantDays(HWND owner) {
     const HRESULT initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     ImportantDaysDialog state;
     if (!ReadImportantDays(state.days)) {
-        MessageBoxW(owner,L"已有日程数据无法读取，已保留原数据。",L"重要日子",MB_OK|MB_ICONERROR);
+        MessageBoxW(owner,UiText(L"Unable to read saved dates. The original data has been preserved.", L"已有日程数据无法读取，已保留原数据。"),UiText(L"Important dates", L"重要日子"),MB_OK|MB_ICONERROR);
     } else {
         INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_DATE_CLASSES};
         if (InitCommonControlsEx(&controls)) {
@@ -10270,7 +10895,7 @@ void ShowImportantDays(HWND owner) {
             const auto result=DialogBoxIndirectParamW(GetModuleHandleW(nullptr),dialog,owner,
                 ImportantDaysDialogProc,reinterpret_cast<LPARAM>(&state));
             g_importantDaysOpen=false;
-            if (result==-1) MessageBoxW(owner,L"无法打开日期管理窗口，已有日程未修改。",L"重要日子",MB_OK|MB_ICONERROR);
+            if (result==-1) MessageBoxW(owner,UiText(L"Unable to open date settings. Existing dates are unchanged.", L"无法打开日期管理窗口，已有日程未修改。"),UiText(L"Important dates", L"重要日子"),MB_OK|MB_ICONERROR);
         }
     }
     if (SUCCEEDED(initialized)) CoUninitialize();
@@ -12151,7 +12776,7 @@ Outcome LookupSuggestions(const std::wstring& query, std::vector<LookupRecent>* 
             const auto word = NormalizeQuery(std::wstring(row.GetNamedString(L"entry", L"")));
             if (word.empty() || word.size() > kMaxQueryChars ||
                 std::any_of(entries.begin(), entries.end(), [&](const auto& item) { return item.query == word; })) continue;
-            entries.push_back({word, word, ClipToChars(CollapseWhitespace(std::wstring(row.GetNamedString(L"explain", L""))), 100), L"有道词典"});
+            entries.push_back({word, word, ClipToChars(CollapseWhitespace(std::wstring(row.GetNamedString(L"explain", L""))), 100), UiText(L"Youdao Dictionary", L"有道词典")});
             if (entries.size() == 3) break;
         }
         *out = std::move(entries);
@@ -12175,11 +12800,11 @@ Outcome LookupText(const std::wstring& query, Result* out) {
         const auto word = words.GetAt(0).GetObject();
         Result result;
         result.title = query;
-        result.source = L"有道词典";
-        result.subtitle = english ? L"英 → 中" : L"中 → 英";
+        result.source = UiText(L"Youdao Dictionary", L"有道词典");
+        result.subtitle = english ? UiText(L"English → Chinese", L"英 → 中") : UiText(L"Chinese → English", L"中 → 英");
         for (const auto* key : {L"ukphone", L"usphone"}) {
             const std::wstring phone(word.GetNamedString(key, L""));
-            if (!phone.empty()) result.subtitle += std::wstring(key[0] == L'u' && key[1] == L'k' ? L"  英 /" : L"  美 /") + phone + L"/";
+            if (!phone.empty()) result.subtitle += std::wstring(key[0] == L'u' && key[1] == L'k' ? UiText(L"  UK /", L"  英 /") : UiText(L"  US /", L"  美 /")) + phone + L"/";
         }
         for (const auto& value : word.GetNamedArray(L"trs")) {
             for (const auto& translation : value.GetObject().GetNamedArray(L"tr")) {
@@ -12798,16 +13423,234 @@ DWORD WINAPI LookupThreadProc(void*) {
 }
 
 std::vector<IslandKind> ChooseActivities(const SharedState&, const Settings&, double);
+struct GlassMenuItem {
+    MSAAMENUINFO accessible{};
+    std::wstring text;
+    UINT command = 0;
+    bool submenu = false;
+    bool separator = false;
+};
+
+struct GlassMenu {
+    int dpi = 96;
+    int maxWidth = 640;
+    HBRUSH background = nullptr;
+    HBRUSH highlight = nullptr;
+    HFONT font = nullptr;
+    HFONT symbols = nullptr;
+    std::vector<std::unique_ptr<GlassMenuItem>> items;
+
+    GlassMenu(HWND owner, POINT point) {
+        const UINT windowDpi = owner ? GetDpiForWindow(owner) : 96;
+        dpi = windowDpi ? static_cast<int>(windowDpi) : 96;
+        MONITORINFO monitor{sizeof(monitor)};
+        if (GetMonitorInfoW(MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST), &monitor))
+            maxWidth = (std::max)(Scale(180), static_cast<int>(monitor.rcWork.right - monitor.rcWork.left) - Scale(30));
+        background = CreateSolidBrush(RGB(23, 24, 27));
+        highlight = CreateSolidBrush(RGB(61, 62, 68));
+        font = CreateFontW(-Scale(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                           DEFAULT_PITCH, L"Segoe UI");
+        symbols = CreateFontW(-Scale(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                              OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                              DEFAULT_PITCH, L"Segoe MDL2 Assets");
+    }
+    ~GlassMenu() {
+        if (font) DeleteObject(font);
+        if (symbols) DeleteObject(symbols);
+        if (highlight) DeleteObject(highlight);
+        if (background) DeleteObject(background);
+    }
+    int Scale(int value) const { return MulDiv(value, dpi, 96); }
+
+    void Prepare(HMENU menu) {
+        MENUINFO appearance{sizeof(appearance)};
+        appearance.fMask = MIM_STYLE | MIM_BACKGROUND;
+        GetMenuInfo(menu, &appearance);
+        appearance.fMask = MIM_STYLE | MIM_BACKGROUND;
+        appearance.dwStyle |= MNS_NOCHECK;
+        appearance.hbrBack = background ? background : static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+        SetMenuInfo(menu, &appearance);
+        const int count = GetMenuItemCount(menu);
+        for (int index = 0; index < count; ++index) {
+            MENUITEMINFOW info{sizeof(info)};
+            info.fMask = MIIM_FTYPE | MIIM_STRING | MIIM_ID | MIIM_SUBMENU;
+            if (!GetMenuItemInfoW(menu, index, TRUE, &info)) continue;
+            auto entry = std::make_unique<GlassMenuItem>();
+            entry->separator = (info.fType & MFT_SEPARATOR) != 0;
+            entry->submenu = info.hSubMenu != nullptr;
+            entry->command = info.wID;
+            if (entry->submenu) {
+                entry->command = GetMenuItemID(info.hSubMenu, 0);
+                if (entry->command == 0) entry->command = GetMenuItemID(info.hSubMenu, 1);
+                Prepare(info.hSubMenu);
+            }
+            if (info.cch) {
+                entry->text.resize(info.cch + 1);
+                info.dwTypeData = entry->text.data();
+                info.cch = static_cast<UINT>(entry->text.size());
+                if (GetMenuItemInfoW(menu, index, TRUE, &info)) entry->text.resize(info.cch);
+                else entry->text.clear();
+            }
+            entry->accessible.dwMSAASignature = MSAA_MENU_SIG;
+            entry->accessible.cchWText = static_cast<DWORD>(entry->text.size());
+            entry->accessible.pszWText = entry->text.data();
+            MENUITEMINFOW styled{sizeof(styled)};
+            styled.fMask = MIIM_FTYPE | MIIM_DATA;
+            styled.fType = info.fType | MFT_OWNERDRAW;
+            styled.dwItemData = reinterpret_cast<ULONG_PTR>(entry.get());
+            items.push_back(std::move(entry));
+            if (!SetMenuItemInfoW(menu, index, TRUE, &styled)) items.pop_back();
+        }
+    }
+
+    GlassMenuItem* Find(ULONG_PTR data) const {
+        for (const auto& item : items)
+            if (reinterpret_cast<ULONG_PTR>(item.get()) == data) return item.get();
+        return nullptr;
+    }
+    bool Measure(MEASUREITEMSTRUCT* measure) const {
+        if (!measure || measure->CtlType != ODT_MENU) return false;
+        const auto item = Find(measure->itemData);
+        if (!item) return false;
+        HDC dc = GetDC(nullptr);
+        SIZE size{};
+        if (dc) {
+            HGDIOBJ previous = SelectObject(dc, font ? static_cast<HGDIOBJ>(font) : GetStockObject(DEFAULT_GUI_FONT));
+            GetTextExtentPoint32W(dc, item->text.c_str(), static_cast<int>(item->text.size()), &size);
+            SelectObject(dc, previous);
+            ReleaseDC(nullptr, dc);
+        }
+        measure->itemWidth = (std::min)(maxWidth, (std::max)(Scale(220), static_cast<int>(size.cx) + Scale(88)));
+        measure->itemHeight = Scale(item->separator ? 9 : 32);
+        return true;
+    }
+    wchar_t Icon(const GlassMenuItem& item) const {
+        const UINT id = item.command;
+        if (id >= kMediaSourceMenuBase && id < kMediaSourceMenuLimit) return 0xE8D6;
+        if ((id >= 30 && id <= 34) || (id >= 2010 && id <= 2016)) return 0xE916;
+        switch (id) {
+            case 1: return 0xE711;
+            case 2: case 2002: return 0xE718;
+            case 3: return 0xE7FC;
+            case 9: return 0xE713;
+            case 11: return 0xE74A;
+            case 41: case 2004: return 0xE74D;
+            case 46: return 0xE787;
+            case 47: case 48: return 0xEB52;
+            case 49: return 0xE72C;
+            case 2001: return 0xE8D6;
+            case 2020: return 0xE721;
+            case 2030: return 0xE793;
+            default: return 0;
+        }
+    }
+    bool Draw(DRAWITEMSTRUCT* draw) const {
+        if (!draw || draw->CtlType != ODT_MENU) return false;
+        const auto item = Find(draw->itemData);
+        if (!item) return false;
+        const int saved = SaveDC(draw->hDC);
+        FillRect(draw->hDC, &draw->rcItem, background ? background : static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        const RECT box = draw->rcItem;
+        if (item->separator) {
+            HPEN pen = CreatePen(PS_SOLID, 1, RGB(70, 71, 76));
+            if (pen) {
+                SelectObject(draw->hDC, pen);
+                const int y = (box.top + box.bottom) / 2;
+                MoveToEx(draw->hDC, box.left + Scale(14), y, nullptr);
+                LineTo(draw->hDC, box.right - Scale(14), y);
+                SelectObject(draw->hDC, GetStockObject(BLACK_PEN));
+                DeleteObject(pen);
+            }
+        } else {
+            const bool disabled = (draw->itemState & (ODS_DISABLED | ODS_GRAYED)) != 0;
+            if ((draw->itemState & ODS_SELECTED) && !disabled && highlight) {
+                SelectObject(draw->hDC, highlight);
+                SelectObject(draw->hDC, GetStockObject(NULL_PEN));
+                RoundRect(draw->hDC, box.left + Scale(4), box.top + Scale(2),
+                          box.right - Scale(4), box.bottom - Scale(2), Scale(12), Scale(12));
+            }
+            SetBkMode(draw->hDC, TRANSPARENT);
+            SetTextColor(draw->hDC, disabled ? RGB(133, 134, 140) : RGB(241, 242, 246));
+            SelectObject(draw->hDC, font ? static_cast<HGDIOBJ>(font) : GetStockObject(DEFAULT_GUI_FONT));
+            RECT text = {box.left + Scale(28), box.top, box.right - Scale(item->submenu ? 65 : 42), box.bottom};
+            DrawTextW(draw->hDC, item->text.c_str(), static_cast<int>(item->text.size()), &text,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            if (symbols) SelectObject(draw->hDC, symbols);
+            if (draw->itemState & ODS_CHECKED) {
+                const wchar_t check = 0xE73E;
+                RECT area = {box.left + Scale(7), box.top, box.left + Scale(24), box.bottom};
+                DrawTextW(draw->hDC, &check, 1, &area, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
+            const wchar_t icon = Icon(*item);
+            if (icon) {
+                RECT area = {box.right - Scale(item->submenu ? 53 : 33), box.top,
+                             box.right - Scale(item->submenu ? 34 : 14), box.bottom};
+                DrawTextW(draw->hDC, &icon, 1, &area, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
+            if (item->submenu) {
+                const wchar_t arrow = 0xE76C;
+                RECT area = {box.right - Scale(25), box.top, box.right - Scale(8), box.bottom};
+                DrawTextW(draw->hDC, &arrow, 1, &area, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
+        }
+        if (saved) RestoreDC(draw->hDC, saved);
+        return true;
+    }
+};
+
+thread_local GlassMenu* g_activeGlassMenu = nullptr;
+
+LRESULT CALLBACK GlassMenuWindowHook(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HCBT_CREATEWND && g_activeGlassMenu) {
+        HWND window = reinterpret_cast<HWND>(wParam);
+        wchar_t className[32]{};
+        if (GetClassNameW(window, className, ARRAYSIZE(className)) && wcscmp(className, L"#32768") == 0) {
+            SetWindowLongPtrW(window, GWL_EXSTYLE, GetWindowLongPtrW(window, GWL_EXSTYLE) | WS_EX_LAYERED);
+            SetLayeredWindowAttributes(window, 0, 210, LWA_ALPHA);
+            const int rounded = 2;
+            DwmSetWindowAttribute(window, static_cast<DWMWINDOWATTRIBUTE>(33), &rounded, sizeof(rounded));
+            if (const auto setAttribute = Backdrop::Resolve()) {
+                Backdrop::AccentPolicy policy{Backdrop::ACCENT_ENABLE_ACRYLICBLURBEHIND, 2, 0x9C202020, 0};
+                Backdrop::CompositionAttributeData data{Backdrop::WCA_ACCENT_POLICY, &policy, sizeof(policy)};
+                setAttribute(window, &data);
+            }
+        }
+    }
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
+UINT TrackGlassMenu(HMENU menu, POINT point, HWND owner) {
+    HIGHCONTRASTW contrast{sizeof(contrast)};
+    BOOL screenReader = FALSE;
+    SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0);
+    SystemParametersInfoW(SPI_GETSCREENREADER, 0, &screenReader, 0);
+    if (screenReader || (contrast.dwFlags & HCF_HIGHCONTRASTON)) {
+        const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, owner, nullptr);
+        DestroyMenu(menu);
+        return command;
+    }
+    GlassMenu context(owner, point);
+    g_activeGlassMenu = &context;
+    context.Prepare(menu);
+    HHOOK hook = SetWindowsHookExW(WH_CBT, GlassMenuWindowHook, nullptr, GetCurrentThreadId());
+    const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, owner, nullptr);
+    if (hook) UnhookWindowsHookEx(hook);
+    g_activeGlassMenu = nullptr;
+    DestroyMenu(menu);
+    return command;
+}
+
 std::vector<MediaSourceInfo> AppendMediaSources(HMENU menu) {
     std::vector<MediaSourceInfo> sources;
     std::wstring active;
     { std::lock_guard lock(g_stateMutex); sources=g_state.mediaSources; active=g_state.media.sourceAppUserModelId; }
     HMENU submenu=CreatePopupMenu();
-    AppendMenuW(submenu, MF_STRING | (GetPreferredMediaSource().empty() ? MF_CHECKED : 0), kMediaSourceMenuBase, L"自动跟随");
+    AppendMenuW(submenu, MF_STRING | (GetPreferredMediaSource().empty() ? MF_CHECKED : 0), kMediaSourceMenuBase, UiText(L"Automatic", L"自动跟随"));
     for (size_t i=0;i<sources.size() && i+1<kMediaSourceMenuLimit-kMediaSourceMenuBase;++i)
         AppendMenuW(submenu, MF_STRING | (sources[i].aumid==active ? MF_CHECKED : 0),
                     kMediaSourceMenuBase+1+static_cast<UINT>(i), sources[i].name.c_str());
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(submenu), L"媒体来源（选择后锁定）");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(submenu), UiText(L"Media source (select to lock)", L"媒体来源（选择后锁定）"));
     return sources;
 }
 void SelectMediaSourceCommand(UINT cmd, const std::vector<MediaSourceInfo>& sources) {
@@ -12845,26 +13688,26 @@ bool HandleMediaSourceClick(HWND hwnd, int x, int y) {
         HMENU menu=CreatePopupMenu();
         AppendMediaSources(menu);
         POINT point{}; GetCursorPos(&point); SetForegroundWindow(hwnd);
-        const UINT cmd=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,point.x,point.y,0,hwnd,nullptr);
-        DestroyMenu(menu); PostMessageW(hwnd,WM_NULL,0,0);
+        const UINT cmd=TrackGlassMenu(menu, point, hwnd);
+        PostMessageW(hwnd,WM_NULL,0,0);
         SelectMediaSourceCommand(cmd,sources);
     } else if (pressed==sources[index].aumid) RequestMediaSource(sources[index].aumid);
     return true;
 }
 void AppendLyricsMenu(HMENU menu) {
     const auto settings=GetSettingsCopy();
-    AppendMenuW(menu,MF_STRING|(settings.collapsedLyrics ? MF_CHECKED:0),2001,L"收起时显示歌词");
-    AppendMenuW(menu,MF_STRING|(settings.lyricsPinnedFirst ? MF_CHECKED:0),2002,L"歌词页置顶");
-    AppendMenuW(menu,MF_STRING,2004,L"清除歌词缓存");
+    AppendMenuW(menu,MF_STRING|(settings.collapsedLyrics ? MF_CHECKED:0),2001,UiText(L"Show lyrics when collapsed", L"收起时显示歌词"));
+    AppendMenuW(menu,MF_STRING|(settings.lyricsPinnedFirst ? MF_CHECKED:0),2002,UiText(L"Pin lyrics page first", L"歌词页置顶"));
+    AppendMenuW(menu,MF_STRING,2004,UiText(L"Clear lyrics cache", L"清除歌词缓存"));
     HMENU sync=CreatePopupMenu();
     const bool bt=g_defaultOutputIsBluetooth.load();
-    const auto label=std::wstring(bt ? L"蓝牙偏移：" : L"扬声器／有线偏移：")+
+    const auto label=std::wstring(bt ? UiText(L"Bluetooth offset: ", L"蓝牙偏移：") : UiText(L"Speaker / wired offset: ", L"扬声器／有线偏移："))+
         std::to_wstring(bt ? g_lyricsEffectiveOffsetBtMs.load() : g_lyricsEffectiveOffsetMs.load())+L" ms";
     AppendMenuW(sync,MF_STRING|MF_DISABLED,0,label.c_str());
-    const wchar_t* steps[]={L"提前 10 ms",L"提前 50 ms",L"提前 250 ms",L"延后 10 ms",L"延后 50 ms",L"延后 250 ms",L"重置当前设备微调"};
+    const wchar_t* steps[]={UiText(L"10 ms earlier", L"提前 10 ms"),UiText(L"50 ms earlier", L"提前 50 ms"),UiText(L"250 ms earlier", L"提前 250 ms"),UiText(L"10 ms later", L"延后 10 ms"),UiText(L"50 ms later", L"延后 50 ms"),UiText(L"250 ms later", L"延后 250 ms"),UiText(L"Reset current device adjustment", L"重置当前设备微调")};
     for(int i=0;i<7;++i) AppendMenuW(sync,MF_STRING,2010+i,steps[i]);
-    AppendMenuW(menu,MF_POPUP,reinterpret_cast<UINT_PTR>(sync),L"歌词同步");
-    if(settings.quickLookup) AppendMenuW(menu,MF_STRING,2020,L"快捷查词…");
+    AppendMenuW(menu,MF_POPUP,reinterpret_cast<UINT_PTR>(sync),UiText(L"Lyrics sync", L"歌词同步"));
+    if(settings.quickLookup) AppendMenuW(menu,MF_STRING,2020,UiText(L"Quick lookup…", L"快捷查词…"));
 }
 bool HandleLyricsMenu(HWND hwnd,UINT cmd) {
     const auto settings=GetSettingsCopy();
@@ -12910,7 +13753,7 @@ bool SaveNbaSetup(HWND hwnd, NbaSetupDialog& state, bool enabled) {
     if (!enabled) value = L"off";
     else if (value.empty()) value = L"all";
     if (!Wh_SetStringValue(L"NBASetup", value.c_str())) {
-        MessageBoxW(hwnd, L"保存失败，请重试。原来的选择已保留。", L"NBA 主队", MB_OK | MB_ICONERROR);
+        MessageBoxW(hwnd, UiText(L"Unable to save. Your previous selection was preserved.", L"保存失败，请重试。原来的选择已保留。"), UiText(L"NBA favorites", L"NBA 主队"), MB_OK | MB_ICONERROR);
         return false;
     }
     LoadSettings();
@@ -12923,7 +13766,7 @@ INT_PTR CALLBACK NbaSetupDialogProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
     if (message == WM_INITDIALOG) {
         state = reinterpret_cast<NbaSetupDialog*>(lParam);
         SetWindowLongPtrW(hwnd, DWLP_USER, reinterpret_cast<LONG_PTR>(state));
-        SetWindowTextW(hwnd, state->firstRun ? L"欢迎使用灵动岛 · 选择 NBA 主队" : L"NBA 主队设置");
+        SetWindowTextW(hwnd, state->firstRun ? UiText(L"Welcome · Choose NBA favorites", L"欢迎使用灵动岛 · 选择 NBA 主队") : UiText(L"NBA favorites", L"NBA 主队设置"));
         const float scale = GetDpiForWindow(hwnd) / 96.0f;
         SetWindowPos(hwnd, nullptr, 0, 0, int(600 * scale), int(450 * scale), SWP_NOMOVE | SWP_NOZORDER);
         auto control = [&](const wchar_t* cls, const wchar_t* text, DWORD style,
@@ -12934,25 +13777,25 @@ INT_PTR CALLBACK NbaSetupDialogProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
             SendMessageW(item, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
             return item;
         };
-        control(L"STATIC", L"选择后保存，以后开机不再询问；右键灵动岛可随时修改。", 0, 18, 14, 550, 24, 0);
-        state->enabled = control(L"BUTTON", L"开启 NBA 实时比分", BS_AUTOCHECKBOX | WS_TABSTOP, 18, 44, 300, 26, 100);
+        control(L"STATIC", UiText(L"Save your selection. Change it later from the island menu.", L"选择后保存，以后开机不再询问；右键灵动岛可随时修改。"), 0, 18, 14, 550, 24, 0);
+        state->enabled = control(L"BUTTON", UiText(L"Enable live NBA scores", L"开启 NBA 实时比分"), BS_AUTOCHECKBOX | WS_TABSTOP, 18, 44, 300, 26, 100);
         SendMessageW(state->enabled, BM_SETCHECK, ReadNbaSetup() == L"off" ? BST_UNCHECKED : BST_CHECKED, 0);
-        control(L"STATIC", L"全部球队", 0, 18, 82, 220, 24, 0);
-        control(L"STATIC", L"我的主队（从上到下优先）", 0, 300, 82, 260, 24, 0);
+        control(L"STATIC", UiText(L"All teams", L"全部球队"), 0, 18, 82, 220, 24, 0);
+        control(L"STATIC", UiText(L"Favorites (highest priority first)", L"我的主队（从上到下优先）"), 0, 300, 82, 260, 24, 0);
         const auto listStyle = WS_BORDER | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT;
         state->available = control(L"LISTBOX", L"", listStyle, 18, 108, 220, 222, 101);
         state->selected = control(L"LISTBOX", L"", listStyle, 300, 108, 260, 190, 102);
         for (const auto& team : kNbaTeams) {
-            const auto label = std::wstring(team.name) + L" (" + team.code + L")";
+            const auto label = NbaDisplayTeam(team.code) + L" (" + team.code + L")";
             SendMessageW(state->available, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
         }
-        control(L"BUTTON", L"添加 →", WS_TABSTOP, 242, 148, 54, 32, 103);
-        control(L"BUTTON", L"移除", WS_TABSTOP, 242, 190, 54, 32, 104);
-        control(L"BUTTON", L"上移", WS_TABSTOP, 300, 304, 80, 28, 105);
-        control(L"BUTTON", L"下移", WS_TABSTOP, 390, 304, 80, 28, 106);
-        control(L"STATIC", L"开启后不添加主队 = 显示全部球队的直播。", 0, 18, 342, 540, 24, 0);
-        control(L"BUTTON", L"保存", WS_TABSTOP | BS_DEFPUSHBUTTON, 300, 374, 110, 30, IDOK);
-        control(L"BUTTON", state->firstRun ? L"暂不开启" : L"取消", WS_TABSTOP, 430, 374, 130, 30, IDCANCEL);
+        control(L"BUTTON", UiText(L"Add →", L"添加 →"), WS_TABSTOP, 242, 148, 54, 32, 103);
+        control(L"BUTTON", UiText(L"Remove", L"移除"), WS_TABSTOP, 242, 190, 54, 32, 104);
+        control(L"BUTTON", UiText(L"Move up", L"上移"), WS_TABSTOP, 300, 304, 80, 28, 105);
+        control(L"BUTTON", UiText(L"Move down", L"下移"), WS_TABSTOP, 390, 304, 80, 28, 106);
+        control(L"STATIC", UiText(L"With no favorites selected, show all live games.", L"开启后不添加主队 = 显示全部球队的直播。"), 0, 18, 342, 540, 24, 0);
+        control(L"BUTTON", UiText(L"Save", L"保存"), WS_TABSTOP | BS_DEFPUSHBUTTON, 300, 374, 110, 30, IDOK);
+        control(L"BUTTON", state->firstRun ? UiText(L"Not now", L"暂不开启") : UiText(L"Cancel", L"取消"), WS_TABSTOP, 430, 374, 130, 30, IDCANCEL);
         const auto saved = ReadNbaSetup();
         size_t begin = 0;
         while (begin < saved.size()) {
@@ -13022,7 +13865,7 @@ void ShowNbaSetup(HWND owner, bool firstRun = false) {
     const auto result = DialogBoxIndirectParamW(GetModuleHandleW(nullptr), dialog, owner,
         NbaSetupDialogProc, reinterpret_cast<LPARAM>(&state));
     g_importantDaysOpen = false;
-    if (result == -1) MessageBoxW(owner, L"无法打开主队设置，请从右键菜单重试。", L"NBA 主队", MB_OK | MB_ICONERROR);
+    if (result == -1) MessageBoxW(owner, UiText(L"Unable to open favorites. Retry from the island menu.", L"无法打开主队设置，请从右键菜单重试。"), UiText(L"NBA favorites", L"NBA 主队"), MB_OK | MB_ICONERROR);
 }
 
 std::atomic<bool> g_updateAvailable{false};
@@ -13032,12 +13875,12 @@ void CheckIslandUpdates(HWND hwnd) {
     DWORD count = GetEnvironmentVariableW(L"ProgramW6432", programFiles, ARRAYSIZE(programFiles));
     if (!count) count = GetEnvironmentVariableW(L"ProgramFiles", programFiles, ARRAYSIZE(programFiles));
     if (!count || count >= ARRAYSIZE(programFiles)) {
-        MessageBoxW(hwnd, L"无法找到更新工具目录。", L"检查更新", MB_OK | MB_ICONERROR);
+        MessageBoxW(hwnd, UiText(L"The updater folder could not be found.", L"无法找到更新工具目录。"), UiText(L"Check for updates", L"检查更新"), MB_OK | MB_ICONERROR);
         return;
     }
     const std::wstring script = std::wstring(programFiles) + L"\\Windhawk-Island-Updater\\check.ps1";
     if (GetFileAttributesW(script.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        MessageBoxW(hwnd, L"尚未安装更新工具，请先运行安装包中的 install.cmd。", L"检查更新", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(hwnd, UiText(L"The updater is not installed. Run install.cmd from the setup package.", L"尚未安装更新工具，请先运行安装包中的 install.cmd。"), UiText(L"Check for updates", L"检查更新"), MB_OK | MB_ICONINFORMATION);
         return;
     }
     wchar_t windows[MAX_PATH]{};
@@ -13050,7 +13893,7 @@ void CheckIslandUpdates(HWND hwnd) {
         : L"\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
     const std::wstring arguments = L"-NoProfile -WindowStyle Hidden -File \"" + script + L"\" -Mode Manual";
     if (reinterpret_cast<INT_PTR>(ShellExecuteW(hwnd, L"open", executable.c_str(), arguments.c_str(), nullptr, SW_HIDE)) <= 32)
-        MessageBoxW(hwnd, L"无法启动更新检查，请稍后重试。", L"检查更新", MB_OK | MB_ICONERROR);
+        MessageBoxW(hwnd, UiText(L"Unable to start the update check. Try again later.", L"无法启动更新检查，请稍后重试。"), UiText(L"Check for updates", L"检查更新"), MB_OK | MB_ICONERROR);
 }
 
 void ShowContextMenu(HWND hwnd, POINT screenPoint) {
@@ -13069,32 +13912,34 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
         {
             std::lock_guard lock(g_stateMutex);
             schedule = g_state.nbaSchedule;
+            if (schedule == L"NBA：赛程待查询") schedule = UiText(L"NBA: schedule pending", L"NBA：赛程待查询");
         }
         const auto nbaSettings = GetSettingsCopy();
         if (nbaSettings.nbaScores) {
             AppendMenuW(menu, MF_STRING, 47, Wh_GetIntValue(L"NBAShowClock", 0)
-                ? L"切换到 NBA 比分" : L"切换到时间");
+                ? UiText(L"Show NBA scores", L"切换到 NBA 比分") : UiText(L"Show clock", L"切换到时间"));
             AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, schedule.c_str());
-            const auto favorites = L"主队：" + NbaFavoritesLabel(nbaSettings.nbaTeam) + L"（优先顺序）";
+            const auto favorites = UiText(L"Favorites: ", L"主队：") + NbaFavoritesLabel(nbaSettings.nbaTeam) + UiText(L" (priority order)", L"（优先顺序）");
             AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, favorites.c_str());
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         }
     }
     const auto sourceMenuItems = AppendMediaSources(menu);
     AppendLyricsMenu(menu);
-    AppendMenuW(menu, MF_STRING, 1, L"Dismiss");
-    AppendMenuW(menu, MF_STRING, 46, L"重要日子…");
-    AppendMenuW(menu, MF_STRING, 48, L"NBA 主队设置…");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 1, UiText(L"Dismiss", L"关闭"));
+    AppendMenuW(menu, MF_STRING, 46, UiText(L"Important dates…", L"重要日子…"));
+    AppendMenuW(menu, MF_STRING, 48, UiText(L"NBA favorites…", L"NBA 主队设置…"));
 
     HMENU timerMenu = CreatePopupMenu();
-    AppendMenuW(timerMenu, MF_STRING, 30, L"Start 25 min Focus");
-    AppendMenuW(timerMenu, MF_STRING, 31, L"Start 50 min Focus");
-    AppendMenuW(timerMenu, MF_STRING, 32, L"Start 5 min Break");
+    AppendMenuW(timerMenu, MF_STRING, 30, UiText(L"Start 25 min Focus", L"开始 25 分钟专注"));
+    AppendMenuW(timerMenu, MF_STRING, 31, UiText(L"Start 50 min Focus", L"开始 50 分钟专注"));
+    AppendMenuW(timerMenu, MF_STRING, 32, UiText(L"Start 5 min Break", L"开始 5 分钟休息"));
     if (timerActive) {
-        AppendMenuW(timerMenu, MF_STRING, 33, timerRunning ? L"Pause Timer" : L"Resume Timer");
-        AppendMenuW(timerMenu, MF_STRING, 34, L"Stop Timer");
+        AppendMenuW(timerMenu, MF_STRING, 33, timerRunning ? UiText(L"Pause Timer", L"暂停计时") : UiText(L"Resume Timer", L"继续计时"));
+        AppendMenuW(timerMenu, MF_STRING, 34, UiText(L"Stop Timer", L"结束计时"));
     }
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(timerMenu), L"Focus Timer");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(timerMenu), UiText(L"Focus Timer", L"专注计时器"));
     if (g_settings.fileTrayModule) {
         size_t trayCount = 0;
         {
@@ -13106,26 +13951,24 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
             label += L"—";
             AppendMenuW(menu, MF_STRING | MF_GRAYED | MF_DISABLED, 41, label.c_str());
         } else {
-            label += L"Clear " + std::to_wstring(trayCount);
+            label += UiText(L"Clear ", L"清空 ") + std::to_wstring(trayCount);
             AppendMenuW(menu, MF_STRING, 41, label.c_str());
         }
     }
-    AppendMenuW(menu, MF_STRING, 2, L"Pin expanded");
-    AppendMenuW(menu, MF_STRING, 3, Wh_GetIntValue(L"GameOverlayPinned", 0) ? L"Hide game overlay" : L"Show game overlay");
+    AppendMenuW(menu, MF_STRING, 2, UiText(L"Pin expanded", L"固定展开"));
+    AppendMenuW(menu, MF_STRING, 3, Wh_GetIntValue(L"GameOverlayPinned", 0) ? UiText(L"Hide game overlay", L"隐藏游戏悬浮窗") : UiText(L"Show game overlay", L"显示游戏悬浮窗"));
     const int activeExpandOnHover = Wh_GetIntValue(L"ExpandOnHoverOverride", -1) >= 0
                           ? Wh_GetIntValue(L"ExpandOnHoverOverride", 0)
                           : (Wh_GetIntSetting(L"Behavior.ExpandOnHover") != 0);
-    AppendMenuW(menu, MF_STRING, 11, activeExpandOnHover ? L"Expand on Click" : L"Expand on Hover");
+    AppendMenuW(menu, MF_STRING, 11, activeExpandOnHover ? UiText(L"Expand on Click", L"点击展开") : UiText(L"Expand on Hover", L"悬停展开"));
     AppendMenuW(menu, MF_STRING | (GetSettingsCopy().ambientAuroraGlow ? MF_CHECKED : 0),
-                2030, L"专辑氛围背光");
+                2030, UiText(L"Album ambient glow", L"专辑氛围背光"));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, 49, g_updateAvailable.load() ? L"安装可用更新…" : L"检查更新…");
-    AppendMenuW(menu, MF_STRING, 9, L"Open Windhawk settings");
+    AppendMenuW(menu, MF_STRING, 49, g_updateAvailable.load() ? UiText(L"Install available update…", L"安装可用更新…") : UiText(L"Check for updates…", L"检查更新…"));
+    AppendMenuW(menu, MF_STRING, 9, UiText(L"Open Windhawk settings", L"打开 Windhawk 设置"));
 
     SetForegroundWindow(hwnd);
-    const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
-                                   screenPoint.x, screenPoint.y, 0, hwnd, nullptr);
-    DestroyMenu(menu);
+    const UINT cmd = TrackGlassMenu(menu, screenPoint, hwnd);
 
     if (cmd >= kMediaSourceMenuBase && cmd < kMediaSourceMenuLimit) {
         SelectMediaSourceCommand(cmd, sourceMenuItems); return;
@@ -13244,6 +14087,18 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
 // in size and baseline between glyphs. These are drawn as vectors instead: they
 // inherit the accent colour, scale cleanly, sit on a predictable baseline, and
 // can never fall back to a missing-glyph box the way a font-dependent icon can.
+std::wstring WeatherCityForUi(const WeatherSnapshot& weather) {
+    if (UiChinese() || weather.cityEnglish.empty()) return weather.city;
+    std::wstring city = weather.cityEnglish;
+    if (city[0] >= L'a' && city[0] <= L'z') city[0] -= L'a' - L'A';
+    return city;
+}
+
+std::wstring WeatherCurrentDescriptionForUi(const WeatherSnapshot& weather) {
+    return !UiChinese() && !weather.weatherDescEnglish.empty()
+        ? weather.weatherDescEnglish : WeatherTextForUi(weather.weatherDesc);
+}
+
 enum class WeatherVisual {
     Clear,
     PartlyCloudy,
@@ -14675,19 +15530,23 @@ class Renderer {
         FillIslandShape(rect, radius, g_settings.w11Style, g_settings.notchStyle, brush.Get());
     }
 
-    // Rounded inner card used by every dashboard, so panels across the media,
-    // calendar, weather, hardware and file-tray surfaces match exactly.
-    //
-    // Fill only, no outline. Each card used to also get a hairline ring, and six
-    // of those side by side in the hardware grid turned into a mesh of bright
-    // edges competing with the content. The fill alpha in BuildMaterialTokens
-    // was raised to carry the separation on its own.
     void DrawCard(D2D1_RECT_F rect, float radius, bool active = false) {
-        ComPtr<ID2D1SolidColorBrush> fill;
-        if (SUCCEEDED(target_->CreateSolidColorBrush(
-                active ? material_.raisedStrong : material_.raised, &fill)) && fill) {
-            target_->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), fill.Get());
+        const auto card = D2D1::RoundedRect(rect, radius, radius);
+        const float oldOpacity = textBrush_->GetOpacity();
+        if (active) {
+            textBrush_->SetOpacity(0.04f * settingsOpacity_);
+            target_->FillRoundedRectangle(card, textBrush_.Get());
         }
+        if (glassRimBrush_ && material_.onDark) {
+            glassRimBrush_->SetStartPoint(D2D1::Point2F(0, rect.top));
+            glassRimBrush_->SetEndPoint(D2D1::Point2F(0, rect.bottom));
+            glassRimBrush_->SetOpacity((active ? 0.90f : 0.60f) * settingsOpacity_);
+            target_->DrawRoundedRectangle(card, glassRimBrush_.Get(), 0.8f);
+        } else {
+            textBrush_->SetOpacity((active ? 0.22f : 0.14f) * settingsOpacity_);
+            target_->DrawRoundedRectangle(card, textBrush_.Get(), 0.8f);
+        }
+        textBrush_->SetOpacity(oldOpacity);
     }
 
     // Accent-filled progress track shared by the scrubber, volume, battery and
@@ -15040,7 +15899,7 @@ class Renderer {
         const auto rounded=D2D1::RoundedRect(card,12*scale,12*scale);
         if (fill) target_->FillRoundedRectangle(rounded,fill.Get());
         if (rim) target_->DrawRoundedRectangle(rounded,rim.Get(),0.6f*scale);
-        wchar_t date[32]{}; swprintf_s(date,L"%d 月 %d 日",(calendarHintDate_/100)%100,calendarHintDate_%100);
+        wchar_t date[32]{}; swprintf_s(date,UiText(L"%d/%d", L"%d 月 %d 日"),(calendarHintDate_/100)%100,calendarHintDate_%100);
         const auto align=smallTextFormat_->GetTextAlignment();
         const auto para=smallTextFormat_->GetParagraphAlignment();
         smallTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -15086,14 +15945,14 @@ class Renderer {
         if (calendarCachedDate_.wYear != local.wYear || calendarCachedDate_.wMonth != local.wMonth ||
             calendarCachedDate_.wDay != local.wDay) {
             wchar_t monthNameBuf[32] = {};
-            GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &local, L"MMMM", monthNameBuf, ARRAYSIZE(monthNameBuf), nullptr);
+            GetDateFormatEx(UiText(L"en-US", L"zh-CN"), 0, &local, L"MMMM", monthNameBuf, ARRAYSIZE(monthNameBuf), nullptr);
             // No longer uppercased. towupper is per-character and locale-blind:
             // it turns Turkish "i" into "I" rather than "İ", and does nothing at
             // all for CJK month names, so the effect was inconsistent by locale.
             calendarCachedMonthName_ = monthNameBuf;
 
             wchar_t weekdayNameBuf[32] = {};
-            GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &local, L"dddd", weekdayNameBuf, ARRAYSIZE(weekdayNameBuf), nullptr);
+            GetDateFormatEx(UiText(L"en-US", L"zh-CN"), 0, &local, L"dddd", weekdayNameBuf, ARRAYSIZE(weekdayNameBuf), nullptr);
             calendarCachedWeekdayName_ = weekdayNameBuf;
 
             calendarCachedDate_ = local;
@@ -15150,7 +16009,7 @@ class Renderer {
         const float gridTop = rect.top + 16.0f * scale;
         const float colW = 28.0f * scale;
         const float headerH = 18.0f * scale;
-        const wchar_t* days[] = {L"S", L"M", L"T", L"W", L"T", L"F", L"S"};
+        const wchar_t* days[] = {UiText(L"S", L"日"), UiText(L"M", L"一"), UiText(L"T", L"二"), UiText(L"W", L"三"), UiText(L"T", L"四"), UiText(L"F", L"五"), UiText(L"S", L"六")};
 
         const int startDayIdx = GetDayOfWeek(local.wYear, local.wMonth, 1);
         const int monthDays = GetDaysInMonth(local.wYear, local.wMonth);
@@ -15441,25 +16300,25 @@ class Renderer {
         const auto& forecast = state.weather.forecast[page];
         const bool hasForecast = hasWeather && forecast.available && forecast.date == ChinaWeatherDateKey(target);
         const bool hasReading = hasWeather && (page == 0 || hasForecast);
-        const wchar_t* dayLabels[] = {L"今天", L"明天", L"后天"};
+        const wchar_t* dayLabels[] = {UiText(L"Today", L"今天"), UiText(L"Tomorrow", L"明天"), UiText(L"Day after", L"后天")};
         wchar_t date[16]{}; swprintf_s(date, L"%02u/%02u", target.wMonth, target.wDay);
         wchar_t wTemp[32] = {};
         if (hasReading) swprintf_s(wTemp, L"%s\x00B0", WeatherTemperatureText(page == 0 ? state.weather.temperature : forecast.high).c_str());
         else wcscpy_s(wTemp, L"--\x00B0");
 
-        std::wstring city = hasWeather ? state.weather.city : std::wstring(Loc(L"Locating..."));
+        std::wstring city = hasWeather ? WeatherCityForUi(state.weather) : std::wstring(Loc(L"Locating..."));
         std::wstring desc = wText;
         if (hasWeather && state.weather.hasDailyRange) {
             wchar_t range[64]{};
-            swprintf_s(range, L"今日 %s°～%s°", WeatherTemperatureText(state.weather.lowTemperature).c_str(),
+            swprintf_s(range, UiText(L"Today %s°–%s°", L"今日 %s°～%s°"), WeatherTemperatureText(state.weather.lowTemperature).c_str(),
                 WeatherTemperatureText(state.weather.highTemperature).c_str());
-            desc = std::wstring(range) + L"\n" + state.weather.weatherDesc;
+            desc = std::wstring(range) + L"\n" + WeatherCurrentDescriptionForUi(state.weather);
         }
         if (page > 0) {
-            desc = hasForecast ? forecast.description + L"\n" + WeatherTemperatureText(forecast.low) + L"°～" +
-                WeatherTemperatureText(forecast.high) + L"°" : std::wstring(L"暂无预报");
+            desc = hasForecast ? WeatherTextForUi(forecast.description) + L"\n" + WeatherTemperatureText(forecast.low) + L"°～" +
+                WeatherTemperatureText(forecast.high) + L"°" : std::wstring(UiText(L"Forecast unavailable", L"暂无预报"));
         }
-        if (hasWeather) city += L" · " + std::wstring(dayLabels[page]) + (page > 0 ? L"最高" : L"");
+        if (hasWeather) city += L" · " + std::wstring(dayLabels[page]) + (page > 0 ? UiText(L" high", L"最高") : L"");
         const auto button = WeatherPageButtonBounds((rect.right - rect.left) / scale);
         const auto buttonRect = D2D1::RectF(rect.left + button.left * scale, rect.top + button.top * scale,
             rect.left + button.right * scale, rect.top + button.bottom * scale);
@@ -15608,10 +16467,10 @@ class Renderer {
 
         const std::wstring windUnit = settings.weatherFahrenheit ? L" mph" : L" km/h";
         const Metric metrics[2] = {
-            {0, page > 0 ? L"风况" : Loc(L"Wind"),
-             page > 0 ? (hasForecast ? forecast.wind : std::wstring(L"--")) : hasWeather ? state.weather.windSpeed + windUnit + L" " + WindDirToArrow(state.weather.windDir)
+            {0, page > 0 ? UiText(L"Wind", L"风况") : Loc(L"Wind"),
+             page > 0 ? (hasForecast ? WeatherTextForUi(forecast.wind) : std::wstring(L"--")) : hasWeather ? state.weather.windSpeed + windUnit + L" " + WeatherTextForUi(WindDirToArrow(state.weather.windDir))
                         : std::wstring(L"--")},
-            {2, page > 0 ? L"预报日期" : Loc(L"Humidity"),
+            {2, page > 0 ? UiText(L"Forecast date", L"预报日期") : Loc(L"Humidity"),
              page > 0 ? std::wstring(date) : hasWeather ? state.weather.humidity + L"%" : std::wstring(L"--")},
         };
 
@@ -15672,7 +16531,7 @@ class Renderer {
         textBrush_->SetOpacity(0.96f);
         if (boldTextFormat_) {
             boldTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-            const wchar_t* title = L"文件托盘 · × 后7天删原文件";
+            const wchar_t* title = UiText(L"File tray · × deletes the original in 7 days", L"文件托盘 · × 后7天删原文件");
             target_->DrawTextW(title, static_cast<UINT32>(wcslen(title)), boldTextFormat_.Get(),
                                headerRect, textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_NONE);
             boldTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -15871,13 +16730,13 @@ class Renderer {
         // load bar rather than a bar against an invented maximum.
         const HwMetric metrics[6] = {
             {3, L"CPU",      cpuBuf,  Clamp(state.system.cpuPercent / 100.0f, 0.0f, 1.0f)},
-            {6, L"NET UP",   upBuf,   -1.0f},
+            {6, UiText(L"NET UP", L"上传"),   upBuf,   -1.0f},
             {4, L"RAM",      ramBuf,  ramFraction},
-            {7, L"NET DOWN", downBuf, -1.0f},
+            {7, UiText(L"NET DOWN", L"下载"), downBuf, -1.0f},
             {5, L"GPU",      gpuBuf,  state.system.gpuPercent >= 0
                                           ? Clamp(state.system.gpuPercent / 100.0f, 0.0f, 1.0f)
                                           : -1.0f},
-            {8, L"DISK",     diskBuf, Clamp(diskUsed / 100.0f, 0.0f, 1.0f)},
+            {8, UiText(L"DISK", L"磁盘"),     diskBuf, Clamp(diskUsed / 100.0f, 0.0f, 1.0f)},
         };
 
         // 2 x 3 grid of cards. Cards give the grid its structure, so the old
@@ -15888,9 +16747,6 @@ class Renderer {
         const float rowGap = 6.0f * scale;
         const float gridTop = rect.top + 38.0f * scale;
 
-        ComPtr<ID2D1SolidColorBrush> cardFill;
-        target_->CreateSolidColorBrush(
-            WithAlpha(material_.raised, material_.raised.a * 0.70f), &cardFill);
         for (int i = 0; i < 6; ++i) {
             const HwMetric& m = metrics[i];
             const int col = i % 2;
@@ -15900,8 +16756,7 @@ class Renderer {
             const float cardTop = gridTop + static_cast<float>(row) * (rowH + rowGap);
             const D2D1_RECT_F card = D2D1::RectF(cardLeft, cardTop, cardLeft + colW, cardTop + rowH);
 
-            if (cardFill) target_->FillRoundedRectangle(
-                D2D1::RoundedRect(card, 9.0f * scale, 9.0f * scale), cardFill.Get());
+            DrawCard(card, 9.0f * scale);
 
             const bool hasBar = m.fraction >= 0.0f;
             const D2D1_COLOR_F tint = D2D1::ColorF(0xE1E1E6);
@@ -15977,30 +16832,51 @@ class Renderer {
             return;
         }
         wchar_t date[64]{};
-        GetDateFormatEx(L"en-US", 0, &local, L"ddd, MMM d", date, ARRAYSIZE(date), nullptr);
+        GetDateFormatEx(UiText(L"en-US", L"zh-CN"), 0, &local, UiText(L"ddd, MMM d", L"M月d日 ddd"), date, ARRAYSIZE(date), nullptr);
         smallTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         smallTextFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         mutedBrush_->SetOpacity(0.78f);
         target_->DrawTextW(date, static_cast<UINT32>(wcslen(date)), smallTextFormat_.Get(),
             D2D1::RectF(rect.left + 24, rect.top + 14, rect.right - 24, rect.top + 34),
             mutedBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
-        const wchar_t* titles[4] = {L"截图", L"音量", L"专注 25′", L"休息 5′"};
+        const wchar_t* titles[4] = {UiText(L"Screenshot", L"截图"), UiText(L"Volume", L"音量"), UiText(L"Focus 25′", L"专注 25′"), UiText(L"Break 5′", L"休息 5′")};
         if (settings.timerEnabled && state.timer.active) {
-            titles[2] = state.timer.running ? L"暂停" : L"继续";
-            titles[3] = L"结束";
+            titles[2] = state.timer.running ? UiText(L"Pause", L"暂停") : UiText(L"Resume", L"继续");
+            titles[3] = UiText(L"Stop", L"结束");
         }
         const wchar_t glyphs[4] = {0xE722, state.system.volumeMuted ? wchar_t(0xE74F) : wchar_t(0xE767), state.timer.active ? (state.timer.running ? wchar_t(0xE769) : wchar_t(0xE768)) : wchar_t(0xE916),
             state.timer.active ? wchar_t(0xE71A) : wchar_t(0xE708)};
+        D2D1_GRADIENT_STOP glassStops[] = {
+            {0.0f, WithAlpha(material_.textPrimary, 0.30f)},
+            {0.5f, WithAlpha(material_.textPrimary, 0.08f)},
+            {1.0f, WithAlpha(material_.textPrimary, 0.20f)}
+        };
+        ComPtr<ID2D1GradientStopCollection> glassColors;
+        ComPtr<ID2D1LinearGradientBrush> glass;
+        target_->CreateGradientStopCollection(glassStops, ARRAYSIZE(glassStops), &glassColors);
+        if (glassColors) target_->CreateLinearGradientBrush(
+            D2D1::LinearGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(0, 1)),
+            glassColors.Get(), &glass);
+        ComPtr<ID2D1SolidColorBrush> disc;
+        if (!glass) target_->CreateSolidColorBrush(WithAlpha(material_.textPrimary, 1.0f), &disc);
         for (int i = 0; i < 4; ++i) {
             auto box = QuickHomeButtonBounds(i, rect.right - rect.left);
             box.left += rect.left; box.right += rect.left;
             box.top += rect.top; box.bottom += rect.top;
             const bool hovered = g_hoveredQuickAction.load() == i;
             const D2D1_POINT_2F center{(box.left + box.right) * 0.5f, rect.top + 94};
-            ComPtr<ID2D1SolidColorBrush> disc;
-            target_->CreateSolidColorBrush(WithAlpha(material_.textPrimary,
-                (hovered ? 0.15f : 0.055f) * settingsOpacity_), &disc);
-            if (disc) target_->FillEllipse(D2D1::Ellipse(center, 21, 21), disc.Get());
+            const auto button = D2D1::Ellipse(center, 21, 21);
+            if (glass) {
+                glass->SetStartPoint(D2D1::Point2F(center.x, center.y - 21));
+                glass->SetEndPoint(D2D1::Point2F(center.x, center.y + 21));
+                glass->SetOpacity((hovered ? 0.10f : 0.0f) * settingsOpacity_);
+                target_->FillEllipse(button, glass.Get());
+                glass->SetOpacity((hovered ? 1.0f : 0.75f) * settingsOpacity_);
+                target_->DrawEllipse(button, glass.Get(), 0.9f);
+            } else if (disc) {
+                disc->SetOpacity((hovered ? 0.15f : 0.055f) * settingsOpacity_);
+                target_->FillEllipse(button, disc.Get());
+            }
             if (iconFormat_) {
                 iconFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                 iconFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
@@ -16033,8 +16909,8 @@ class Renderer {
             if (camActive) {
                 Chip chip;
                 chip.text = state.system.cameraApp.empty()
-                    ? std::wstring(L"摄像头")
-                    : ShortAppName(state.system.cameraApp) + L" · 摄像头";
+                    ? std::wstring(UiText(L"Camera", L"摄像头"))
+                    : ShortAppName(state.system.cameraApp) + UiText(L" · Camera", L" · 摄像头");
                 chip.color = settings.privacyDotsCamHex;
                 chip.width = MeasureTextWidthCached(chip.text, smallTextFormat_.Get(),
                                                     privacyCamWidthCache_);
@@ -16043,8 +16919,8 @@ class Renderer {
             if (micActive) {
                 Chip chip;
                 chip.text = state.system.micApp.empty()
-                    ? std::wstring(L"麦克风")
-                    : ShortAppName(state.system.micApp) + L" · 麦克风";
+                    ? std::wstring(UiText(L"Microphone", L"麦克风"))
+                    : ShortAppName(state.system.micApp) + UiText(L" · Microphone", L" · 麦克风");
                 chip.color = settings.privacyDotsMicHex;
                 chip.width = MeasureTextWidthCached(chip.text, smallTextFormat_.Get(),
                                                     privacyMicWidthCache_);
@@ -16114,14 +16990,14 @@ class Renderer {
         float camWidth = 0.0f, micWidth = 0.0f;
         if (cam) {
             camText = state.system.cameraApp.empty()
-                ? std::wstring(L"摄像头")
-                : ShortAppName(state.system.cameraApp) + L" · 摄像头";
+                ? std::wstring(UiText(L"Camera", L"摄像头"))
+                : ShortAppName(state.system.cameraApp) + UiText(L" · Camera", L" · 摄像头");
             camWidth = MeasureTextWidthCached(camText, smallTextFormat_.Get(), privacyCamWidthCache_);
         }
         if (mic) {
             micText = state.system.micApp.empty()
-                ? std::wstring(L"麦克风")
-                : ShortAppName(state.system.micApp) + L" · 麦克风";
+                ? std::wstring(UiText(L"Microphone", L"麦克风"))
+                : ShortAppName(state.system.micApp) + UiText(L" · Microphone", L" · 麦克风");
             micWidth = MeasureTextWidthCached(micText, smallTextFormat_.Get(), privacyMicWidthCache_);
         }
 
@@ -16200,11 +17076,11 @@ class Renderer {
         std::wstring header;
         if (finished) {
             const int minutes = std::max(1, totalSec / 60);
-            header = std::to_wstring(minutes) + L" 分钟 · " +
-                (state.timer.isBreak ? L"休息" : L"专注");
+            header = std::to_wstring(minutes) + UiText(L" min · ", L" 分钟 · ") +
+                (state.timer.isBreak ? UiText(L"Break", L"休息") : UiText(L"Focus", L"专注"));
         } else {
-            header = state.timer.isBreak ? L"休息" : L"专注";
-            header += running ? L" · 进行中" : L" · 已暂停";
+            header = state.timer.isBreak ? UiText(L"Break", L"休息") : UiText(L"Focus", L"专注");
+            header += running ? UiText(L" · Running", L" · 进行中") : UiText(L" · Paused", L" · 已暂停");
         }
         mutedBrush_->SetOpacity(0.82f);
         const auto oldHeaderAlign = textFormat_->GetTextAlignment();
@@ -16221,7 +17097,7 @@ class Renderer {
         textFormat_->SetParagraphAlignment(oldHeaderPara);
         wchar_t hero[32]{};
         if (finished) {
-            wcscpy_s(hero, state.timer.isBreak ? L"休息结束" : L"专注完成");
+            wcscpy_s(hero, state.timer.isBreak ? UiText(L"Break finished", L"休息结束") : UiText(L"Focus complete", L"专注完成"));
         } else {
             const int seconds = static_cast<int>(std::ceil(remaining));
             swprintf_s(hero, L"%d:%02d", seconds / 60, seconds % 60);
@@ -16265,13 +17141,13 @@ class Renderer {
         const wchar_t* labels[2];
         wchar_t glyphs[2];
         if (finished) {
-            labels[0] = L"休息 5 分钟";
-            labels[1] = L"再来一轮";
+            labels[0] = UiText(L"Break 5 min", L"休息 5 分钟");
+            labels[1] = UiText(L"Start again", L"再来一轮");
             glyphs[0] = wchar_t(0xE916);
             glyphs[1] = wchar_t(0xE72C);
         } else {
-            labels[0] = running ? L"暂停" : L"继续";
-            labels[1] = L"结束";
+            labels[0] = running ? UiText(L"Pause", L"暂停") : UiText(L"Resume", L"继续");
+            labels[1] = UiText(L"Stop", L"结束");
             glyphs[0] = running ? wchar_t(0xE769) : wchar_t(0xE768);
             glyphs[1] = wchar_t(0xE71A);
         }
@@ -16417,7 +17293,7 @@ class Renderer {
         smallTextFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         textBrush_->SetOpacity(0.94f);
         const std::wstring& title = state.media.title;
-        target_->DrawTextW(title.empty() ? L"正在播放" : title.c_str(),
+        target_->DrawTextW(title.empty() ? UiText(L"Now playing", L"正在播放") : title.c_str(),
             static_cast<UINT32>(title.empty() ? 4 : title.size()), smallTextFormat_.Get(),
             D2D1::RectF(textLeft, rect.top + 42.0f, textRight, rect.top + 70.0f),
             textBrush_.Get(), static_cast<D2D1_DRAW_TEXT_OPTIONS>(
@@ -16501,7 +17377,7 @@ class Renderer {
         std::wstring wIcon = L"🌡️";
         std::wstring wText = Loc(L"Loading...");
         if (hasWeather) {
-            wText = state.weather.weatherDesc;
+            wText = WeatherCurrentDescriptionForUi(state.weather);
             GetWeatherIconAndText(state.weather.weatherCode, wIcon, wText);
         }
 
@@ -16730,7 +17606,7 @@ class Renderer {
             {L"CPU", state.system.cpuPercent,              3, g_settings.gameOverlayShowCpu},
             {L"RAM", state.system.memoryPercent,           4, g_settings.gameOverlayShowRam},
             {L"GPU", state.system.gpuPercent,              5, g_settings.gameOverlayShowGpu},
-            {L"DISK", 100 - state.system.diskFreePercent,  8, g_settings.gameOverlayShowDisk},
+            {UiText(L"DISK", L"磁盘"), 100 - state.system.diskFreePercent,  8, g_settings.gameOverlayShowDisk},
         };
 
         for (const GameCard& card : cards) {
@@ -16969,7 +17845,7 @@ class Renderer {
         target_->PushAxisAlignedClip(area,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         const auto& lyrics=state.lyrics;
         if (!lyrics.hasData || lyrics.lines.empty()) {
-            const auto text=lyrics.failed ? L"歌词查询失败，稍后重试" : lyrics.fetching ? L"正在查找歌词…" : lyrics.notFound ? L"未找到匹配歌词" : L"等待歌词…";
+            const auto text=lyrics.failed ? UiText(L"Lyrics lookup failed", L"歌词查询失败，稍后重试") : lyrics.fetching ? UiText(L"Finding lyrics…", L"正在查找歌词…") : lyrics.notFound ? UiText(L"No matching lyrics", L"未找到匹配歌词") : UiText(L"Waiting for lyrics…", L"等待歌词…");
             DrawCompactLyric(text,area,settings,true);
             target_->PopAxisAlignedClip();
             return;
@@ -17406,7 +18282,7 @@ public:
                                      D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         DWRITE_TEXT_METRICS tm{};
         if (ui.text.empty()) {
-            auto hint = MakeLineLayout(L"输入英文或中文，支持拼写候选", textFormat_.Get(), 4096.0f, &tm);
+            auto hint = MakeLineLayout(UiText(L"Enter English or Chinese", L"输入英文或中文，支持拼写候选"), textFormat_.Get(), 4096.0f, &tm);
             if (hint) {
                 mutedBrush_->SetOpacity(0.50f);
                 target_->DrawTextLayout(D2D1::Point2F(areaLeft + 6.0f, midY - tm.height * 0.5f),
@@ -17455,7 +18331,7 @@ public:
 
         if (rows.empty()) {
             DWRITE_TEXT_METRICS tm{};
-            auto hint = MakeLineLayout(L"输入后按 Enter 查询",
+            auto hint = MakeLineLayout(UiText(L"Press Enter to look up", L"输入后按 Enter 查询"),
                                        smallTextFormat_.Get(), right - left - 8.0f, &tm, true);
             if (hint) {
                 mutedBrush_->SetOpacity(0.60f);
@@ -17470,12 +18346,12 @@ public:
             const D2D1_RECT_F band = D2D1::RectF(left + 4.0f, y, right - 4.0f, y + LookupLayout::kSectionH);
             smallTextFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
             mutedBrush_->SetOpacity(0.55f);
-            const wchar_t* title = L"最近查询";
+            const wchar_t* title = UiText(L"Recent lookups", L"最近查询");
             target_->DrawTextW(title, static_cast<UINT32>(wcslen(title)), smallTextFormat_.Get(), band,
                                mutedBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
             if (LookupHasRecentRows(rows)) {
                 smallTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-                const wchar_t* clear = L"清空";
+                const wchar_t* clear = UiText(L"Clear", L"清空");
                 target_->DrawTextW(clear, static_cast<UINT32>(wcslen(clear)), smallTextFormat_.Get(), band,
                                    mutedBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
                 smallTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -17490,7 +18366,7 @@ public:
             const bool selected = static_cast<int>(i) == ui.selected;
             const float midY = y + LookupLayout::kRowH * 0.5f;
             if (selected) {
-                DrawCard(rr, 10.0f, false);
+                DrawCard(rr, 10.0f, true);
             }
 
             const int glyph = (row.kind == LookupRowKind::Typed || row.kind == LookupRowKind::Suggestion) ? 0
@@ -17506,7 +18382,7 @@ public:
             const float areaW = std::max(10.0f, x1 - x0);
 
             const std::wstring label = row.kind == LookupRowKind::Typed
-                ? std::wstring(L"查询") + L" \u201c" + row.label + L"\u201d"
+                ? std::wstring(UiText(L"Look up", L"查询")) + L" \u201c" + row.label + L"\u201d"
                 : row.label;
 
             DWRITE_TEXT_METRICS lm{};
@@ -17550,7 +18426,7 @@ public:
         const float left = rect.left + LookupLayout::kPadX + 4.0f;
         const float right = rect.right - LookupLayout::kPadX - 4.0f;
         const float y = rect.top + LookupLayout::kBelowField;
-        const wchar_t* msg = lk.status == LookupStatus::Loading ? L"正在查询…" : lk.status == LookupStatus::Failed ? L"查询失败，请检查网络后重试" : L"未找到结果";
+        const wchar_t* msg = lk.status == LookupStatus::Loading ? UiText(L"Looking up…", L"正在查询…") : lk.status == LookupStatus::Failed ? UiText(L"Lookup failed; check your connection", L"查询失败，请检查网络后重试") : UiText(L"No results", L"未找到结果");
         DWRITE_TEXT_METRICS tm{};
         if (auto layout = MakeLineLayout(msg, textFormat_.Get(), right - left, &tm, true)) {
             mutedBrush_->SetOpacity(0.75f);
@@ -17878,7 +18754,7 @@ public:
                 bool hasWeather = state.weather.hasData && (now - state.weather.lastUpdated < 3600.0);
                 std::wstring wIcon = L"🌡️"; std::wstring wText = Loc(L"Loading...");
                 if (hasWeather) {
-                    wText = state.weather.weatherDesc;
+                    wText = WeatherCurrentDescriptionForUi(state.weather);
                     GetWeatherIconAndText(state.weather.weatherCode, wIcon, wText);
                 }
                 DrawWeatherDashboard(state, rect, settings, now, 1.0f, hasWeather, wIcon, wText);
@@ -18461,7 +19337,7 @@ public:
         mutedBrush_->SetOpacity(0.48f);
         const std::wstring clipTitle =
             state.clipboard.appName.empty()
-                ? (state.clipboard.image ? std::wstring(L"Image copied") : std::wstring(L"Clipboard"))
+                ? (state.clipboard.image ? std::wstring(UiText(L"Image copied", L"图片已复制")) : std::wstring(UiText(L"Clipboard", L"剪贴板")))
                 : state.clipboard.appName + L"  \u00b7  Clipboard";
         target_->DrawTextW(clipTitle.c_str(), static_cast<UINT32>(clipTitle.size()),
                            smallTextFormat_.Get(), titleRect, mutedBrush_.Get(),
@@ -18633,7 +19509,7 @@ public:
                 wchar_t time[16]{};
                 if (localtime_s(&local,&start)==0) swprintf_s(time,L"%02d:%02d",local.tm_hour,local.tm_min);
                 draw(time, single ? timerHeroFormat_.Get() : textFormat_.Get(), 120, cy-22, 100, 38, 0.98f, true);
-                if (single) draw(L"本地时间", smallTextFormat_.Get(), 120, cy+17, 100, 18, 0.55f, true);
+                if (single) draw(UiText(L"Local time", L"本地时间"), smallTextFormat_.Get(), 120, cy+17, 100, 18, 0.55f, true);
             }
         }
         textBrush_->SetOpacity(0.96f);
@@ -18655,7 +19531,7 @@ public:
         smallTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         smallTextFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         mutedBrush_->SetOpacity(0.66f);
-        target_->DrawTextW(L"时钟", 2, smallTextFormat_.Get(),
+        target_->DrawTextW(UiText(L"Clock", L"时钟"), static_cast<UINT32>(wcslen(UiText(L"Clock", L"时钟"))), smallTextFormat_.Get(),
             D2D1::RectF(rect.left + 24, rect.top + 14, rect.right - 24, rect.top + 34),
             mutedBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
         smallTextFormat_->SetTextAlignment(oldSmallAlign);
@@ -18749,8 +19625,8 @@ public:
             DrawBitmapPixels(logos[index], bounds, nbaLogoBitmaps_[index],
                 nbaLogoGenerations_[index], 0.95f);
         };
-        const std::wstring status = nba.stale ? L"更新中断" : nba.finished ? L"已结束"
-            : (nba.status.empty() ? L"进行中" : nba.status);
+        const std::wstring status = nba.stale ? UiText(L"Update interrupted", L"更新中断") : nba.finished ? UiText(L"Finished", L"已结束")
+            : (nba.status.empty() ? UiText(L"Live", L"进行中") : nba.status);
         const auto oldHeroAlign = timerHeroFormat_ ? timerHeroFormat_->GetTextAlignment() : DWRITE_TEXT_ALIGNMENT_CENTER;
         const auto oldHeroPara = timerHeroFormat_ ? timerHeroFormat_->GetParagraphAlignment() : DWRITE_PARAGRAPH_ALIGNMENT_CENTER;
         wchar_t awayScore[16]{};
@@ -18788,7 +19664,7 @@ public:
             target_->DrawTextW(nba.homeAbbr.c_str(), static_cast<UINT32>(nba.homeAbbr.size()),
                 textFormat_.Get(), D2D1::RectF(rect.left + 164, rect.top + 3, rect.left + 200, rect.top + 33),
                 textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
-            const std::wstring compactStatus = nba.stale ? L"更新中断" : nba.finished ? L"终场"
+            const std::wstring compactStatus = nba.stale ? UiText(L"Update interrupted", L"更新中断") : nba.finished ? UiText(L"Final", L"终场")
                 : ((nba.period > 4 ? L"OT" : L"Q" + std::to_wstring(nba.period)) + L" " + nba.clock);
             mutedBrush_->SetOpacity(0.46f);
             target_->DrawTextW(compactStatus.c_str(), static_cast<UINT32>(compactStatus.size()),
@@ -18854,9 +19730,9 @@ public:
                     textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
             };
 
-            drawTeamRow(rect.top + 52, nba.awayAbbr, nba.awayName, nba.awayRecord,
+            drawTeamRow(rect.top + 52, nba.awayAbbr, NbaDisplayTeam(nba.awayAbbr, nba.awayName), nba.awayRecord,
                         awayScore, awayWins);
-            drawTeamRow(rect.top + 114, nba.homeAbbr, nba.homeName, nba.homeRecord,
+            drawTeamRow(rect.top + 114, nba.homeAbbr, NbaDisplayTeam(nba.homeAbbr, nba.homeName), nba.homeRecord,
                         homeScore, homeWins);
 
             ComPtr<ID2D1SolidColorBrush> divider;
@@ -18906,8 +19782,8 @@ public:
 
         const float cy = (rect.top + rect.bottom) * 0.5f;
         const wchar_t* label = state.timer.justFinished
-            ? (state.timer.isBreak ? L"休息结束" : L"专注完成")
-            : (!state.timer.running ? L"已暂停" : (state.timer.isBreak ? L"休息" : L"专注"));
+            ? (state.timer.isBreak ? UiText(L"Break finished", L"休息结束") : UiText(L"Focus complete", L"专注完成"))
+            : (!state.timer.running ? UiText(L"Paused", L"已暂停") : (state.timer.isBreak ? UiText(L"Break", L"休息") : UiText(L"Focus", L"专注")));
         const bool showValue = !state.timer.justFinished;
         wchar_t value[32]{};
         const int seconds = static_cast<int>(std::ceil(remaining));
@@ -19093,7 +19969,7 @@ public:
         const float progress = remaining / ttl;
 
         mutedBrush_->SetOpacity(0.50f);
-        std::wstring label = connected ? L"Device Connected" : L"Device Removed";
+        std::wstring label = connected ? UiText(L"Device Connected", L"设备已连接") : UiText(L"Device Removed", L"设备已移除");
         D2D1_RECT_F labelRect = showBar
             ? D2D1::RectF(tx, cy - 18.0f, rect.right - 14.0f, cy - 2.0f)
             : D2D1::RectF(tx, cy - 16.0f, rect.right - 14.0f, cy - 1.0f);
@@ -19103,7 +19979,7 @@ public:
 
         textBrush_->SetOpacity(0.95f);
         const std::wstring& name = state.device.deviceName.empty()
-            ? (state.device.isBluetoothLike ? std::wstring(L"Bluetooth") : std::wstring(L"USB Device"))
+            ? (state.device.isBluetoothLike ? std::wstring(L"Bluetooth") : std::wstring(UiText(L"USB Device", L"USB 设备")))
             : state.device.deviceName;
         D2D1_RECT_F nameRect = showBar
             ? D2D1::RectF(tx, cy - 2.0f, rect.right - 14.0f, cy + 15.0f)
@@ -19262,7 +20138,7 @@ public:
 
         textBrush_->SetOpacity(0.95f);
         const std::wstring& name = state.bluetoothDevice.deviceName.empty()
-            ? std::wstring(L"Bluetooth Device")
+            ? std::wstring(UiText(L"Bluetooth Device", L"蓝牙设备"))
             : state.bluetoothDevice.deviceName;
         D2D1_RECT_F nameRect = showBar
             ? D2D1::RectF(tx, cy - 2.0f, rightEdge, cy + 15.0f)
@@ -19362,7 +20238,7 @@ public:
         const float tx = badge.right + 14;
         D2D1_RECT_F labelRect = D2D1::RectF(tx, cy - 16.0f, rect.right - 14.0f, cy - 1.0f);
         mutedBrush_->SetOpacity(0.50f);
-        std::wstring label = state.battery.charging ? L"Power Connected" : L"Battery Alert";
+        std::wstring label = state.battery.charging ? UiText(L"Power Connected", L"电源已连接") : UiText(L"Battery Alert", L"电池提醒");
         target_->DrawTextW(label.c_str(), static_cast<UINT32>(label.size()),
                            smallTextFormat_.Get(), labelRect, mutedBrush_.Get(),
                            D2D1_DRAW_TEXT_OPTIONS_CLIP);
@@ -19385,7 +20261,7 @@ public:
 
     void DrawProgress(const SharedState& state, D2D1_RECT_F rect) {
         wchar_t buffer[64] = {};
-        swprintf_s(buffer, L"Progress %d%%", state.progress.percent);
+        swprintf_s(buffer, UiText(L"Progress %d%%", L"进度 %d%%"), state.progress.percent);
         IDWriteTextFormat* fmt = idleTextFormat_ ? idleTextFormat_.Get() : textFormat_.Get();
         target_->DrawTextW(buffer, static_cast<UINT32>(wcslen(buffer)), fmt,
                            rect,
@@ -19891,6 +20767,12 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     static int quickHomePressed = -1;
     static int timerDetailPressed = -1;
     switch (msg) {
+        case WM_MEASUREITEM:
+            if (g_activeGlassMenu && g_activeGlassMenu->Measure(reinterpret_cast<MEASUREITEMSTRUCT*>(lParam))) return TRUE;
+            break;
+        case WM_DRAWITEM:
+            if (g_activeGlassMenu && g_activeGlassMenu->Draw(reinterpret_cast<DRAWITEMSTRUCT*>(lParam))) return TRUE;
+            break;
         case WM_KEYDOWN:
             if (HandleLookupKeyDown(hwnd, wParam)) return 0;
             break;
@@ -19957,7 +20839,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
 
                 if (!CancelFileTrayDelete(item.path)) {
-                    MessageBoxW(hwnd, L"无法取消待删除计划，文件未重新加入托盘。", L"文件托盘", MB_OK | MB_ICONERROR);
+                    MessageBoxW(hwnd, UiText(L"Could not cancel deletion. The file was not added back.", L"无法取消待删除计划，文件未重新加入托盘。"), UiText(L"File tray", L"文件托盘"), MB_OK | MB_ICONERROR);
                     continue;
                 }
                 added.push_back(std::move(item));
@@ -20060,7 +20942,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     } else {
                         // Generic/Bluetooth OEM
                         isBt = true;
-                        devName = L"Bluetooth Device";
+                        devName = UiText(L"Bluetooth Device", L"蓝牙设备");
                     }
                 }
 
@@ -20485,8 +21367,8 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                         g_hoveredFileTrayRow = -1;
                         g_layoutDirty = true;
                     } else if (remove) {
-                        MessageBoxW(hwnd, L"无法保存七天删除计划，文件仍保留在托盘中。仅支持本机普通文件。",
-                            L"文件托盘", MB_OK | MB_ICONERROR);
+                        MessageBoxW(hwnd, UiText(L"Could not schedule deletion. The file remains in the tray. Only local files are supported.", L"无法保存七天删除计划，文件仍保留在托盘中。仅支持本机普通文件。"),
+                            UiText(L"File tray", L"文件托盘"), MB_OK | MB_ICONERROR);
                     }
                     return 0;
                 }
@@ -22062,7 +22944,7 @@ DWORD WINAPI NbaThreadProc(void*) {
             demo.homeScore = 102;
             demo.period = 4;
             demo.clock = L"5:12";
-            demo.status = L"第4节 5:12";
+            demo.status = NbaPeriodText(4, L"5:12");
             demo.matchup = L"CLE @ PHI";
             demo.gameUrl = L"https://www.espn.com/nba/";
             demo.awayLogoUrl = L"https://a.espncdn.com/i/teamlogos/nba/500-dark/scoreboard/cle.png";
@@ -22114,12 +22996,12 @@ DWORD WINAPI NbaThreadProc(void*) {
         }
         const double now = NowSeconds();
         last = AdvanceNbaSnapshot(last, games, settings.nbaTeam, !failures, now);
-        std::wstring schedule = L"NBA：赛程暂不可用（请求失败）";
+        std::wstring schedule = UiText(L"NBA: schedule unavailable", L"NBA：赛程暂不可用（请求失败）");
         if (!failures) {
             const auto summary = SummarizeNbaDay(games, day.start, day.end, settings.nbaTeam);
-            schedule = L"NBA " + day.label + L"：" + std::to_wstring(summary.total) + L"场 · " +
-                std::to_wstring(summary.live) + L"进行中 · " + std::to_wstring(summary.scheduled) +
-                L"未开始 · " + std::to_wstring(summary.finished) + L"已结束";
+            schedule = L"NBA " + day.label + UiText(L": ", L"：") + std::to_wstring(summary.total) + UiText(L" games · ", L"场 · ") +
+                std::to_wstring(summary.live) + UiText(L" live · ", L"进行中 · ") + std::to_wstring(summary.scheduled) +
+                UiText(L" scheduled · ", L"未开始 · ") + std::to_wstring(summary.finished) + UiText(L" finished", UiText(L"Finished", L"已结束"));
             Wh_SetIntValue(L"NBATodayGames", summary.total);
             Wh_SetIntValue(L"NBATodayLive", summary.live);
             Wh_SetIntValue(L"NBATodayFavorites", summary.favorites);
@@ -22258,9 +23140,9 @@ DWORD WINAPI TomorrowBriefThreadProc(void*) {
                     Wh_GetIntValue(slot == 1 ? L"MealLunchShown" : L"MealDinnerShown", 0) == BriefDateKey(today)) continue;
                 meal.meal = slot; meal.date = BriefDateKey(today);
                 meal.key = std::to_wstring(meal.date) + L":" + std::to_wstring(slot);
-                meal.title = (slot == 1 ? L"午饭提醒 · " : L"晚饭提醒 · ") + time;
-                meal.body = slot == 1 ? L"该吃午饭了" : L"该吃晚饭了";
-                meal.detail = L"歇一会儿，按时吃饭";
+                meal.title = (slot == 1 ? UiText(L"Lunch reminder · ", L"午饭提醒 · ") : UiText(L"Dinner reminder · ", L"晚饭提醒 · ")) + time;
+                meal.body = slot == 1 ? UiText(L"Time for lunch", L"该吃午饭了") : UiText(L"Time for dinner", L"该吃晚饭了");
+                meal.detail = UiText(L"Take a break and have a meal", L"歇一会儿，按时吃饭");
                 break;
             }
         }
@@ -22286,8 +23168,8 @@ DWORD WINAPI TomorrowBriefThreadProc(void*) {
                         (L"/weather_index/" + city + L".html?_=" + std::to_wstring(GetTickCount64())).c_str()),
                         today, weatherCity, settings.weatherFahrenheit);
                     std::wstring cityName;
-                    { std::lock_guard lock(g_stateMutex); cityName = g_state.weather.city; }
-                    weather.title = std::wstring(weatherTomorrow ? L"明天天气 · " : L"今天天气 · ") + (cityName.empty() ? weatherCity : cityName);
+                    { std::lock_guard lock(g_stateMutex); cityName = WeatherCityForUi(g_state.weather); }
+                    weather.title = std::wstring(weatherTomorrow ? UiText(L"Tomorrow’s weather · ", L"明天天气 · ") : UiText(L"Today’s weather · ", L"今天天气 · ")) + (cityName.empty() ? weatherCity : cityName);
                     weather.fetchedAt = NowSeconds();
                 }
             }

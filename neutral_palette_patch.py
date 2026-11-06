@@ -26,12 +26,6 @@ def apply_neutral_palette(src):
     start = src.index('    void DrawHardwareMonitorDashboard(')
     end = src.index('    void DrawQuickHomeDashboard(', start)
     panel = src[start:end]
-    panel = panel.replace('''        for (int i = 0; i < 6; ++i) {''', '''        ComPtr<ID2D1SolidColorBrush> cardFill;
-        target_->CreateSolidColorBrush(
-            WithAlpha(material_.raised, material_.raised.a * 0.70f), &cardFill);
-        for (int i = 0; i < 6; ++i) {''')
-    panel = panel.replace('            DrawCard(card, 9.0f * scale);', '''            if (cardFill) target_->FillRoundedRectangle(
-                D2D1::RoundedRect(card, 9.0f * scale, 9.0f * scale), cardFill.Get());''')
     panel = panel.replace('const D2D1_COLOR_F tint = hasBar ? LoadStateColor(m.fraction) : material_.accent;',
                           'const D2D1_COLOR_F tint = D2D1::ColorF(0xE1E1E6);')
     panel = panel.replace('WithAlpha(tint, 0.85f * settingsOpacity_)',
@@ -41,6 +35,6 @@ def apply_neutral_palette(src):
     panel = panel.replace('WithAlpha(tint, 0.95f)', 'WithAlpha(tint, 0.72f * settingsOpacity_)')
     src = src[:start] + panel + src[end:]
 
-    assert src.count('hovered ? material_.accent : material_.textPrimary') == 3
+    assert src.count('hovered ? material_.accent : material_.textPrimary') == 2
     src = src.replace('hovered ? material_.accent : material_.textPrimary', 'material_.textPrimary')
     return src

@@ -392,7 +392,7 @@ public:
             const bool selected = static_cast<int>(i) == ui.selected;
             const float midY = y + LookupLayout::kRowH * 0.5f;
             if (selected) {
-                DrawCard(rr, 10.0f, false);
+                DrawCard(rr, 10.0f, true);
             }
 
             const int glyph = (row.kind == LookupRowKind::Typed || row.kind == LookupRowKind::Suggestion) ? 0

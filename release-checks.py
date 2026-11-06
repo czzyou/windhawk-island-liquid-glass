@@ -7,6 +7,8 @@ import sys
 import json
 import tempfile
 import local_build
+import yaml
+from updater.package_release import settings_defaults
 
 with tempfile.TemporaryDirectory() as directory:
     fixture = Path(directory)
@@ -34,14 +36,23 @@ assert re.search(r'^// @id\s+dynamic-island-liquid-glass$', source, re.M)
 assert 'Wh_SetIntValue(L"UpdateHeartbeat"' in source
 assert 'Wh_SetIntValue(L"UpdateReady"' in source
 assert 'SetTimer(hwnd, 0x449, 45000, nullptr)' not in source
-assert 'AppendMenuW(menu, MF_STRING, 49, g_updateAvailable.load() ? L"安装可用更新…" : L"检查更新…")' in source
+assert 'AppendMenuW(menu, MF_STRING, 49, g_updateAvailable.load() ? UiText(L"Install available update…", L"安装可用更新…") : UiText(L"Check for updates…", L"检查更新…"))' in source
 assert 'case 49: CheckIslandUpdates(hwnd); break;' in source
 assert not re.search(r'#include\s+"', source), 'Release must be self contained'
 assert '-lcomctl32' in source.split('// ==/WindhawkMod==')[0]
-assert '  - LiquidGlass: true' in source and '  - ThemePreset: custom' in source
-assert '  - PillBgColor: "#10101024"' in source
-assert '  - WeatherCity: ""' in source
-assert '  - NBAScores: false' in source
+defaults = {item['name']: item['value'] for item in settings_defaults(source)}
+assert defaults['Themes.LiquidGlass'] == 1 and defaults['Themes.ThemePreset'] == 'custom'
+assert defaults['Themes.PillBgColor'] == '#10101024'
+assert defaults['Modules.WeatherCity'] == '' and defaults['Modules.NBAScores'] == 0
+settings_block = source.split('// ==WindhawkModSettings==', 1)[1].split('/*', 1)[1].split('*/', 1)[0]
+for group in yaml.safe_load(settings_block):
+    key = next(key for key in group if not key.startswith('$'))
+    assert '$name:zh-CN' in group
+    for setting in group[key]:
+        assert '$name:zh-CN' in setting
+        assert '$description' not in setting or '$description:zh-CN' in setting
+        if '$options' in setting:
+            assert [list(item) for item in setting['$options']] == [list(item) for item in setting['$options:zh-CN']]
 assert 'PostMessageW(hwnd, WM_APP + 0x449' not in source
 assert 'ShowNbaSetup(hwnd, true)' not in source
 assert 'case 48: ShowNbaSetup(hwnd); break;' in source
@@ -51,6 +62,7 @@ test = r'''#include <windows.h>
 #include <winhttp.h>
 #include <cassert>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <algorithm>
 #include <cwctype>
@@ -68,6 +80,8 @@ BOOL Wh_SetStringValue(const wchar_t*, const wchar_t* value) { saved = value; re
 void LoadSettings() { ++settingsLoads; }
 std::atomic<bool> g_importantDaysOpen = false;
 '''
+language_start = source.index('enum class UiLanguage {')
+test += source[language_start:source.index('// ── Clock / date presentation', language_start)]
 test += source[source.index('struct NbaSnapshot {'):source.index('inline bool ParseNbaGames(')]
 test += source[source.index('std::wstring ChinaWeatherCityCode('):source.index('std::string ChinaWeatherObject(')]
 test += source[source.index('std::string ChinaWeatherObject('):source.index('SYSTEMTIME ChinaWeatherClock(')]
@@ -112,6 +126,7 @@ void CALLBACK ExerciseTimer(HWND, UINT, UINT_PTR, DWORD) {
 }
 int main(int argc, char** argv) {
     SetProcessDPIAware();
+    g_uiLanguage.store(static_cast<int>(UiLanguage::ChineseSimplified));
     assert(std::size(kNbaTeams) == 30);
     for (const auto& team : kNbaTeams) {
         assert(CanonicalNbaTeam(team.code) == team.code);
@@ -120,6 +135,11 @@ int main(int argc, char** argv) {
         NbaSnapshot game; game.awayAbbr = team.code; game.homeAbbr = L"BOS";
         assert(NbaFavoriteRank(game, team.code) == 0);
     }
+    g_uiLanguage.store(static_cast<int>(UiLanguage::English));
+    assert(NbaFavoritesLabel(L"GS") == L"Warriors");
+    assert(NbaFavoritesLabel(L"LAL") == L"Lakers");
+    assert(NbaPeriodText(4, L"5:12") == L"Q4 5:12");
+    g_uiLanguage.store(static_cast<int>(UiLanguage::ChineseSimplified));
     assert(NormalizeNbaTeams(L" 湖人，勇士;NYK;SAS;NOP;UTA;WAS ") == L"LAL,GS,NY,SA,NO,UTAH,WSH");
     assert(CanonicalNbaTeam(L"invalid").empty());
     assert(ChinaWeatherCityCode(L"").empty());

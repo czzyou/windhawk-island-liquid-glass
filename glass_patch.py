@@ -17,6 +17,37 @@ def apply_glass(src):
         glassRimStops_.Reset();
         target_.Reset();
         textFormat_.Reset();''')
+    change('''    // Rounded inner card used by every dashboard, so panels across the media,
+    // calendar, weather, hardware and file-tray surfaces match exactly.
+    //
+    // Fill only, no outline. Each card used to also get a hairline ring, and six
+    // of those side by side in the hardware grid turned into a mesh of bright
+    // edges competing with the content. The fill alpha in BuildMaterialTokens
+    // was raised to carry the separation on its own.
+    void DrawCard(D2D1_RECT_F rect, float radius, bool active = false) {
+        ComPtr<ID2D1SolidColorBrush> fill;
+        if (SUCCEEDED(target_->CreateSolidColorBrush(
+                active ? material_.raisedStrong : material_.raised, &fill)) && fill) {
+            target_->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), fill.Get());
+        }
+    }''', '''    void DrawCard(D2D1_RECT_F rect, float radius, bool active = false) {
+        const auto card = D2D1::RoundedRect(rect, radius, radius);
+        const float oldOpacity = textBrush_->GetOpacity();
+        if (active) {
+            textBrush_->SetOpacity(0.04f * settingsOpacity_);
+            target_->FillRoundedRectangle(card, textBrush_.Get());
+        }
+        if (glassRimBrush_ && material_.onDark) {
+            glassRimBrush_->SetStartPoint(D2D1::Point2F(0, rect.top));
+            glassRimBrush_->SetEndPoint(D2D1::Point2F(0, rect.bottom));
+            glassRimBrush_->SetOpacity((active ? 0.90f : 0.60f) * settingsOpacity_);
+            target_->DrawRoundedRectangle(card, glassRimBrush_.Get(), 0.8f);
+        } else {
+            textBrush_->SetOpacity((active ? 0.22f : 0.14f) * settingsOpacity_);
+            target_->DrawRoundedRectangle(card, textBrush_.Get(), 0.8f);
+        }
+        textBrush_->SetOpacity(oldOpacity);
+    }''')
     change('''            ComPtr<ID2D1SolidColorBrush> border;
             target_->CreateSolidColorBrush(borderColor, &border);''', '''            if (settings.backdropMaterial != BackdropMaterial::None || settings.themePreset == ThemePreset::Custom) {
                 // Cache the glass rim; resizing only updates its gradient endpoints.
