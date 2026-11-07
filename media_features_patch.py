@@ -123,7 +123,8 @@ def apply_media_features(src):
                     session = nullptr;
                     for (const auto& candidate : manager.GetSessions())
                         if (candidate.SourceAppUserModelId().c_str() == chosen) { session = candidate; break; }
-                }''')
+                }
+                if (session && !MediaSourceAllowed(session.SourceAppUserModelId().c_str())) session = nullptr;''')
     change('                    next.albumTitle = properties.AlbumTitle().c_str();', '                    next.albumTitle = properties.AlbumTitle().c_str();\n                    next.sourceAppUserModelId = session.SourceAppUserModelId().c_str();')
     change('                    next.sourceAppUserModelId = session.SourceAppUserModelId().c_str();\n\n                    if (timeline)', '''                    next.sourceAppUserModelId = session.SourceAppUserModelId().c_str();
                     const auto playbackType=properties.PlaybackType();

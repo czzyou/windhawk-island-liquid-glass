@@ -43,6 +43,11 @@ int main() {
     assert(!MediaSessionHasContent(false,L" \t\n"));
     assert(MediaSessionHasContent(false,L"Paused song"));
     assert(MediaSessionHasContent(true,L""));
+    for (const auto* chrome : {L"Chrome", L"chrome.exe", L"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        L"Chrome._crx_blgdilankhlgpdndahbehalgkh"})
+        assert(!MediaSourceAllowed(chrome));
+    for (const auto* player : {L"cloudmusic.exe", L"QQMusic.exe", L"Spotify.exe", L"AppleInc.AppleMusicWin_nzyj5cx40ttqa!App", L"msedge.exe"})
+        assert(MediaSourceAllowed(player));
     g_stopEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr); assert(g_stopEvent);
     CheckLyricsProviders();
     for (const auto* browser : {L"chrome.exe", L"msedge.exe", L"firefox.exe", L"brave.exe", L"Opera.exe",

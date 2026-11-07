@@ -29,6 +29,10 @@ bool MediaSessionHasContent(bool playing, const std::wstring& title) {
     return playing || std::any_of(title.begin(), title.end(), [](wchar_t c) { return !iswspace(c); });
 }
 
+bool MediaSourceAllowed(const std::wstring& aumid) {
+    return ToLowerCopy(aumid).find(L"chrome") == std::wstring::npos;
+}
+
 bool CollectMediaSources(
     winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager const& manager,
     MediaSourceTracker& tracker, std::vector<MediaSourceInfo>* out) {
@@ -39,7 +43,7 @@ bool CollectMediaSources(
     try {
         for (auto const& session : manager.GetSessions()) {
             std::wstring aumid = session.SourceAppUserModelId().c_str();
-            if (aumid.empty()) continue;
+            if (aumid.empty() || !MediaSourceAllowed(aumid)) continue;
             bool playing = false;
             try {
                 playing = session.GetPlaybackInfo().PlaybackStatus() == PlaybackStatus::Playing;

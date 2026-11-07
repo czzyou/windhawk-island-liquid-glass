@@ -6,7 +6,7 @@
 // @description     A liquid-glass island for media, weather, calendar, timers and system status.
 // @description:zh-CN 液态玻璃灵动岛，显示媒体、天气、日历、计时器和系统状态。
 // @description:zh-TW 液态玻璃灵动岛，显示媒体、天气、日历、计时器和系统状态。
-// @version         1.5.17
+// @version         1.5.18
 // @author          czzyou
 // @github          https://github.com/czzyou
 // @include         windhawk.exe
@@ -7840,6 +7840,10 @@ bool MediaSessionHasContent(bool playing, const std::wstring& title) {
     return playing || std::any_of(title.begin(), title.end(), [](wchar_t c) { return !iswspace(c); });
 }
 
+bool MediaSourceAllowed(const std::wstring& aumid) {
+    return ToLowerCopy(aumid).find(L"chrome") == std::wstring::npos;
+}
+
 bool CollectMediaSources(
     winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager const& manager,
     MediaSourceTracker& tracker, std::vector<MediaSourceInfo>* out) {
@@ -7850,7 +7854,7 @@ bool CollectMediaSources(
     try {
         for (auto const& session : manager.GetSessions()) {
             std::wstring aumid = session.SourceAppUserModelId().c_str();
-            if (aumid.empty()) continue;
+            if (aumid.empty() || !MediaSourceAllowed(aumid)) continue;
             bool playing = false;
             try {
                 playing = session.GetPlaybackInfo().PlaybackStatus() == PlaybackStatus::Playing;
@@ -8082,6 +8086,7 @@ DWORD WINAPI MediaThreadProc(void*) {
                     for (const auto& candidate : manager.GetSessions())
                         if (candidate.SourceAppUserModelId().c_str() == chosen) { session = candidate; break; }
                 }
+                if (session && !MediaSourceAllowed(session.SourceAppUserModelId().c_str())) session = nullptr;
                 if (session) {
                     auto properties = session.TryGetMediaPropertiesAsync().get();
                     auto playback = session.GetPlaybackInfo();
