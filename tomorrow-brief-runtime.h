@@ -129,9 +129,9 @@ DWORD WINAPI TomorrowBriefThreadProc(void*) {
                     ? showing.date==BriefDateKey(today) && std::any_of(days.begin(),days.end(),[&](const auto& day){return day.id==showing.key;})
                     : showing.meal ? showing.date == BriefDateKey(today) && MealReminderSlot(today) == showing.meal
                     : showing.date == (showing.weatherCode ? weatherTarget : target);
-                if (visibleSeconds >= 10 || !enabled || !dateValid ||
+                if (visibleSeconds >= 5 || !enabled || !dateValid ||
                     now - showing.fetchedAt >= 3600) {
-                    if (visibleSeconds >= 10) {
+                    if (visibleSeconds >= 5) {
                         if (showing.important) Wh_SetIntValue((L"ImportantDayShown:"+showing.key).c_str(),showing.date);
                         else if (showing.meal) Wh_SetIntValue(showing.meal == 1 ? L"MealLunchShown" : L"MealDinnerShown", showing.date);
                         else Wh_SetStringValue(showing.weatherCode ? L"TomorrowWeatherShown" : L"TomorrowNbaShown", showing.key.c_str());

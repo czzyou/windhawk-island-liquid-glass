@@ -87,7 +87,7 @@ HANDLE g_hourlyClockThread = nullptr;''')
         {
             std::lock_guard lock(g_stateMutex);
             if (triggered) {
-                g_state.hourlyClock = {true, local.wHour, local.wMinute, now + 10.0};
+                g_state.hourlyClock = {true, local.wHour, local.wMinute, now + 5.0};
             } else if (g_state.hourlyClock.active && now >= g_state.hourlyClock.expiresAt) {
                 g_state.hourlyClock.active = false;
                 expired = true;

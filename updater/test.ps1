@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param([switch]$Compile)
 . (Join-Path $PSScriptRoot 'core.ps1')
 . (Join-Path $PSScriptRoot 'publish-checks.ps1')
@@ -192,7 +192,7 @@ try {
     Assert ($script:requests -eq 1) 'One network attempt during manual recovery'
     Must-Fail { Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Auto' } 'Automatic offline check fails without retry'
     $result=Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Auto'
-    Assert ($result -eq 'Already checked within three hours.' -and $script:requests -eq 2) 'Automatic failures also respect the three-hour interval'
+    Assert ($result -eq 'Already checked within 24 hours.' -and $script:requests -eq 2) 'Automatic failures also respect the 24-hour interval'
     Must-Fail { Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Manual' } 'Manual check bypasses automatic interval'
     Assert ($script:requests -eq 3) 'Manual check requests latest release'
     $script:downloadIndex=0
@@ -207,17 +207,17 @@ try {
     $script:downloadIndex=0
     function Get-RemoteBytes($Url,$Limit) { $script:downloadIndex++; if ($Url.EndsWith('update.json')) { ,$newBytes } elseif ($Url.EndsWith('update.sig')) { ,$newSignature } else { throw 'Automatic check must not download source' } }
     $saved=Get-UpdaterState $testRoot
-    $saved | Add-Member -NotePropertyName lastAutoCheck -NotePropertyValue ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-10800) -Force
+    $saved | Add-Member -NotePropertyName lastAutoCheck -NotePropertyValue ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-86400) -Force
     Write-JsonFile (Join-Path $testRoot 'state.json') $saved
     Set-UpdateRequest $fixture 1
     $script:compileFails=$true
     $result=Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Auto'
-    Assert ($result -eq ('Update available: '+$availableVersion) -and $script:downloadIndex -eq 2) 'Three-hour check downloads only signed metadata'
+    Assert ($result -eq ('Update available: '+$availableVersion) -and $script:downloadIndex -eq 2) '24-hour check downloads only signed metadata'
     Assert ((Get-Item -LiteralPath $fixture.Storage).GetValue('UpdateAvailable',0) -eq 1) 'New signed version sets the badge'
     Assert ((Get-ModSnapshot $fixture).Version -eq $version -and (Get-FileDigest $fixture.Source) -ceq $oldHash) 'Background availability check preserves running code'
     Assert ((Get-Item -LiteralPath $fixture.Storage).GetValue('UpdateRequested',0) -eq 1) 'Background availability check does not alter active handoff'
     $result=Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Auto'
-    Assert ($result -eq 'Already checked within three hours.' -and $script:downloadIndex -eq 2) 'Successful checks also respect the three-hour interval'
+    Assert ($result -eq 'Already checked within 24 hours.' -and $script:downloadIndex -eq 2) 'Successful checks also respect the 24-hour interval'
     $newSignature[0]=$newSignature[0] -bxor 1
     Set-UpdateAvailable $fixture 0
     Must-Fail { Invoke-IslandUpdate $fixture $testRoot ([pscustomobject]@{repository='test/repo'}) $public 'Manual' } 'Invalid signatures cannot advertise updates'
@@ -232,7 +232,7 @@ try {
         $start=$setup.IndexOf('$trigger = New-ScheduledTaskTrigger')
         $end=$setup.IndexOf("foreach (`$mode in",$start)
         Invoke-Expression $setup.Substring($start,$end-$start)
-        Assert ($trigger.Repetition.Interval -ceq 'PT3H' -and -not $trigger.Repetition.Duration) 'Time trigger repeats every three hours without an expiration'
+        Assert ($trigger.Repetition.Interval -ceq 'P1D' -and -not $trigger.Repetition.Duration) 'Time trigger repeats every 24 hours without an expiration'
     }
     Write-Host ("PASS: $script:checks checks; isolated registry/files; no live mod or task changes.")
 } finally {

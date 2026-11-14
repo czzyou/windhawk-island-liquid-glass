@@ -8378,7 +8378,7 @@ NTSTATUS NTAPI WnfDndCallback(
             std::lock_guard lock(g_stateMutex);
             g_state.doNotDisturb.active = true;
             g_state.doNotDisturb.enabled = active;
-            g_state.doNotDisturb.expiresAt = NowSeconds() + 3.0;
+            g_state.doNotDisturb.expiresAt = NowSeconds() + 1.0;
         }
         TriggerNudge();
     }
@@ -8688,7 +8688,7 @@ void HandleBluetoothConnected(
     snapshot.connected = true;
     snapshot.deviceName = name;
     snapshot.category = category;
-    snapshot.expiresAt = NowSeconds() + 4.0;
+    snapshot.expiresAt = NowSeconds() + 1.0;
     snapshot.batteryPercent = g_settings.bluetoothShowBattery
         ? TryReadBluetoothBatteryPercent(info.Id())
         : -1;
@@ -8762,7 +8762,7 @@ void HandleBluetoothDisconnected(
     snapshot.deviceName = name;
     snapshot.category = category;
     snapshot.batteryPercent = GetLastKnownBluetoothBatteryPercent(std::wstring(id.c_str()));
-    snapshot.expiresAt = NowSeconds() + 4.0;
+    snapshot.expiresAt = NowSeconds() + 1.0;
 
     {
         std::lock_guard lock(g_stateMutex);
@@ -9650,7 +9650,7 @@ void UpdateBatterySnapshot() {
 
         if (triggerAlert) {
             g_state.battery.active = true;
-            g_state.battery.expiresAt = NowSeconds() + 4.0;
+            g_state.battery.expiresAt = NowSeconds() + 1.0;
         }
     }
 
@@ -10286,7 +10286,7 @@ bool ReadClipboardImagePixels(HWND hwnd, BitmapPixels* outPixels, UINT maxDim) {
 
 void CaptureClipboard(HWND hwnd) {
     ClipboardSnapshot clip;
-    clip.expiresAt = NowSeconds() + 2.5;
+    clip.expiresAt = NowSeconds() + 1.0;
     HWND owner = GetClipboardOwner();
     if (!owner) {
         owner = GetForegroundWindow();
@@ -19291,7 +19291,7 @@ public:
     void DrawClipboard(const SharedState& state, D2D1_RECT_F rect) {
         if (rect.bottom - rect.top < 40.0f || rect.right - rect.left < 100.0f) return;
         const double now = NowSeconds();
-        const float ttl = 2.5f;
+        const float ttl = 1.0f;
         const float remaining = Clamp(static_cast<float>(state.clipboard.expiresAt - now), 0.0f, ttl);
         const float progress = remaining / ttl;
 
@@ -19969,7 +19969,7 @@ public:
         const float tx = badge.right + 14.0f;
         const bool showBar = g_settings.statusCountdownProgress;
         const double now = NowSeconds();
-        const float ttl = 3.0f;
+        const float ttl = 1.0f;
         const float remaining = Clamp(static_cast<float>(state.device.expiresAt - now), 0.0f, ttl);
         const float progress = remaining / ttl;
 
@@ -20053,7 +20053,7 @@ public:
         }
 
         const double now = NowSeconds();
-        const float ttl = 3.0f;
+        const float ttl = 1.0f;
         const float remaining = Clamp(static_cast<float>(state.doNotDisturb.expiresAt - now), 0.0f, ttl);
         const float progress = remaining / ttl;
         DrawCountdownProgress(tx, rect.right - 14.0f, rect.bottom - 4.0f, progress);
@@ -20100,7 +20100,7 @@ public:
     void DrawBluetoothDevice(const SharedState& state, D2D1_RECT_F rect) {
         if (rect.bottom - rect.top < 24.0f || rect.right - rect.left < 140.0f) return;
         const double now = NowSeconds();
-        const float ttl = 4.0f;
+        const float ttl = 1.0f;
         const float remaining = Clamp(static_cast<float>(state.bluetoothDevice.expiresAt - now), 0.0f, ttl);
         const float progress = remaining / ttl;
 
@@ -20925,7 +20925,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 g_state.capsLock.capsOn = capsOn;
                 g_state.capsLock.numOn = numOn;
                 g_state.capsLock.isNumEvent = isNum;
-                g_state.capsLock.expiresAt = NowSeconds() + 2.5;
+                g_state.capsLock.expiresAt = NowSeconds() + 1.0;
             }
             TriggerNudge();
             return 0;
@@ -20958,7 +20958,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                                                        : DeviceEventType::Disconnected;
                     g_state.device.deviceName = devName;
                     g_state.device.isBluetoothLike = isBt;
-                    g_state.device.expiresAt = NowSeconds() + 3.0;
+                    g_state.device.expiresAt = NowSeconds() + 1.0;
                 }
                 TriggerNudge();
             }
@@ -23053,7 +23053,7 @@ DWORD WINAPI HourlyClockThreadProc(void*) {
         {
             std::lock_guard lock(g_stateMutex);
             if (triggered) {
-                g_state.hourlyClock = {true, local.wHour, local.wMinute, now + 10.0};
+                g_state.hourlyClock = {true, local.wHour, local.wMinute, now + 5.0};
             } else if (g_state.hourlyClock.active && now >= g_state.hourlyClock.expiresAt) {
                 g_state.hourlyClock.active = false;
                 expired = true;
@@ -23221,9 +23221,9 @@ DWORD WINAPI TomorrowBriefThreadProc(void*) {
                     ? showing.date==BriefDateKey(today) && std::any_of(days.begin(),days.end(),[&](const auto& day){return day.id==showing.key;})
                     : showing.meal ? Wh_GetIntSetting(L"Modules.MealReminders") && meal.key == showing.key && showing.date == BriefDateKey(today)
                     : showing.date == (showing.weatherCode ? weatherTarget : target);
-                if (visibleSeconds >= 10 || !enabled || !dateValid ||
+                if (visibleSeconds >= 5 || !enabled || !dateValid ||
                     now - showing.fetchedAt >= 3600) {
-                    if (visibleSeconds >= 10) {
+                    if (visibleSeconds >= 5) {
                         if (showing.important) Wh_SetIntValue((L"ImportantDayShown:"+showing.key).c_str(),showing.date);
                         else if (showing.meal) Wh_SetIntValue(showing.meal == 1 ? L"MealLunchShown" : L"MealDinnerShown", showing.date);
                         else Wh_SetStringValue(showing.weatherCode ? L"TomorrowWeatherShown" : L"TomorrowNbaShown", showing.key.c_str());

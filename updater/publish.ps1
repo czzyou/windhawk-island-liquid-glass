@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param([switch]$InitializeKey, [switch]$PrepareOnly, [switch]$PublishPrepared, [string]$NotesFile)
 . (Join-Path $PSScriptRoot 'core.ps1')
 . (Join-Path $PSScriptRoot 'publish-checks.ps1')
@@ -78,7 +78,7 @@ $verified=Get-VerifiedManifest ([IO.File]::ReadAllBytes($manifestPath)) ([IO.Fil
 Assert-Source $asset $verified
 $setupRoot=Join-Path $output 'island-setup'
 New-Item -ItemType Directory -Path $setupRoot -Force | Out-Null
-foreach ($file in @('core.ps1','update.ps1','check.ps1','setup.ps1','uninstall.ps1','install.cmd','public-key.xml','README.md')) {
+foreach ($file in @('core.ps1','update.ps1','check.ps1','setup.ps1','uninstall.ps1','auto-check.vbs','install.cmd','public-key.xml','README.md')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $setupRoot $file) -Force
 }
 Write-JsonFile (Join-Path $setupRoot 'config.json') ([ordered]@{repository=$release.repository})
@@ -106,7 +106,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive=[IO.Compression.ZipFile]::OpenRead($zip)
 try {
     if (@($archive.Entries | Where-Object { $_.FullName -match '\.(ttf|otf|ttc)$' }).Count) { throw 'Font binaries must not be published in the setup package.' }
-    foreach ($file in @('core.ps1','update.ps1','check.ps1','setup.ps1','uninstall.ps1','install.cmd','public-key.xml','README.md')) {
+    foreach ($file in @('core.ps1','update.ps1','check.ps1','setup.ps1','uninstall.ps1','auto-check.vbs','install.cmd','public-key.xml','README.md')) {
         $entry=@($archive.Entries | Where-Object { $_.FullName.Replace('\','/') -ceq ('island-setup/'+$file) })
         if ($entry.Count -ne 1) { throw ('Prepared setup file missing: '+$file) }
         $stream=$entry[0].Open(); $sha=[Security.Cryptography.SHA256]::Create()

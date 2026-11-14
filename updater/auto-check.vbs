@@ -1,0 +1,5 @@
+Set shell = CreateObject("WScript.Shell")
+Set files = CreateObject("Scripting.FileSystemObject")
+powerShell = shell.ExpandEnvironmentStrings("%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe")
+script = files.BuildPath(files.GetParentFolderName(WScript.ScriptFullName), "update.ps1")
+WScript.Quit shell.Run("""" & powerShell & """ -NoProfile -NonInteractive -File """ & script & """ -Mode Auto", 0, True)

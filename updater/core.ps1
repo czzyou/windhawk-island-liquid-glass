@@ -2,7 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:ModId = 'local@dynamic-island-liquid-glass'
 $script:PublicId = 'dynamic-island-liquid-glass'
-$script:UpdaterVersion = [version]'1.0.3'
+$script:UpdaterVersion = [version]'1.0.4'
 $script:Utf8 = New-Object System.Text.UTF8Encoding($false, $true)
 
 function Read-JsonFile([string]$Path) {
@@ -369,7 +369,7 @@ function Invoke-IslandUpdate($HostEnv, [string]$StateRoot, $Config, [string]$Pub
         $last = 0L
         if ($state.PSObject.Properties['lastAutoCheck'] -and
             [long]::TryParse([string]$state.lastAutoCheck, [ref]$last) -and
-            $now -ge $last -and $now - $last -lt 10800) { return 'Already checked within three hours.' }
+            $now -ge $last -and $now - $last -lt 86400) { return 'Already checked within 24 hours.' }
         $state | Add-Member -NotePropertyName lastAutoCheck -NotePropertyValue $now -Force
         Write-JsonFile (Join-Path $StateRoot 'state.json') $state
     } else {

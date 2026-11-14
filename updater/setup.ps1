@@ -33,7 +33,7 @@ if (Test-Path -LiteralPath $existingConfig) {
         throw 'Existing updater belongs to a different repository, signing key or user; refusing to replace it.'
     }
 }
-foreach ($file in @('core.ps1','update.ps1','check.ps1','uninstall.ps1','public-key.xml')) {
+foreach ($file in @('core.ps1','update.ps1','check.ps1','uninstall.ps1','auto-check.vbs','public-key.xml')) {
     $from = Join-Path $PSScriptRoot $file
     $to = Join-Path $installRoot $file
     if ([IO.Path]::GetFullPath($from) -cne [IO.Path]::GetFullPath($to)) { Copy-Item -LiteralPath $from -Destination $to -Force }
@@ -43,9 +43,13 @@ Protect-UpdaterDirectory $installRoot
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Hours 3)
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Days 1)
 foreach ($mode in @('Auto','Manual','Rollback')) {
-    $action = New-ScheduledTaskAction -Execute $powershell -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -File "' + (Join-Path $installRoot 'update.ps1') + '" -Mode ' + $mode)
+    if ($mode -eq 'Auto') {
+        $action = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\wscript.exe') -Argument ('"' + (Join-Path $installRoot 'auto-check.vbs') + '"')
+    } else {
+        $action = New-ScheduledTaskAction -Execute $powershell -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -File "' + (Join-Path $installRoot 'update.ps1') + '" -Mode ' + $mode)
+    }
     $taskArgs = @{ TaskName=($baseName+'-'+$mode); Action=$action; Principal=$principal; Settings=$settings; Force=$true }
     if ($mode -eq 'Auto') { $taskArgs.Trigger=$trigger }
     Register-ScheduledTask @taskArgs | Out-Null
@@ -71,4 +75,4 @@ $remove.Save()
 } finally { if ($setupLocked) { $setupMutex.ReleaseMutex() }; $setupMutex.Dispose() }
 & $powershell -NoProfile -File (Join-Path $installRoot 'update.ps1') -Mode Install
 if ($LASTEXITCODE -ne 0) { throw 'Initial installation failed. Check ProgramData\Windhawk-Island-Updater\update.log. Registered shortcuts can retry.' }
-Write-Host 'Installed. Silent update checks run every three hours; use the island menu to install available updates.'
+Write-Host 'Installed. Silent update checks run every 24 hours; use the island menu to install available updates.'

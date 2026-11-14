@@ -352,6 +352,19 @@ src = apply_calendar_markers(src)
 from media_features_patch import apply_media_features
 src = apply_media_features(src)
 
+for old in (
+    'g_state.doNotDisturb.expiresAt = NowSeconds() + 3.0',
+    'g_state.battery.expiresAt = NowSeconds() + 4.0',
+    'clip.expiresAt = NowSeconds() + 2.5',
+    'g_state.capsLock.expiresAt = NowSeconds() + 2.5',
+    'g_state.device.expiresAt = NowSeconds() + 3.0',
+):
+    replace(old, old.rsplit(' ', 1)[0] + ' 1.0')
+assert src.count('snapshot.expiresAt = NowSeconds() + 4.0;') == 2
+src = src.replace('snapshot.expiresAt = NowSeconds() + 4.0;', 'snapshot.expiresAt = NowSeconds() + 1.0;')
+for old in ('const float ttl = 2.5f;', 'const float ttl = 3.0f;', 'const float ttl = 4.0f;'):
+    src = src.replace(old, 'const float ttl = 1.0f;')
+
 replace('#include <dwrite.h>', '#include <dwrite_2.h>')
 replace('class Renderer {', (root/'chinese-font.h').read_text(encoding='utf-8') + '\nclass Renderer {')
 replace('    ComPtr<IDWriteFactory> dwriteFactory_;', '''    ComPtr<IDWriteFactory> dwriteFactory_;
