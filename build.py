@@ -5,6 +5,7 @@ import sys
 import yaml
 import json
 import re
+import base64
 
 root = Path(__file__).resolve().parent
 src = (root/'original.wh.cpp').read_text(encoding='utf-8-sig')
@@ -445,6 +446,8 @@ for removed in ('NotificationThreadProc', 'CaptureShellNotification', 'IslandKin
                 'NotificationRespectDnD', 'OpenNotificationSource', 'RegisterShellHookWindow',
                 'NotificationSnapshot', 'g_state.notification', 'DrawNotification', 'g_inbox'):
     assert removed not in src, removed
+core = (root/'updater/core.ps1').read_bytes()
+src += '\n/* UPDATER_CORE_BEGIN\n' + base64.b64encode(core).decode('ascii') + '\nUPDATER_CORE_END */\n'
 out.write_text(src, encoding='utf-8')
 if '--source-only' in sys.argv:
     sys.exit(0)

@@ -2,7 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:ModId = 'local@dynamic-island-liquid-glass'
 $script:PublicId = 'dynamic-island-liquid-glass'
-$script:UpdaterVersion = [version]'1.0.4'
+$script:UpdaterVersion = [version]'1.0.5'
 $script:Utf8 = New-Object System.Text.UTF8Encoding($false, $true)
 
 function Read-JsonFile([string]$Path) {
@@ -74,6 +74,30 @@ function Assert-Source([string]$Path, $Manifest) {
         if ($matches.Count -ne 1 -or $matches[0].Groups[1].Value.Trim() -cne $entry[1]) { throw "Source $($entry[0]) mismatch." }
     }
     if (-not $source.Contains('UpdateHeartbeat') -or -not $source.Contains('UpdateRequested')) { throw 'Source lacks updater handoff.' }
+}
+
+function Install-UpdaterCore([string]$Source, [string]$InstallRoot) {
+    $text=[IO.File]::ReadAllText($Source,$script:Utf8)
+    $match=[regex]::Match($text,'(?s)/\* UPDATER_CORE_BEGIN\r?\n([A-Za-z0-9+/=]+)\r?\nUPDATER_CORE_END \*/\s*$')
+    if (-not $match.Success) { throw 'Signed source lacks updater core.' }
+    $bytes=[Convert]::FromBase64String($match.Groups[1].Value)
+    if ($bytes.Length -gt 262144) { throw 'Updater core is too large.' }
+    $new=$script:Utf8.GetString($bytes)
+    $version=[regex]::Match($new,'(?m)^\$script:UpdaterVersion = \[version\]''([0-9]+\.[0-9]+\.[0-9]+)''\r?$')
+    if (-not $version.Success) { throw 'Updater core version missing.' }
+    $target=Join-Path $InstallRoot 'core.ps1'
+    $current=[regex]::Match([IO.File]::ReadAllText($target,$script:Utf8),'(?m)^\$script:UpdaterVersion = \[version\]''([0-9]+\.[0-9]+\.[0-9]+)''\r?$')
+    if (-not $current.Success) { throw 'Installed updater core version missing.' }
+    if ((Get-ReleaseVersion $version.Groups[1].Value) -le (Get-ReleaseVersion $current.Groups[1].Value)) { return $false }
+    $tokens=$null; $errors=$null
+    [void][Management.Automation.Language.Parser]::ParseInput($new,[ref]$tokens,[ref]$errors)
+    if ($errors.Count) { throw 'Updater core has a syntax error.' }
+    $tmp=$target+'.new'
+    try {
+        [IO.File]::WriteAllBytes($tmp,$bytes)
+        [IO.File]::Replace($tmp,$target,$target+'.previous')
+    } finally { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force } }
+    $true
 }
 
 function Get-RemoteBytes([string]$Url, [int]$Limit) {
@@ -404,7 +428,12 @@ function Invoke-IslandUpdate($HostEnv, [string]$StateRoot, $Config, [string]$Pub
     $download = Join-Path $StateRoot 'download.wh.cpp'
     [IO.File]::WriteAllBytes($download, $source)
     Assert-Source $download $manifest
-    Invoke-IslandInstall $HostEnv $StateRoot $manifest $download $state
+    $coreChanged=Install-UpdaterCore $download $PSScriptRoot
+    try { Invoke-IslandInstall $HostEnv $StateRoot $manifest $download $state }
+    catch {
+        if ($coreChanged) { [IO.File]::Replace((Join-Path $PSScriptRoot 'core.ps1.previous'),(Join-Path $PSScriptRoot 'core.ps1'),$null) }
+        throw
+    }
 }
 
 function Assert-Administrator {

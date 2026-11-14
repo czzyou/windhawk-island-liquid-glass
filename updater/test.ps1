@@ -85,6 +85,15 @@ try {
     $public=$rsa.ToXmlString($false)
     $manifest=Get-VerifiedManifest $bytes $sig $public
     Assert-Source $sourcePath $manifest
+    $coreTest=Join-Path $testRoot 'core.ps1'
+    [IO.File]::WriteAllText($coreTest,([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'core.ps1'),$script:Utf8).Replace("[version]'1.0.5'","[version]'1.0.4'")),$script:Utf8)
+    Assert (Install-UpdaterCore $sourcePath $testRoot) 'Signed source upgrades updater core'
+    Assert ((Get-FileDigest $coreTest) -ceq (Get-FileDigest (Join-Path $PSScriptRoot 'core.ps1'))) 'Installed updater core matches packaged source'
+    Assert (-not (Install-UpdaterCore $sourcePath $testRoot)) 'Same updater version is not rewritten'
+    $badCore=Join-Path $testRoot 'bad-source.wh.cpp'
+    [IO.File]::WriteAllText($badCore,'/* UPDATER_CORE_BEGIN' + "`n" + 'bad' + "`n" + 'UPDATER_CORE_END */',$script:Utf8)
+    Must-Fail { Install-UpdaterCore $badCore $testRoot } 'Malformed updater payload is rejected'
+    function Install-UpdaterCore($Source,$InstallRoot) { $false }
     $script:checks++
     $currentUpdater=$script:UpdaterVersion
     try {
