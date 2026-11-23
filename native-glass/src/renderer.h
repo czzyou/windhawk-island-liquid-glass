@@ -41,6 +41,7 @@ public:
     void SetLumaWanted(bool wanted) { lumaWanted_ = wanted; }
 
     bool hasFrame() const { return hasFrame_; }
+    bool isWeatherTransitioning() const { return weatherTransitioning_; }
     // The panel's sampling region (including blur margin and source offset)
     // as a rect in the virtual desktop
     static RECT RegionForPanel(const RECT& panelBounds, const GlassParams& params, float dpr);
@@ -77,4 +78,9 @@ private:
     bool hasFrame_ = false;
     bool lumaWanted_ = false;   // luma bands configured: render path pre-queues the staging copy
     bool stagingValid_ = false; // staging holds the latest blur result
+    ULONGLONG weatherLastTick_ = 0;
+    double weatherAnimTime_ = 0.0;
+    int weatherCurMode_ = 0;
+    float weatherFade_ = 0.0f;
+    bool weatherTransitioning_ = false;
 };

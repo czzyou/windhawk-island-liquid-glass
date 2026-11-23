@@ -385,11 +385,33 @@ void GlassSession::RenderTick() {
         // Advance fades (redraw from the last region texture when no new frame)
         if (entry.fading && fadeTickDue) {
             const bool continuing = entry.panel->FadeStep();
-            if (!rendered) entry.renderer->Redraw(context_.Get(), *entry.panel, entry.config.dpr);
+            if (!rendered) {
+                entry.renderer->Redraw(context_.Get(), *entry.panel, entry.config.dpr);
+                rendered = true;
+            }
             if (!continuing) {
                 entry.fading = false;
                 if (entry.panel->opacity() <= 0.0f) entry.panel->Hide();
             }
+        }
+
+        // Per-panel adaptive refresh rate for weather FX (isolated per PanelEntry, no multi-panel contention)
+        const int curWeatherMode = ResolveActiveWeatherFxMode();
+        const bool fxTransition = entry.renderer->isWeatherTransitioning();
+        const bool weatherModeChanged = (curWeatherMode != entry.lastRenderedWeatherMode);
+        const bool highRate = g_weatherFxIsExpanded.load(std::memory_order_relaxed)
+            || g_weatherFxTuningOpen.load(std::memory_order_relaxed)
+            || fxTransition;
+        const ULONGLONG targetIntervalMs = highRate ? 16 : 33;
+        const bool weatherTickDue = (now - entry.lastWeatherDrawTick) >= targetIntervalMs;
+        if (!rendered && entry.renderer->hasFrame() &&
+            (((curWeatherMode > 0 || fxTransition) && weatherTickDue) || weatherModeChanged)) {
+            entry.renderer->Redraw(context_.Get(), *entry.panel, entry.config.dpr);
+            rendered = true;
+        }
+        if (rendered) {
+            entry.lastRenderedWeatherMode = curWeatherMode;
+            entry.lastWeatherDrawTick = now;
         }
 
         // Periodically re-assert z-order anchoring (defends against other

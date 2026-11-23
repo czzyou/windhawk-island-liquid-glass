@@ -1162,6 +1162,7 @@ HRESULT CreateD3DDevice(ComPtr<ID3D11Device>* device, ComPtr<ID3D11DeviceContext
 // screen capture (prevents self-capture feedback loops).
 // All methods must be called on the worker thread (the window belongs to the
 // message queue of its creating thread).
+#include <atomic>
 #include <d3d11.h>
 #include <dcomp.h>
 #include <dxgi1_2.h>
@@ -1169,6 +1170,33 @@ HRESULT CreateD3DDevice(ComPtr<ID3D11Device>* device, ComPtr<ID3D11DeviceContext
 #include <wrl/client.h>
 
 using Microsoft::WRL::ComPtr;
+
+// Weather glass shader effect modes & live tuning parameters:
+// Override: -1 = Off, 0 = Follow live weather, 1 = Rain, 2 = Storm, 3 = Snow,
+//            4 = Cloudy/Fog, 5 = Clear Day (Sun Glow), 6 = Clear Night (Starry)
+// Scope:     0 = Everywhere (always), 1 = Expanded only, 2 = Weather tab only
+inline std::atomic<int> g_weatherFxOverride{0};
+inline std::atomic<int> g_weatherFxLiveMode{0};
+inline std::atomic<int> g_weatherFxScope{0};
+inline std::atomic<bool> g_weatherFxScopeAllowed{true};
+inline std::atomic<bool> g_weatherFxIsExpanded{false};
+inline std::atomic<bool> g_weatherFxTuningOpen{false};
+inline std::atomic<int> g_weatherFxIntensityPct{100};  // 0..150
+inline std::atomic<int> g_weatherFxSpeedPct{100};      // 20..250
+inline std::atomic<int> g_weatherFxScalePct{100};      // 50..200
+inline std::atomic<int> g_weatherFxFogPct{75};         // 0..100
+inline std::atomic<int> g_weatherFxRefractPct{100};    // 0..200
+
+inline int ResolveActiveWeatherFxMode() {
+    if (!g_weatherFxTuningOpen.load(std::memory_order_relaxed) &&
+        !g_weatherFxScopeAllowed.load(std::memory_order_relaxed)) {
+        return 0;
+    }
+    const int ov = g_weatherFxOverride.load(std::memory_order_relaxed);
+    if (ov < 0) return 0;
+    if (ov > 0) return ov;
+    return g_weatherFxLiveMode.load(std::memory_order_relaxed);
+}
 
 // Microsoft-documented WCA_EXCLUDED_FROM_DDA; regular screenshots remain available.
 bool ExcludeGlassFromDesktopDuplication(HWND hwnd, bool exclude);
@@ -1330,6 +1358,7 @@ public:
     void SetLumaWanted(bool wanted) { lumaWanted_ = wanted; }
 
     bool hasFrame() const { return hasFrame_; }
+    bool isWeatherTransitioning() const { return weatherTransitioning_; }
     // The panel's sampling region (including blur margin and source offset)
     // as a rect in the virtual desktop
     static RECT RegionForPanel(const RECT& panelBounds, const GlassParams& params, float dpr);
@@ -1366,6 +1395,11 @@ private:
     bool hasFrame_ = false;
     bool lumaWanted_ = false;   // luma bands configured: render path pre-queues the staging copy
     bool stagingValid_ = false; // staging holds the latest blur result
+    ULONGLONG weatherLastTick_ = 0;
+    double weatherAnimTime_ = 0.0;
+    int weatherCurMode_ = 0;
+    float weatherFade_ = 0.0f;
+    bool weatherTransitioning_ = false;
 };
 // Glass session: a dedicated worker thread running the capture → render →
 // present loop.
@@ -1452,6 +1486,8 @@ private:
         bool lumaStagingDirty = false;  // staging holds an unsampled blur result (set after each render)
         ULONGLONG lastLumaTick = 0;
         ULONGLONG lastAnchorTick = 0;
+        ULONGLONG lastWeatherDrawTick = 0;
+        int lastRenderedWeatherMode = 0;
     };
 
     void EnsureThread();
@@ -2019,6 +2055,8 @@ cbuffer P : register(b0) {
   float2 glassSize; float radius; float bezel;
   float maxBend; float dispFactor; float aberration; float saturation;
   float margin; float alpha; float hdrSource; float whiteScale;
+  float weatherMode; float weatherTime; float weatherIntensity; float weatherDpr;
+  float weatherScale; float weatherFog; float weatherRefract; float weatherPad;
 };
 
 Texture2D tex : register(t0);
@@ -2075,8 +2113,316 @@ float2 toBlurUV(float2 px) {
   return (px + margin) / (glassSize + margin * 2.0);
 }
 
-// Main lens shading: SDF displacement + RGB dispersion + saturation, output
-// premultiplied alpha (rounded-corner AA coverage × panel opacity)
+// --- Procedural Weather Effects (Apple Weather / Heartfelt inspired) ---
+
+float W_Hash12(float2 p) {
+  float3 p3 = frac(float3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return frac((p3.x + p3.y) * p3.z);
+}
+
+float3 W_Hash32(float2 p) {
+  float3 p3 = frac(float3(p.xyx) * float3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yxz + 33.33);
+  return frac((p3.xxy + p3.yzz) * p3.zyx);
+}
+
+// --- rocksdanister/weather (Lively Weather, MIT) Rain.cs HLSL Port ---
+// Ported from Drizzle.UI.Shaders.D2D1.Rain (inspired by BigWIngs "Heartfelt")
+
+float W_S(float a, float b, float t) {
+  return smoothstep(a, b, t);
+}
+
+float3 W_N13(float p) {
+  float3 p3 = frac(float3(p, p, p) * float3(0.1031, 0.11369, 0.13787));
+  p3 += dot(p3, p3.yzx + 19.19);
+  return frac(float3((p3.x + p3.y) * p3.z, (p3.x + p3.z) * p3.y, (p3.y + p3.z) * p3.x));
+}
+
+float W_N1(float t) {
+  return frac(sin(t * 12345.564) * 7658.76);
+}
+
+float W_Saw(float b, float t) {
+  return W_S(0.0, b, t) * W_S(1.0, b, t);
+}
+
+float2 W_DropLayer2(float2 uv, float t) {
+  float2 UV = uv;
+
+  uv.y += t * 0.75;
+  float2 a = float2(6.0, 1.0);
+  float2 grid = a * 2.0;
+  float2 id = floor(uv * grid);
+
+  float colShift = W_N1(id.x);
+  uv.y += colShift;
+
+  id = floor(uv * grid);
+  float3 n = W_N13(id.x * 35.2 + id.y * 2376.1);
+  float2 st = frac(uv * grid) - float2(0.5, 0.0);
+
+  float x = n.x - 0.5;
+
+  float y = UV.y * 20.0;
+  float wiggle = sin(y + sin(y));
+  x += wiggle * (0.5 - abs(x)) * (n.z - 0.5);
+  x *= 0.7;
+  float ti = frac(t + n.z);
+  y = (W_Saw(0.85, ti) - 0.5) * 0.9 + 0.5;
+  float2 p = float2(x, y);
+
+  float d = length((st - p) * a.yx);
+
+  float mainDrop = W_S(0.28, 0.0, d);
+
+  float r = sqrt(W_S(1.0, y, st.y));
+  float cd = abs(st.x - x);
+  float trail = W_S(0.16 * r, 0.10 * r * r, cd);
+  float trailFront = W_S(-0.02, 0.02, st.y - y);
+  trail *= trailFront * r * r;
+
+  y = UV.y;
+  float trail2 = W_S(0.14 * r, 0.0, cd);
+  float droplets = max(0.0, (sin(y * (1.0 - y) * 120.0) - st.y)) * trail2 * trailFront * n.z;
+  y = frac(y * 12.0) + (st.y - 0.5);
+  float dd = length(st - float2(x, y));
+  droplets = W_S(0.17, 0.0, dd);
+  float trailBead = droplets * r * trailFront * 0.86;
+  float h = saturate(0.5 + 0.5 * (trailBead - mainDrop) / 0.06);
+  float m = lerp(mainDrop, trailBead, h) + 0.06 * h * (1.0 - h);
+
+  return float2(m, trail);
+}
+
+float W_StaticDropsOrig(float2 uv, float t) {
+  // Island-scaled clean static droplets (avoids 1px noise speckles while naturally balancing large sliding drops)
+  uv *= 12.0;
+
+  float2 id = floor(uv);
+  uv = frac(uv) - 0.5;
+  float3 n = W_N13(id.x * 107.45 + id.y * 3543.0);
+  if (n.z > 0.34) return 0.0;
+  float2 p = (n.xy - 0.5) * 0.56;
+  float d = length(uv - p);
+
+  float r = lerp(0.18, 0.30, frac(n.z * 17.3));
+  float fade = W_Saw(0.04, frac(t + n.z));
+  return W_S(r, r * 0.12, d) * (0.72 + 0.28 * frac(n.x * 10.0)) * fade;
+}
+
+float2 W_DropsOrig(float2 uv, float t, float l0, float l1, float l2) {
+  float s = l0 > 0.001 ? W_StaticDropsOrig(uv, t) * l0 : 0.0;
+  float2 m1 = W_DropLayer2(uv, t) * l1;
+  float2 m2 = W_DropLayer2(uv * 1.65, t) * l2;
+
+  float c = s + m1.x + m2.x;
+  // Tighter edge transition brings droplets into crisp macro focus instead of soft/blurry edges
+  c = W_S(0.32, 0.80, c);
+
+  return float2(c, max(m1.y * l1, m2.y * l2));
+}
+
+// Value noise + 4-octave FBM for clouds/fog
+float W_Noise(float2 p) {
+  float2 i = floor(p);
+  float2 f = frac(p);
+  float2 u = f * f * (3.0 - 2.0 * f);
+  float a = W_Hash12(i);
+  float b = W_Hash12(i + float2(1.0, 0.0));
+  float c = W_Hash12(i + float2(0.0, 1.0));
+  float d = W_Hash12(i + float2(1.0, 1.0));
+  return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
+}
+
+float W_Fbm(float2 p) {
+  float v = 0.0;
+  float a = 0.5;
+  float2x2 rot = float2x2(0.8, 0.6, -0.6, 0.8);
+  for (int i = 0; i < 4; ++i) {
+    v += a * W_Noise(p);
+    p = mul(rot, p) * 2.02 + float2(17.1, 31.7);
+    a *= 0.5;
+  }
+  return v;
+}
+
+// Procedural jagged lightning bolt with main trunk + 2 forks (returns x = hot core, y = electric halo)
+float2 W_LightningBolt(float2 uv, float seed, float progress) {
+  float startX = lerp(0.24, 0.84, W_Hash12(float2(seed, 1.7)));
+  float drift = lerp(-0.14, 0.14, W_Hash12(float2(seed, 4.3)));
+
+  // Vertical strike growth from top (0) to bottom (1)
+  float reach = smoothstep(progress + 0.04, progress - 0.12, uv.y);
+  if (reach <= 0.001) return float2(0.0, 0.0);
+
+  // Multi-octave jagged horizontal displacement along y
+  float j1 = (W_Noise(float2(uv.y * 5.5, seed * 3.1)) - 0.5) * 0.16;
+  float j2 = (W_Noise(float2(uv.y * 15.0, seed * 7.7 + 2.3)) - 0.5) * 0.055;
+  float j3 = (W_Noise(float2(uv.y * 36.0, seed * 13.1 + 5.1)) - 0.5) * 0.018;
+  float trunkX = startX + drift * uv.y + (j1 + j2 + j3) * smoothstep(0.0, 0.12, uv.y);
+
+  float dMain = abs(uv.x - trunkX);
+  float taper = lerp(1.15, 0.55, uv.y);
+  float core = (0.0022 * taper) / (dMain + 0.0016);
+  float halo = (0.018 * taper) / (dMain + 0.016);
+
+  // Branch 1 (forks off around upper-middle)
+  float b1Start = lerp(0.18, 0.36, W_Hash12(float2(seed, 9.1)));
+  float b1Dir = W_Hash12(float2(seed, 11.4)) > 0.5 ? 1.0 : -1.0;
+  float b1t = uv.y - b1Start;
+  if (b1t > 0.0 && b1t < 0.42) {
+    float b1Fade = smoothstep(0.42, 0.0, b1t) * smoothstep(0.0, 0.03, b1t);
+    float b1J = (W_Noise(float2(uv.y * 18.0, seed * 5.9 + 9.0)) - 0.5) * 0.045;
+    float b1StartX = startX + drift * b1Start + ((W_Noise(float2(b1Start * 5.5, seed * 3.1)) - 0.5) * 0.16
+                   + (W_Noise(float2(b1Start * 15.0, seed * 7.7 + 2.3)) - 0.5) * 0.055) * smoothstep(0.0, 0.12, b1Start);
+    float b1X = b1StartX + b1Dir * b1t * 0.48 + b1J;
+    float dB1 = abs(uv.x - b1X);
+    core += ((0.0011 * b1Fade) / (dB1 + 0.0015));
+    halo += ((0.0085 * b1Fade) / (dB1 + 0.014));
+  }
+
+  // Branch 2 (smaller lower fork on opposite side)
+  float b2Start = lerp(0.42, 0.62, W_Hash12(float2(seed, 15.8)));
+  float b2Dir = -b1Dir;
+  float b2t = uv.y - b2Start;
+  if (b2t > 0.0 && b2t < 0.32) {
+    float b2Fade = smoothstep(0.32, 0.0, b2t) * smoothstep(0.0, 0.025, b2t);
+    float b2J = (W_Noise(float2(uv.y * 22.0, seed * 8.3 + 4.0)) - 0.5) * 0.035;
+    float b2StartX = startX + drift * b2Start + ((W_Noise(float2(b2Start * 5.5, seed * 3.1)) - 0.5) * 0.16
+                   + (W_Noise(float2(b2Start * 15.0, seed * 7.7 + 2.3)) - 0.5) * 0.055) * smoothstep(0.0, 0.12, b2Start);
+    float b2X = b2StartX + b2Dir * b2t * 0.42 + b2J;
+    float dB2 = abs(uv.x - b2X);
+    core += ((0.00085 * b2Fade) / (dB2 + 0.0015));
+    halo += ((0.0065 * b2Fade) / (dB2 + 0.013));
+  }
+
+  return float2(saturate(core) * reach, saturate(halo) * reach);
+}
+
+// Domain-warped drifting cloud/mist field (returns x = density, y = top-lit highlight)
+float2 W_CloudField(float2 uv, float t) {
+  float2 p1 = uv * 0.78 + float2(t * 0.085, -t * 0.018);
+  float2 warp = float2(W_Fbm(p1 + float2(1.3, 4.7)), W_Fbm(p1 + float2(6.2, 2.1)));
+  float baseCloud = W_Fbm(p1 + (warp - 0.5) * 1.15);
+  float2 p2 = uv * 1.45 + float2(t * 0.14, t * 0.025) + (warp - 0.5) * 0.65;
+  float wisp = W_Fbm(p2);
+  float density = smoothstep(0.28, 0.78, baseCloud * 0.68 + wisp * 0.36);
+  // Subtle directional top-left lighting on cloud ridges
+  float litSample = W_Fbm(p1 + float2(-0.08, -0.10) + (warp - 0.5) * 1.15);
+  float light = saturate((baseCloud - litSample) * 2.8 + 0.52);
+  return float2(density, light);
+}
+
+// Seamless 3x3-neighborhood astronomical starfield: pinpoint realistic stars, zero square cell clipping
+float3 W_StarLayer(float2 uv, float t, float scale, float prob, float maxSize, float brightness) {
+  float2 st = uv * scale;
+  float2 baseId = floor(st);
+  float2 baseF = frac(st);
+  float3 acc = float3(0.0, 0.0, 0.0);
+
+  for (int oy = -1; oy <= 1; ++oy) {
+    for (int ox = -1; ox <= 1; ++ox) {
+      float2 cell = baseId + float2(ox, oy);
+      float3 n = W_Hash32(cell);
+      if (n.z < (1.0 - prob)) continue;
+
+      float2 starPos = float2(ox, oy) + 0.18 + n.xy * 0.64;
+      float2 d = baseF - starPos;
+      float dist = length(d);
+
+      // Pinpoint high-DPI star core + very delicate soft micro-glow (no tacky giant cross stickers)
+      float mag = frac(n.z * 37.3);
+      float sz = lerp(maxSize * 0.45, maxSize, mag * mag);
+      float core = exp(-(dist * dist) / max(sz * sz * 0.35, 1e-6));
+      float halo = exp(-dist / max(sz * 2.2, 1e-4)) * (0.14 + 0.18 * mag);
+
+      // Slow organic atmospheric scintillation (gentle twinkle, not harsh strobing)
+      float twinkle = 0.68 + 0.32 * sin(t * (0.9 + n.x * 2.2) + n.y * 41.0);
+      float lum = (core + halo) * twinkle * brightness * (0.45 + 0.55 * mag);
+
+      // Authentic subtle astronomical starlight tints (ice blue, crisp white, warm champagne)
+      float temp = frac(n.x * 13.7 + n.y * 7.1);
+      float3 col = temp < 0.36 ? float3(0.78, 0.88, 1.0)
+                 : (temp < 0.78 ? float3(0.97, 0.98, 1.0)
+                                : float3(1.0, 0.92, 0.80));
+      acc += col * lum;
+    }
+  }
+  return acc;
+}
+
+// Occasional ultra-fine diagonal shooting star gliding smoothly across the night glass
+float3 W_ShootingStar(float2 uv, float t) {
+  float rate = 0.16; // one subtle meteor every ~6s
+  float cycle = floor(t * rate);
+  float phase = frac(t * rate);
+  float active = step(0.35, W_Hash12(float2(cycle, 41.9)));
+  if (active < 0.5 || phase > 0.18) return float3(0.0, 0.0, 0.0);
+
+  float prog = phase / 0.18;
+  float2 startP = float2(lerp(0.30, 0.90, W_Hash12(float2(cycle, 7.3))),
+                         lerp(0.08, 0.36, W_Hash12(float2(cycle, 13.7))));
+  float2 dir = normalize(float2(-0.90, 0.43));
+  float travel = 0.46;
+  float2 head = startP + dir * (prog * travel);
+  float2 rel = uv - head;
+  float along = dot(rel, -dir);
+  float perp = abs(dot(rel, float2(-dir.y, dir.x)));
+
+  float tailLen = 0.15 * sin(prog * 3.14159265);
+  float tailMask = smoothstep(tailLen, 0.0, along) * step(0.0, along);
+  float headGlow = exp(-length(rel) * 110.0);
+  float streak = exp(-perp * 420.0) * tailMask * 0.85 + exp(-perp * 140.0) * tailMask * 0.18;
+  float fade = sin(prog * 3.14159265);
+  return float3(0.90, 0.95, 1.0) * (streak + headGlow) * fade;
+}
+
+// Sparse floating sunlit dust motes drifting gently inside warm sunbeams
+float W_SunMotes(float2 uv, float t) {
+  float motes = 0.0;
+  float2 st1 = uv * 3.6 + float2(t * 0.045, t * 0.085);
+  float2 id1 = floor(st1);
+  float2 f1 = frac(st1) - 0.5;
+  float3 n1 = W_Hash32(id1 + float2(13.7, 5.2));
+  if (n1.z > 0.74) {
+    float2 c1 = (n1.xy - 0.5) * 0.46 + float2(sin(t * 0.7 + n1.x * 6.28), cos(t * 0.55 + n1.y * 6.28)) * 0.10;
+    float r1 = lerp(0.024, 0.052, frac(n1.z * 9.3));
+    float pulse1 = 0.45 + 0.55 * sin(t * (1.3 + n1.x * 1.6) + n1.y * 19.0);
+    motes += smoothstep(r1 + 0.035, r1 * 0.15, length(f1 - c1)) * pulse1 * 0.72;
+  }
+  float2 st2 = uv * 6.4 + float2(-t * 0.03, t * 0.12);
+  float2 id2 = floor(st2);
+  float2 f2 = frac(st2) - 0.5;
+  float3 n2 = W_Hash32(id2 + float2(31.1, 17.9));
+  if (n2.z > 0.80) {
+    float2 c2 = (n2.xy - 0.5) * 0.48 + float2(cos(t * 0.9 + n2.y * 6.28), sin(t * 0.8 + n2.x * 6.28)) * 0.08;
+    float r2 = lerp(0.018, 0.038, frac(n2.x * 11.7));
+    float pulse2 = 0.35 + 0.65 * sin(t * (1.8 + n2.y * 2.0) + n2.x * 23.0);
+    motes += smoothstep(r2 + 0.025, r2 * 0.15, length(f2 - c2)) * pulse2 * 0.52;
+  }
+  return saturate(motes);
+}
+
+// Multi-depth falling snow layer (sparse, clean soft-bokeh flakes without cell clipping)
+float W_SnowLayer(float2 uv, float t, float scale, float speed, float wind, float softness, float prob) {
+  float2 st = uv * scale;
+  st.y -= t * speed;
+  st.x += sin(t * 0.7 + st.y * 0.6) * wind;
+  float2 id = floor(st);
+  float2 f = frac(st) - 0.5;
+  float3 n = W_Hash32(id);
+  if (n.z > prob) return 0.0;
+  float2 offset = (n.xy - 0.5) * 0.42;
+  offset.x += sin(t * (1.1 + n.z * 1.5) + n.x * 6.283) * 0.09;
+  float d = length(f - offset);
+  float r = lerp(0.045, 0.105, frac(n.z * 7.3));
+  float flake = smoothstep(r + softness, r * 0.25, d);
+  return flake * (0.45 + 0.55 * frac(n.y * 5.7));
+}
+
+// Main lens shading: SDF displacement + RGB dispersion + saturation + live weather glass FX
 float4 PSLens(float4 pos : SV_Position) : SV_Target {
   float2 css = pos.xy;
   float2 halfSize = glassSize * 0.5;
@@ -2092,29 +2438,219 @@ float4 PSLens(float4 pos : SV_Position) : SV_Target {
   float2 nrm = -disp / max(length(disp), 1e-4);
   float edgeW = pow(1.0 - saturate(depth / bezel), 2.0);
   float2 lensCss = css;
+
+  float wMode = weatherMode;
+  float wTime = weatherTime;
+  float wInt = clamp(weatherIntensity, 0.0, 1.5);
+  float wScale = clamp(weatherScale, 0.4, 2.5);
+  float wFog = saturate(weatherFog);
+  float wRefract = clamp(weatherRefract, 0.0, 2.2);
+  float dpr = max(weatherDpr, 0.5);
+
+  // Physical-pixel anchored coordinate (prevents stretching between collapsed pill and expanded card)
+  float2 physUV = p / (96.0 * dpr * wScale);
+
+  float rainDrop = 0.0;
+  float rainTrail = 0.0;
+  float2 rainNormal = float2(0.0, 0.0);
+  float lightning = 0.0;
+  float stormCycle = 0.0;
+  float stormProgress = 0.0;
+  float2 cloudSample = float2(0.0, 0.0);
+
+  // Mode 1: Rain | Mode 2: Thunderstorm — Plan 2: original rocksdanister/weather DropLayer2
+  // adapted to island scale (static micro-noise disabled; only clean meandering sliding drops refract backdrop)
+  float3 origRainCol = float3(0.0, 0.0, 0.0);
+  bool useOrigRain = (wMode > 0.5 && wMode < 2.5);
+  if (useOrigRain) {
+    float stormBoost = wMode > 1.5 ? 1.0 : 0.0;
+    float refH = 260.0 * dpr * wScale;
+    float2 rUV = float2(p.x, -p.y) / refH;
+    rUV *= 0.85; // scaled for 170px island so 4-6 clean meandering drops glide smoothly across
+    float rt = wTime * 0.2 * (0.55 + 0.22 * stormBoost);
+    float rainAmount = saturate((0.68 + 0.24 * stormBoost) * wInt);
+
+    // Balanced island-scaled static droplets (clean 4-6px beads, no 1px noise) alongside meandering drops
+    float staticDrops = W_S(0.0, 0.85, rainAmount) * 0.85;
+    float layer1 = W_S(0.15, 0.70, rainAmount);
+    float layer2 = W_S(0.10, 0.65, rainAmount) * 0.65;
+
+    float2 c0 = W_DropsOrig(rUV, rt, staticDrops, layer1, layer2);
+    // Finer normal step for sharper, higher-definition droplet edges
+    float2 e = float2(0.00075, 0.0) * (0.5 * wRefract);
+    float cx = W_DropsOrig(rUV + e, rt, staticDrops, layer1, layer2).x;
+    float cy = W_DropsOrig(rUV + e.yx, rt, staticDrops, layer1, layer2).x;
+    float2 n = float2(cx - c0.x, cy - c0.x);
+
+    // Pure neutral crisp optical refraction: keep droplet RGB dispersion minimal so refracted detail stays razor-sharp
+    float2 refractPx = float2(n.x, -n.y) * (refH * 1.25);
+    float2 samplePx = css + disp + refractPx;
+    float2 rainChroma = disp * aberration + refractPx * (aberration * 0.16);
+    origRainCol = float3(
+        sharpTex.Sample(smp, toBlurUV(samplePx + rainChroma)).r,
+        sharpTex.Sample(smp, toBlurUV(samplePx)).g,
+        sharpTex.Sample(smp, toBlurUV(samplePx - rainChroma)).b);
+    if (hdrSource > 0.5) origRainCol = scRGBToDisplay(origRainCol);
+
+    // Subtle crisp micro-specular glint on sharp top-left meniscus (adds focus clarity without fake painted blobs)
+    float2 slope = float2(n.x, -n.y);
+    float slopeMag = length(slope);
+    if (slopeMag > 1e-4) {
+      float2 sDir = slope / slopeMag;
+      float glint = pow(saturate(dot(sDir, normalize(float2(-0.55, -0.83)))), 6.0) * saturate(slopeMag * 36.0);
+      origRainCol = saturate(origRainCol + float3(0.96, 0.98, 1.0) * glint * 0.22);
+    }
+
+    if (stormBoost > 0.5) {
+      // Preserved jagged downward lightning bolt strike
+      float rate = 0.28;
+      stormCycle = floor(wTime * rate);
+      float phase = frac(wTime * rate);
+      float trigger = step(0.22, W_Hash12(float2(stormCycle, 19.37)));
+      stormProgress = saturate((phase - 0.06) / 0.075);
+      float f1 = smoothstep(0.055, 0.095, phase) * exp(-max(phase - 0.095, 0.0) * 18.0);
+      float f2 = smoothstep(0.18, 0.205, phase) * exp(-max(phase - 0.205, 0.0) * 24.0) * 0.72;
+      lightning = trigger * saturate(f1 + f2) * min(wInt, 1.3);
+    }
+  } else if (wMode > 3.5 && wMode < 4.5) {
+    cloudSample = W_CloudField(physUV, wTime);
+  }
+
   float2 chroma = disp * aberration;
   float3 c = float3(
       tex.Sample(smp, toBlurUV(lensCss + disp + chroma)).r,
       tex.Sample(smp, toBlurUV(lensCss + disp)).g,
       tex.Sample(smp, toBlurUV(lensCss + disp - chroma)).b);
-  // Clear glass keeps full-resolution detail throughout, with a little interior softness.
   float3 sharp = float3(
       sharpTex.Sample(smp, toBlurUV(lensCss + disp + chroma)).r,
       sharpTex.Sample(smp, toBlurUV(lensCss + disp)).g,
       sharpTex.Sample(smp, toBlurUV(lensCss + disp - chroma)).b);
   if (hdrSource > 0.5) sharp = scRGBToDisplay(sharp);
+
   float sharpMix = 0.80 + 0.20 * (1.0 - smoothstep(0.0, 1.0, saturate(depth / bezel)));
+
+  if (wMode > 3.5 && wMode < 4.5) {
+    // Drifting mist visibly softens the glass behind thicker cloud banks while gaps stay clearer
+    float mistBlur = lerp(0.86, 0.14, saturate(cloudSample.x * wInt));
+    sharpMix = lerp(sharpMix, mistBlur, saturate((0.45 + 0.55 * wFog) * wInt));
+  }
+
   c = lerp(c, sharp, sharpMix);
+  if (useOrigRain) {
+    // Cross-fade cleanly into pure rocksdanister/weather Rain.cs output
+    c = lerp(c, origRainCol, saturate(wInt));
+  }
   float lum = dot(c, float3(0.213, 0.715, 0.072));
   c = lerp(lum.xxx, c, saturation);
 
-  // Broad rim lighting hugging the boundary (light from top-left): a soft
-  // specular lift on the light-facing rim and a softer fill opposite — the
-  // "physical thickness" cue of iOS glass. Weighted by edgeW (max at the
-  // boundary, C¹ fade inward) independently of the displacement bump. Thin
-  // sharp border rings stay the content layer's job.
+  // Broad rim lighting hugging the boundary (light from top-left)
   float lightDot = dot(nrm, float2(-0.40, -0.92));
   c = saturate(c + edgeW * (0.10 * saturate(lightDot) + 0.015 * saturate(-lightDot)));
+
+  // --- Weather surface shading & atmospheric overlays ---
+  if (useOrigRain) {
+    // Only preserved jagged downward lightning bolt strike in Thunderstorm mode (zero extra edits to Rain.cs)
+    if (lightning > 0.005) {
+      float2 normUV = css / max(glassSize, 1.0);
+      float2 bolt = W_LightningBolt(normUV, stormCycle, stormProgress);
+      float3 coreCol = float3(0.97, 0.99, 1.0);
+      float3 arcHaloCol = float3(0.58, 0.76, 1.0);
+      float3 skyFlash = float3(0.68, 0.80, 1.0) * lightning * 0.20;
+      c = saturate(c + skyFlash + arcHaloCol * bolt.y * lightning * 0.85 + coreCol * bolt.x * lightning * 1.15);
+    }
+  } else if (wMode > 2.5 && wMode < 3.5) {
+    // Mode 3: Multi-depth falling snow + soft winter frost rim
+    float snow = 0.0;
+    snow += W_SnowLayer(physUV, wTime, 1.5, 0.35, 0.32, 0.075, 0.28) * 0.58;
+    snow += W_SnowLayer(physUV + float2(4.2, 1.7), wTime, 2.5, 0.50, 0.40, 0.065, 0.26) * 0.72;
+    snow += W_SnowLayer(physUV + float2(9.1, 6.3), wTime, 4.0, 0.68, 0.48, 0.050, 0.22) * 0.46;
+    snow += W_SnowLayer(physUV + float2(2.7, 8.4), wTime, 6.0, 0.26, 0.22, 0.040, 0.18) * 0.28;
+    snow = saturate(snow * wInt);
+    float3 coldTint = float3(0.72, 0.85, 0.98);
+    c = lerp(c, c * 0.90 + coldTint * 0.14, saturate(0.30 * wInt * (0.3 + 0.7 * wFog)));
+    c = saturate(c + float3(0.95, 0.98, 1.0) * snow * 0.85 + coldTint * edgeW * 0.14 * min(wInt, 1.2));
+  } else if (wMode > 3.5 && wMode < 4.5) {
+    // Mode 4: Visible volumetric drifting mist & domain-warped cloud banks
+    float2 normUV = css / max(glassSize, 1.0);
+    float cloudMask = saturate(cloudSample.x * wInt);
+    float cloudLight = cloudSample.y;
+    // Cool overcast atmosphere base + layered silver-white drifting vapor
+    float3 overcastBase = float3(0.46, 0.52, 0.60);
+    c = lerp(c, c * 0.82 + overcastBase * 0.26, saturate(0.32 * wInt * (0.4 + 0.6 * wFog)));
+    float3 shadowCol = float3(0.54, 0.60, 0.68);
+    float3 litCol = float3(0.92, 0.95, 0.99);
+    float3 cloudCol = lerp(shadowCol, litCol, cloudLight);
+    // Gentle horizon mist gradient (slightly denser mist flowing along lower half)
+    float lowerMist = smoothstep(0.15, 0.95, normUV.y) * 0.20;
+    float mistAlpha = saturate((cloudMask * 0.52 + lowerMist * wInt) * (0.45 + 0.55 * wFog));
+    c = lerp(c, cloudCol, mistAlpha);
+    // Soft rim frost/mist sheen
+    c = saturate(c + float3(0.84, 0.90, 0.96) * edgeW * 0.08 * min(wInt, 1.2));
+  } else if (wMode > 4.5 && wMode < 5.5) {
+    // Mode 5: Pure warm sunlight spilling naturally across neutral glass (zero blue cast, no sticker hexagons)
+    float2 normUV = css / max(glassSize, 1.0);
+    // Anchor sun in physical pixel space near top-right corner so collapsed pill & expanded card look equally natural
+    float2 sunPx = float2(glassSize.x - 10.0 * dpr, -8.0 * dpr)
+                 + float2(sin(wTime * 0.22) * 8.0, cos(wTime * 0.18) * 5.0) * dpr;
+    float2 dPx = (css - sunPx) / (155.0 * dpr * wScale);
+    float dist = length(dPx);
+
+    // Pure warm champagne-gold sunlight diffusion (leaves the shaded side 100% true neutral glass, never blue)
+    float sunGlow = exp(-dist * 1.75) * (0.93 + 0.07 * sin(wTime * 0.85));
+    float warmWash = exp(-dist * 0.68) * 0.38;
+
+    // Silky, broad diagonal sunbeams drifting smoothly like sunlight through leaves/clouds (not spiky spokes)
+    float diagCoord = dot(dPx, normalize(float2(0.56, 0.83)));
+    float shaft1 = exp(-pow(diagCoord + 0.18 + 0.12 * sin(wTime * 0.26), 2.0) * 6.5);
+    float shaft2 = exp(-pow(diagCoord - 0.34 + 0.14 * cos(wTime * 0.21 + 1.2), 2.0) * 5.0) * 0.72;
+    float shaft3 = exp(-pow(diagCoord + 0.68 + 0.10 * sin(wTime * 0.17 + 2.5), 2.0) * 4.5) * 0.48;
+    float shimmer = 0.72 + 0.28 * W_Noise(float2(diagCoord * 2.5 + wTime * 0.14, dist * 0.8));
+    float sunBeams = (shaft1 + shaft2 + shaft3) * shimmer * exp(-dist * 0.72) * smoothstep(0.04, 0.28, dist);
+
+    // Warm sunlit dust motes sparkling gently inside the sunbeams
+    float litRegion = saturate(exp(-dist * 0.70) * 0.65 + sunBeams * 1.15);
+    float motes = W_SunMotes(physUV, wTime) * litRegion;
+
+    // Golden sunlight kissing the top-right liquid-glass rim
+    float rimWarmth = edgeW * exp(-dist * 1.25) * 0.45;
+
+    float3 sunLight = (float3(1.0, 0.93, 0.76) * sunGlow * 0.34
+                     + float3(1.0, 0.82, 0.50) * (warmWash * 0.22 + sunBeams * 0.28)
+                     + float3(1.0, 0.95, 0.78) * motes * 0.55
+                     + float3(1.0, 0.90, 0.66) * rimWarmth) * min(wInt, 1.3);
+
+    // Gentle Screen blend adds realistic warm daylight glow without greying or blowing out white text
+    c = saturate(1.0 - (1.0 - c) * (1.0 - saturate(sunLight)));
+  } else if (wMode > 5.5 && wMode < 6.5) {
+    // Mode 6: Refined Apple Astronomical Night — deep clean midnight glass, subtle Milky Way silk,
+    // 3x3-neighborhood pinpoint stars (zero square clipping, zero tacky cross stickers) & fine shooting star
+    float2 normUV = css / max(glassSize, 1.0);
+    // Deep, crisp midnight darkening (rich ink-indigo, never washed-out grey)
+    float3 zenithCol = float3(0.015, 0.028, 0.078);
+    float3 horizonCol = float3(0.038, 0.062, 0.135);
+    float3 nightTint = lerp(zenithCol, horizonCol, smoothstep(0.0, 1.0, normUV.y));
+    float darkMix = saturate(0.68 * min(wInt, 1.0) * (0.45 + 0.55 * wFog));
+    c = lerp(c, c * 0.38 + nightTint * 0.68, darkMix);
+
+    // Ultra-subtle diagonal Milky Way stardust veil
+    float bandAxis = (normUV.y - 0.50) - (normUV.x - 0.50) * -0.42;
+    float bandEnv = exp(-bandAxis * bandAxis * 14.0);
+    float neb1 = W_Fbm(physUV * 0.95 + float2(wTime * 0.006, -wTime * 0.003));
+    float neb2 = W_Fbm(physUV * 1.90 - float2(wTime * 0.004, 2.7));
+    float milky = bandEnv * smoothstep(0.36, 0.86, neb1 * 0.62 + neb2 * 0.38);
+    float3 milkyCol = lerp(float3(0.10, 0.18, 0.38), float3(0.22, 0.20, 0.42), neb2);
+    c = saturate(c + milkyCol * milky * 0.28 * wInt);
+
+    // 3-depth seamless pinpoint starfield (tiny distant stardust -> crisp medium stars -> rare brighter anchor stars)
+    float3 stars = float3(0.0, 0.0, 0.0);
+    stars += W_StarLayer(physUV + float2(1.7, 3.2), wTime, 11.0, 0.24, 0.032, 0.48);
+    stars += W_StarLayer(physUV + float2(5.4, 8.1), wTime, 5.8,  0.19, 0.036, 0.78);
+    stars += W_StarLayer(physUV + float2(9.3, 2.6), wTime, 2.9,  0.14, 0.040, 1.05);
+
+    // Subtle cool moonlit edge sheen along top-left rim + occasional ultra-fine shooting star
+    float3 meteor = W_ShootingStar(normUV, wTime);
+    c = saturate(c + (stars * 0.95 + meteor * 1.05) * wInt + float3(0.55, 0.70, 0.96) * edgeW * 0.07 * wInt);
+  }
 
   float a = coverage * alpha;
   return float4(c * a, a);
@@ -2137,6 +2673,14 @@ struct ShaderParams {
     float alpha;
     float hdrSource;
     float whiteScale;
+    float weatherMode;
+    float weatherTime;
+    float weatherIntensity;
+    float weatherDpr;
+    float weatherScale;
+    float weatherFog;
+    float weatherRefract;
+    float weatherPad;
 };
 
 HRESULT CompileShader(const char* entry, const char* target, ComPtr<ID3DBlob>* blob) {
@@ -2395,6 +2939,51 @@ void GlassRenderer::RunPasses(ID3D11DeviceContext* ctx, GlassPanel& panel, float
     params.alpha = panel.opacity() * gp.opacity;
     params.hdrSource = regionFormat_ == DXGI_FORMAT_R16G16B16A16_FLOAT ? 1.0f : 0.0f;
     params.whiteScale = gp.sdrWhiteScale;
+    const ULONGLONG nowWeatherTick = GetTickCount64();
+    if (weatherLastTick_ == 0) weatherLastTick_ = nowWeatherTick;
+    const double dtSec = std::min(0.1, static_cast<double>(nowWeatherTick - weatherLastTick_) * 0.001);
+    weatherLastTick_ = nowWeatherTick;
+    const float speedMul = static_cast<float>(g_weatherFxSpeedPct.load(std::memory_order_relaxed)) * 0.01f;
+    const int targetWeatherMode = ResolveActiveWeatherFxMode();
+    constexpr float kFadeRate = 3.0f; // ~0.33s smooth cross-fade
+    const float fadeStep = static_cast<float>(dtSec) * kFadeRate;
+    if (targetWeatherMode == weatherCurMode_) {
+        if (targetWeatherMode > 0) {
+            weatherFade_ = std::min(1.0f, weatherFade_ + fadeStep);
+        } else {
+            weatherFade_ = std::max(0.0f, weatherFade_ - fadeStep);
+        }
+    } else if (weatherCurMode_ == 0) {
+        weatherCurMode_ = targetWeatherMode;
+        weatherFade_ = std::min(1.0f, fadeStep);
+    } else {
+        weatherFade_ = std::max(0.0f, weatherFade_ - fadeStep * 1.4f);
+        if (weatherFade_ <= 0.001f) {
+            weatherCurMode_ = targetWeatherMode;
+            weatherFade_ = 0.0f;
+        }
+    }
+    weatherTransitioning_ = (weatherCurMode_ != targetWeatherMode)
+        || (targetWeatherMode > 0 && weatherFade_ < 0.999f)
+        || (targetWeatherMode == 0 && weatherFade_ > 0.001f);
+
+    const int renderedMode = (weatherFade_ > 0.001f) ? weatherCurMode_ : 0;
+    if (renderedMode > 0) {
+        weatherAnimTime_ += dtSec * static_cast<double>(speedMul);
+        if (weatherAnimTime_ > 36000.0) weatherAnimTime_ -= 36000.0;
+    }
+    // Smoothstep easing curve for silky iOS-like fade-in / fade-out
+    const float easedFade = weatherFade_ * weatherFade_ * (3.0f - 2.0f * weatherFade_);
+    params.weatherMode = static_cast<float>(renderedMode);
+    params.weatherTime = static_cast<float>(weatherAnimTime_);
+    params.weatherIntensity = renderedMode > 0
+        ? static_cast<float>(g_weatherFxIntensityPct.load(std::memory_order_relaxed)) * 0.01f * easedFade
+        : 0.0f;
+    params.weatherDpr = dpr > 0.1f ? dpr : 1.0f;
+    params.weatherScale = static_cast<float>(g_weatherFxScalePct.load(std::memory_order_relaxed)) * 0.01f;
+    params.weatherFog = static_cast<float>(g_weatherFxFogPct.load(std::memory_order_relaxed)) * 0.01f;
+    params.weatherRefract = static_cast<float>(g_weatherFxRefractPct.load(std::memory_order_relaxed)) * 0.01f;
+    params.weatherPad = 0.0f;
 
     ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ctx->IASetInputLayout(nullptr);
@@ -2434,6 +3023,34 @@ void GlassRenderer::RunPasses(ID3D11DeviceContext* ctx, GlassPanel& panel, float
     ctx->PSSetShaderResources(0, 1, blurSrvA_.GetAddressOf());
     ctx->Draw(3, 0);
     ctx->PSSetShaderResources(0, 1, &nullSrv);
+
+    // Extra progressive wide-kernel blur passes only for Fog/Cloudy mode (Rain uses pure original Rain.cs sampling)
+    const bool heavyCondensation = (renderedMode == 4)
+        && (params.weatherIntensity * params.weatherFog > 0.04f);
+    if (heavyCondensation && blurW_ > 0 && blurH_ > 0) {
+        const float mistFactor = std::min(1.0f, params.weatherIntensity * params.weatherFog);
+        const float extraRadii[3] = { 1.8f, 3.4f, 5.4f };
+        for (int pass = 0; pass < 3; ++pass) {
+            const float stepPx = extraRadii[pass] * dpr * mistFactor;
+            // Horizontal wide step: B -> A
+            params.dir[0] = stepPx / static_cast<float>(blurW_);
+            params.dir[1] = 0.0f;
+            ctx->UpdateSubresource(cb_.Get(), 0, nullptr, &params, 0, 0);
+            ctx->OMSetRenderTargets(1, blurRtvA_.GetAddressOf(), nullptr);
+            ctx->PSSetShaderResources(0, 1, blurSrvB_.GetAddressOf());
+            ctx->Draw(3, 0);
+            ctx->PSSetShaderResources(0, 1, &nullSrv);
+
+            // Vertical wide step: A -> B
+            params.dir[0] = 0.0f;
+            params.dir[1] = stepPx / static_cast<float>(blurH_);
+            ctx->UpdateSubresource(cb_.Get(), 0, nullptr, &params, 0, 0);
+            ctx->OMSetRenderTargets(1, blurRtvB_.GetAddressOf(), nullptr);
+            ctx->PSSetShaderResources(0, 1, blurSrvA_.GetAddressOf());
+            ctx->Draw(3, 0);
+            ctx->PSSetShaderResources(0, 1, &nullSrv);
+        }
+    }
 
     // Queue the luma staging copy as soon as the blur result is ready: the
     // submission and execution of the lens pass / Present hide the copy
@@ -2848,11 +3465,33 @@ void GlassSession::RenderTick() {
         // Advance fades (redraw from the last region texture when no new frame)
         if (entry.fading && fadeTickDue) {
             const bool continuing = entry.panel->FadeStep();
-            if (!rendered) entry.renderer->Redraw(context_.Get(), *entry.panel, entry.config.dpr);
+            if (!rendered) {
+                entry.renderer->Redraw(context_.Get(), *entry.panel, entry.config.dpr);
+                rendered = true;
+            }
             if (!continuing) {
                 entry.fading = false;
                 if (entry.panel->opacity() <= 0.0f) entry.panel->Hide();
             }
+        }
+
+        // Per-panel adaptive refresh rate for weather FX (isolated per PanelEntry, no multi-panel contention)
+        const int curWeatherMode = ResolveActiveWeatherFxMode();
+        const bool fxTransition = entry.renderer->isWeatherTransitioning();
+        const bool weatherModeChanged = (curWeatherMode != entry.lastRenderedWeatherMode);
+        const bool highRate = g_weatherFxIsExpanded.load(std::memory_order_relaxed)
+            || g_weatherFxTuningOpen.load(std::memory_order_relaxed)
+            || fxTransition;
+        const ULONGLONG targetIntervalMs = highRate ? 16 : 33;
+        const bool weatherTickDue = (now - entry.lastWeatherDrawTick) >= targetIntervalMs;
+        if (!rendered && entry.renderer->hasFrame() &&
+            (((curWeatherMode > 0 || fxTransition) && weatherTickDue) || weatherModeChanged)) {
+            entry.renderer->Redraw(context_.Get(), *entry.panel, entry.config.dpr);
+            rendered = true;
+        }
+        if (rendered) {
+            entry.lastRenderedWeatherMode = curWeatherMode;
+            entry.lastWeatherDrawTick = now;
         }
 
         // Periodically re-assert z-order anchoring (defends against other
@@ -5835,6 +6474,13 @@ void NotifyKeyboardThreadSettingChanged();  // forward declaration; defined with
 RECT GetAnchorWorkRect(int targetMonitor);
 
 void LoadSettings() {
+    g_weatherFxOverride.store(ClampInt(Wh_GetIntValue(L"WeatherGlassFxMode", 0), -1, 6), std::memory_order_relaxed);
+    g_weatherFxScope.store(ClampInt(Wh_GetIntValue(L"WeatherGlassFxScope", 0), 0, 2), std::memory_order_relaxed);
+    g_weatherFxIntensityPct.store(ClampInt(Wh_GetIntValue(L"WeatherGlassFxIntensity", 100), 0, 150), std::memory_order_relaxed);
+    g_weatherFxSpeedPct.store(ClampInt(Wh_GetIntValue(L"WeatherGlassFxSpeed", 100), 20, 250), std::memory_order_relaxed);
+    g_weatherFxScalePct.store(ClampInt(Wh_GetIntValue(L"WeatherGlassFxScale", 100), 50, 200), std::memory_order_relaxed);
+    g_weatherFxFogPct.store(ClampInt(Wh_GetIntValue(L"WeatherGlassFxFog", 75), 0, 100), std::memory_order_relaxed);
+    g_weatherFxRefractPct.store(ClampInt(Wh_GetIntValue(L"WeatherGlassFxRefract", 100), 0, 200), std::memory_order_relaxed);
     Settings next;
     next.lyrics = Wh_GetIntSetting(L"Modules.Lyrics") != 0;
     const int mediaLyricsSetting = Wh_GetIntSetting(L"Modules.MediaTabLyrics") != 0;
@@ -13428,12 +14074,15 @@ DWORD WINAPI LookupThreadProc(void*) {
 }
 
 std::vector<IslandKind> ChooseActivities(const SharedState&, const Settings&, double);
+inline std::atomic<bool> g_contextMenuOpen{false};
+
 struct GlassMenuItem {
     MSAAMENUINFO accessible{};
     std::wstring text;
     UINT command = 0;
     bool submenu = false;
     bool separator = false;
+    bool infoRow = false;
 };
 
 struct GlassMenu {
@@ -13441,8 +14090,12 @@ struct GlassMenu {
     int maxWidth = 640;
     HBRUSH background = nullptr;
     HBRUSH highlight = nullptr;
+    HPEN highlightBorder = nullptr;
+    HPEN separatorPen = nullptr;
     HFONT font = nullptr;
+    HFONT subFont = nullptr;
     HFONT symbols = nullptr;
+    HFONT smallSymbols = nullptr;
     std::vector<std::unique_ptr<GlassMenuItem>> items;
 
     GlassMenu(HWND owner, POINT point) {
@@ -13450,20 +14103,32 @@ struct GlassMenu {
         dpi = windowDpi ? static_cast<int>(windowDpi) : 96;
         MONITORINFO monitor{sizeof(monitor)};
         if (GetMonitorInfoW(MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST), &monitor))
-            maxWidth = (std::max)(Scale(180), static_cast<int>(monitor.rcWork.right - monitor.rcWork.left) - Scale(30));
-        background = CreateSolidBrush(RGB(23, 24, 27));
-        highlight = CreateSolidBrush(RGB(61, 62, 68));
+            maxWidth = (std::max)(Scale(200), static_cast<int>(monitor.rcWork.right - monitor.rcWork.left) - Scale(30));
+        background = CreateSolidBrush(RGB(36, 37, 41));
+        highlight = CreateSolidBrush(RGB(68, 71, 78));
+        highlightBorder = CreatePen(PS_SOLID, 1, RGB(66, 68, 76)); // reused as subtle outer rounded-menu border
+        separatorPen = CreatePen(PS_SOLID, 1, RGB(54, 56, 62));
         font = CreateFontW(-Scale(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                           DEFAULT_PITCH, L"Segoe UI");
-        symbols = CreateFontW(-Scale(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                           DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei UI");
+        subFont = CreateFontW(-Scale(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                              OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                              DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei UI");
+        symbols = CreateFontW(-Scale(15), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                               OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
                               DEFAULT_PITCH, L"Segoe MDL2 Assets");
+        smallSymbols = CreateFontW(-Scale(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                   OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                                   DEFAULT_PITCH, L"Segoe MDL2 Assets");
     }
     ~GlassMenu() {
         if (font) DeleteObject(font);
+        if (subFont) DeleteObject(subFont);
         if (symbols) DeleteObject(symbols);
+        if (smallSymbols) DeleteObject(smallSymbols);
         if (highlight) DeleteObject(highlight);
+        if (highlightBorder) DeleteObject(highlightBorder);
+        if (separatorPen) DeleteObject(separatorPen);
         if (background) DeleteObject(background);
     }
     int Scale(int value) const { return MulDiv(value, dpi, 96); }
@@ -13479,15 +14144,27 @@ struct GlassMenu {
         const int count = GetMenuItemCount(menu);
         for (int index = 0; index < count; ++index) {
             MENUITEMINFOW info{sizeof(info)};
-            info.fMask = MIIM_FTYPE | MIIM_STRING | MIIM_ID | MIIM_SUBMENU;
+            info.fMask = MIIM_FTYPE | MIIM_STATE | MIIM_STRING | MIIM_ID | MIIM_SUBMENU;
             if (!GetMenuItemInfoW(menu, index, TRUE, &info)) continue;
             auto entry = std::make_unique<GlassMenuItem>();
             entry->separator = (info.fType & MFT_SEPARATOR) != 0;
             entry->submenu = info.hSubMenu != nullptr;
             entry->command = info.wID;
+            entry->infoRow = !entry->separator && !entry->submenu && entry->command == 0
+                && ((info.fState & (MFS_DISABLED | MFS_GRAYED)) != 0);
             if (entry->submenu) {
-                entry->command = GetMenuItemID(info.hSubMenu, 0);
-                if (entry->command == 0) entry->command = GetMenuItemID(info.hSubMenu, 1);
+                // Find first meaningful command ID inside submenu to resolve the parent icon
+                UINT subCmd = 0;
+                const int subCount = GetMenuItemCount(info.hSubMenu);
+                for (int k = 0; k < subCount && subCmd == 0; ++k) {
+                    const UINT candidate = GetMenuItemID(info.hSubMenu, k);
+                    if (candidate != 0 && candidate != static_cast<UINT>(-1)) subCmd = candidate;
+                }
+                if (subCmd == 0 && subCount > 0) {
+                    HMENU nested = GetSubMenu(info.hSubMenu, 0);
+                    if (nested) subCmd = GetMenuItemID(nested, 0);
+                }
+                entry->command = subCmd;
                 Prepare(info.hSubMenu);
             }
             if (info.cch) {
@@ -13521,32 +14198,39 @@ struct GlassMenu {
         HDC dc = GetDC(nullptr);
         SIZE size{};
         if (dc) {
-            HGDIOBJ previous = SelectObject(dc, font ? static_cast<HGDIOBJ>(font) : GetStockObject(DEFAULT_GUI_FONT));
+            HFONT f = item->infoRow && subFont ? subFont : font;
+            HGDIOBJ previous = SelectObject(dc, f ? static_cast<HGDIOBJ>(f) : GetStockObject(DEFAULT_GUI_FONT));
             GetTextExtentPoint32W(dc, item->text.c_str(), static_cast<int>(item->text.size()), &size);
             SelectObject(dc, previous);
             ReleaseDC(nullptr, dc);
         }
-        measure->itemWidth = (std::min)(maxWidth, (std::max)(Scale(220), static_cast<int>(size.cx) + Scale(88)));
-        measure->itemHeight = Scale(item->separator ? 9 : 32);
+        const int extraW = item->infoRow ? Scale(36) : Scale(96);
+        measure->itemWidth = (std::min)(maxWidth, (std::max)(Scale(216), static_cast<int>(size.cx) + extraW));
+        measure->itemHeight = Scale(item->separator ? 11 : (item->infoRow ? 24 : 34));
         return true;
     }
     wchar_t Icon(const GlassMenuItem& item) const {
         const UINT id = item.command;
         if (id >= kMediaSourceMenuBase && id < kMediaSourceMenuLimit) return 0xE8D6;
         if ((id >= 30 && id <= 34) || (id >= 2010 && id <= 2016)) return 0xE916;
+        if (id >= 2040 && id <= 2048) {
+            if (!item.submenu && id == 2048) return 0xE9E9; // Sliders icon for parameter tuner
+            return 0xE753; // Weather sun/cloud icon for weather submenu & previews
+        }
         switch (id) {
-            case 1: return 0xE711;
-            case 2: case 2002: return 0xE718;
-            case 3: return 0xE7FC;
-            case 9: return 0xE713;
-            case 11: return 0xE74A;
-            case 41: case 2004: return 0xE74D;
-            case 46: return 0xE787;
-            case 47: case 48: return 0xEB52;
-            case 49: return 0xE72C;
-            case 2001: return 0xE8D6;
-            case 2020: return 0xE721;
-            case 2030: return 0xE793;
+            case 1: return 0xE711;       // Dismiss
+            case 2: return item.submenu ? 0xE790 : 0xE718; // Appearance submenu or Pin
+            case 3: return 0xE7FC;       // Game overlay
+            case 9: return 0xE713;       // Settings
+            case 11: return 0xE8B0;      // Touch / hover pointer
+            case 41: case 2004: return 0xE74D; // Trash / clear
+            case 46: return 0xE787;      // Calendar / important dates
+            case 47: case 48: return 0xE734; // Star / NBA favorites & scores
+            case 49: return 0xE72C;      // Update refresh
+            case 2001: return 0xE8D6;    // Media & lyrics
+            case 2002: return 0xE718;    // Pin lyrics
+            case 2020: return 0xE721;    // Quick lookup search
+            case 2030: return 0xE793;    // Ambient glow
             default: return 0;
         }
     }
@@ -13558,45 +14242,71 @@ struct GlassMenu {
         FillRect(draw->hDC, &draw->rcItem, background ? background : static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
         const RECT box = draw->rcItem;
         if (item->separator) {
-            HPEN pen = CreatePen(PS_SOLID, 1, RGB(70, 71, 76));
-            if (pen) {
-                SelectObject(draw->hDC, pen);
+            if (separatorPen) {
+                SelectObject(draw->hDC, separatorPen);
                 const int y = (box.top + box.bottom) / 2;
-                MoveToEx(draw->hDC, box.left + Scale(14), y, nullptr);
-                LineTo(draw->hDC, box.right - Scale(14), y);
-                SelectObject(draw->hDC, GetStockObject(BLACK_PEN));
-                DeleteObject(pen);
+                MoveToEx(draw->hDC, box.left + Scale(16), y, nullptr);
+                LineTo(draw->hDC, box.right - Scale(16), y);
             }
         } else {
             const bool disabled = (draw->itemState & (ODS_DISABLED | ODS_GRAYED)) != 0;
-            if ((draw->itemState & ODS_SELECTED) && !disabled && highlight) {
+            const bool selected = (draw->itemState & ODS_SELECTED) != 0 && !disabled;
+            const bool checked = (draw->itemState & ODS_CHECKED) != 0;
+            const bool isDismiss = !item->submenu && item->command == 1;
+
+            if (selected && highlight) {
                 SelectObject(draw->hDC, highlight);
                 SelectObject(draw->hDC, GetStockObject(NULL_PEN));
-                RoundRect(draw->hDC, box.left + Scale(4), box.top + Scale(2),
-                          box.right - Scale(4), box.bottom - Scale(2), Scale(12), Scale(12));
+                RoundRect(draw->hDC, box.left + Scale(7), box.top + Scale(2),
+                          box.right - Scale(7), box.bottom - Scale(2), Scale(20), Scale(20));
             }
+
             SetBkMode(draw->hDC, TRANSPARENT);
-            SetTextColor(draw->hDC, disabled ? RGB(133, 134, 140) : RGB(241, 242, 246));
-            SelectObject(draw->hDC, font ? static_cast<HGDIOBJ>(font) : GetStockObject(DEFAULT_GUI_FONT));
-            RECT text = {box.left + Scale(28), box.top, box.right - Scale(item->submenu ? 65 : 42), box.bottom};
-            DrawTextW(draw->hDC, item->text.c_str(), static_cast<int>(item->text.size()), &text,
-                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-            if (symbols) SelectObject(draw->hDC, symbols);
-            if (draw->itemState & ODS_CHECKED) {
-                const wchar_t check = 0xE73E;
-                RECT area = {box.left + Scale(7), box.top, box.left + Scale(24), box.bottom};
-                DrawTextW(draw->hDC, &check, 1, &area, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            }
-            const wchar_t icon = Icon(*item);
-            if (icon) {
-                RECT area = {box.right - Scale(item->submenu ? 53 : 33), box.top,
-                             box.right - Scale(item->submenu ? 34 : 14), box.bottom};
-                DrawTextW(draw->hDC, &icon, 1, &area, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            }
-            if (item->submenu) {
-                const wchar_t arrow = 0xE76C;
-                RECT area = {box.right - Scale(25), box.top, box.right - Scale(8), box.bottom};
-                DrawTextW(draw->hDC, &arrow, 1, &area, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+            if (item->infoRow) {
+                SetTextColor(draw->hDC, RGB(148, 152, 162));
+                SelectObject(draw->hDC, subFont ? static_cast<HGDIOBJ>(subFont) : GetStockObject(DEFAULT_GUI_FONT));
+                RECT text = {box.left + Scale(18), box.top, box.right - Scale(16), box.bottom};
+                DrawTextW(draw->hDC, item->text.c_str(), static_cast<int>(item->text.size()), &text,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            } else {
+                // Left: soft balanced icon
+                const wchar_t icon = Icon(*item);
+                if (icon && symbols) {
+                    SelectObject(draw->hDC, symbols);
+                    const COLORREF iconCol = disabled ? RGB(114, 117, 125)
+                        : (checked ? RGB(120, 186, 248)
+                        : (isDismiss && selected ? RGB(244, 134, 134)
+                        : (selected ? RGB(242, 244, 248) : RGB(186, 190, 198))));
+                    SetTextColor(draw->hDC, iconCol);
+                    RECT iconArea = {box.left + Scale(14), box.top, box.left + Scale(36), box.bottom};
+                    DrawTextW(draw->hDC, &icon, 1, &iconArea, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                }
+
+                // Middle: warm soft-white text
+                const COLORREF textCol = disabled ? RGB(126, 130, 138)
+                    : (isDismiss && selected ? RGB(250, 174, 174)
+                    : (selected ? RGB(248, 249, 252) : RGB(232, 234, 239)));
+                SetTextColor(draw->hDC, textCol);
+                SelectObject(draw->hDC, font ? static_cast<HGDIOBJ>(font) : GetStockObject(DEFAULT_GUI_FONT));
+                RECT text = {box.left + Scale(42), box.top, box.right - Scale(34), box.bottom};
+                DrawTextW(draw->hDC, item->text.c_str(), static_cast<int>(item->text.size()), &text,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+                // Right: soft checkmark OR subtle submenu chevron
+                if (item->submenu && smallSymbols) {
+                    SelectObject(draw->hDC, smallSymbols);
+                    SetTextColor(draw->hDC, selected ? RGB(214, 218, 226) : RGB(142, 146, 156));
+                    const wchar_t arrow = 0xE76C;
+                    RECT area = {box.right - Scale(28), box.top, box.right - Scale(11), box.bottom};
+                    DrawTextW(draw->hDC, &arrow, 1, &area, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                } else if (checked && smallSymbols) {
+                    SelectObject(draw->hDC, smallSymbols);
+                    SetTextColor(draw->hDC, RGB(120, 186, 248));
+                    const wchar_t check = 0xE73E;
+                    RECT area = {box.right - Scale(28), box.top, box.right - Scale(11), box.bottom};
+                    DrawTextW(draw->hDC, &check, 1, &area, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                }
             }
         }
         if (saved) RestoreDC(draw->hDC, saved);
@@ -13606,19 +14316,126 @@ struct GlassMenu {
 
 thread_local GlassMenu* g_activeGlassMenu = nullptr;
 
+constexpr UINT_PTR kGlassMenuSubclassId = 0x474D4E55;
+
+struct GlassMenuPopupState {
+    int dpi = 96;
+    int lastW = 0;
+    int lastH = 0;
+    bool updatingRgn = false;
+};
+
+void ApplyGlassMenuRoundRegion(HWND hwnd, GlassMenuPopupState* st) {
+    if (!st || st->updatingRgn) return;
+    RECT wr{};
+    if (!GetWindowRect(hwnd, &wr)) return;
+    const int w = wr.right - wr.left;
+    const int h = wr.bottom - wr.top;
+    if (w <= 4 || h <= 4 || (w == st->lastW && h == st->lastH)) return;
+    st->lastW = w;
+    st->lastH = h;
+    st->updatingRgn = true;
+    const int diam = MulDiv(26, st->dpi, 96); // ~13px Apple-style smooth corner radius
+    HRGN rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, diam, diam);
+    if (rgn) {
+        if (!SetWindowRgn(hwnd, rgn, FALSE)) DeleteObject(rgn);
+    }
+    st->updatingRgn = false;
+}
+
+void PaintGlassMenuFrame(HWND hwnd, HDC dc, int dpi) {
+    if (!dc) return;
+    RECT wr{}, cr{};
+    if (!GetWindowRect(hwnd, &wr) || !GetClientRect(hwnd, &cr)) return;
+    const int w = wr.right - wr.left;
+    const int h = wr.bottom - wr.top;
+    if (w <= 0 || h <= 0) return;
+
+    POINT tl{0, 0};
+    ClientToScreen(hwnd, &tl);
+    const int offX = tl.x - wr.left;
+    const int offY = tl.y - wr.top;
+    const RECT clientInWin{ offX, offY, offX + (cr.right - cr.left), offY + (cr.bottom - cr.top) };
+
+    HBRUSH bg = (g_activeGlassMenu && g_activeGlassMenu->background)
+        ? g_activeGlassMenu->background : nullptr;
+    HBRUSH tempBg = bg ? nullptr : CreateSolidBrush(RGB(36, 37, 41));
+    HBRUSH fillBrush = bg ? bg : tempBg;
+
+    // Fill only the non-client margin (wipes out Win32 #32768's hard-coded 3px white/gray 3D border)
+    const int saved = SaveDC(dc);
+    ExcludeClipRect(dc, clientInWin.left, clientInWin.top, clientInWin.right, clientInWin.bottom);
+    RECT full{0, 0, w, h};
+    FillRect(dc, &full, fillBrush);
+    if (saved) RestoreDC(dc, saved);
+
+    // Draw a subtle, soft-contrast rounded rim around the outer edge
+    const int diam = MulDiv(26, dpi, 96);
+    HPEN borderPen = (g_activeGlassMenu && g_activeGlassMenu->highlightBorder)
+        ? g_activeGlassMenu->highlightBorder : nullptr;
+    HPEN tempPen = borderPen ? nullptr : CreatePen(PS_SOLID, 1, RGB(66, 68, 76));
+    const int saved2 = SaveDC(dc);
+    SelectObject(dc, GetStockObject(NULL_BRUSH));
+    SelectObject(dc, borderPen ? borderPen : tempPen);
+    RoundRect(dc, 0, 0, w, h, diam, diam);
+    if (saved2) RestoreDC(dc, saved2);
+
+    if (tempPen) DeleteObject(tempPen);
+    if (tempBg) DeleteObject(tempBg);
+}
+
+LRESULT CALLBACK GlassMenuPopupSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                            UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+    auto* st = reinterpret_cast<GlassMenuPopupState*>(dwRefData);
+    const int dpi = st ? st->dpi : 96;
+    if (msg == WM_NCPAINT) {
+        HDC dc = GetWindowDC(hwnd);
+        if (dc) {
+            PaintGlassMenuFrame(hwnd, dc, dpi);
+            ReleaseDC(hwnd, dc);
+        }
+        return 0;
+    }
+    if (msg == WM_PRINT) {
+        const LRESULT res = DefSubclassProc(hwnd, msg, wParam, lParam);
+        if (wParam) PaintGlassMenuFrame(hwnd, reinterpret_cast<HDC>(wParam), dpi);
+        return res;
+    }
+    if (msg == WM_ERASEBKGND) {
+        if (wParam && g_activeGlassMenu && g_activeGlassMenu->background) {
+            RECT cr{};
+            GetClientRect(hwnd, &cr);
+            FillRect(reinterpret_cast<HDC>(wParam), &cr, g_activeGlassMenu->background);
+            return 1;
+        }
+    }
+    if (msg == WM_SIZE || msg == WM_SHOWWINDOW) {
+        const LRESULT res = DefSubclassProc(hwnd, msg, wParam, lParam);
+        ApplyGlassMenuRoundRegion(hwnd, st);
+        return res;
+    }
+    if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, GlassMenuPopupSubclassProc, uIdSubclass);
+        delete st;
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
 LRESULT CALLBACK GlassMenuWindowHook(int code, WPARAM wParam, LPARAM lParam) {
     if (code == HCBT_CREATEWND && g_activeGlassMenu) {
         HWND window = reinterpret_cast<HWND>(wParam);
         wchar_t className[32]{};
         if (GetClassNameW(window, className, ARRAYSIZE(className)) && wcscmp(className, L"#32768") == 0) {
             SetWindowLongPtrW(window, GWL_EXSTYLE, GetWindowLongPtrW(window, GWL_EXSTYLE) | WS_EX_LAYERED);
-            SetLayeredWindowAttributes(window, 0, 210, LWA_ALPHA);
-            const int rounded = 2;
+            SetLayeredWindowAttributes(window, 0, 232, LWA_ALPHA);
+            const int rounded = 2; // DWMWCP_ROUND
             DwmSetWindowAttribute(window, static_cast<DWMWINDOWATTRIBUTE>(33), &rounded, sizeof(rounded));
-            if (const auto setAttribute = Backdrop::Resolve()) {
-                Backdrop::AccentPolicy policy{Backdrop::ACCENT_ENABLE_ACRYLICBLURBEHIND, 2, 0x9C202020, 0};
-                Backdrop::CompositionAttributeData data{Backdrop::WCA_ACCENT_POLICY, &policy, sizeof(policy)};
-                setAttribute(window, &data);
+            const COLORREF noBorder = 0xFFFFFFFE; // DWMWA_COLOR_NONE
+            DwmSetWindowAttribute(window, static_cast<DWMWINDOWATTRIBUTE>(34), &noBorder, sizeof(noBorder));
+            auto* st = new GlassMenuPopupState{ g_activeGlassMenu->dpi, 0, 0, false };
+            if (!SetWindowSubclass(window, GlassMenuPopupSubclassProc, kGlassMenuSubclassId,
+                                   reinterpret_cast<DWORD_PTR>(st))) {
+                delete st;
             }
         }
     }
@@ -13626,6 +14443,10 @@ LRESULT CALLBACK GlassMenuWindowHook(int code, WPARAM wParam, LPARAM lParam) {
 }
 
 UINT TrackGlassMenu(HMENU menu, POINT point, HWND owner) {
+    struct ContextMenuGuard {
+        ContextMenuGuard() { g_contextMenuOpen.store(true, std::memory_order_relaxed); }
+        ~ContextMenuGuard() { g_contextMenuOpen.store(false, std::memory_order_relaxed); }
+    } menuGuard;
     HIGHCONTRASTW contrast{sizeof(contrast)};
     BOOL screenReader = FALSE;
     SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0);
@@ -13901,6 +14722,1211 @@ void CheckIslandUpdates(HWND hwnd) {
         MessageBoxW(hwnd, UiText(L"Unable to start the update check. Try again later.", L"无法启动更新检查，请稍后重试。"), UiText(L"Check for updates", L"检查更新"), MB_OK | MB_ICONERROR);
 }
 
+namespace WeatherFxTunerUi {
+
+constexpr float kWinW = 468.0f;
+constexpr float kWinH = 554.0f;
+constexpr wchar_t kWndClassName[] = L"DynamicIslandWeatherFxTunerV2";
+
+struct SliderSpec {
+    const wchar_t* en;
+    const wchar_t* zh;
+    int minV;
+    int maxV;
+    int defV;
+};
+
+constexpr SliderSpec kSliders[5] = {
+    { L"Intensity",  L"总强度",   0,   150, 100 },
+    { L"Speed",      L"动画速度", 20,  250, 100 },
+    { L"Drop Scale", L"颗粒大小", 50,  200, 100 },
+    { L"Glass Fog",  L"玻璃雾气", 0,   100,  75 },
+    { L"Refraction", L"折射高光", 0,   200, 100 },
+};
+
+constexpr int kChipModes[8] = { 0, 1, 2, 3, 4, 5, 6, -1 };
+
+inline D2D1_RECT_F CloseBtnRect()  { return D2D1::RectF(422.0f, 17.0f, 450.0f, 45.0f); }
+inline D2D1_RECT_F ResetBtnRect()  { return D2D1::RectF(18.0f,  502.0f, 126.0f, 536.0f); }
+inline D2D1_RECT_F CancelBtnRect() { return D2D1::RectF(260.0f, 502.0f, 346.0f, 536.0f); }
+inline D2D1_RECT_F SaveBtnRect()   { return D2D1::RectF(354.0f, 502.0f, 450.0f, 536.0f); }
+
+inline D2D1_RECT_F ModeChipRect(int idx) {
+    const int col = idx % 4;
+    const int row = idx / 4;
+    const float x = 30.0f + col * (96.0f + 8.0f);
+    const float y = 104.0f + row * (32.0f + 8.0f);
+    return D2D1::RectF(x, y, x + 96.0f, y + 32.0f);
+}
+
+inline D2D1_RECT_F ScopeSegRect(int idx) {
+    const float x = 33.0f + idx * 134.0f;
+    return D2D1::RectF(x, 228.0f, x + 134.0f, 250.0f);
+}
+
+inline D2D1_RECT_F SliderRowRect(int idx) {
+    const float y = 307.0f + idx * 35.0f;
+    return D2D1::RectF(26.0f, y, 442.0f, y + 32.0f);
+}
+
+inline D2D1_RECT_F SliderTrackRect(int idx) {
+    const float cy = 307.0f + idx * 35.0f + 16.0f;
+    return D2D1::RectF(124.0f, cy - 2.5f, 368.0f, cy + 2.5f);
+}
+
+inline bool PtInRectF(const D2D1_RECT_F& r, float x, float y) {
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+}
+
+struct ModeTheme {
+    D2D1_COLOR_F accentStart;
+    D2D1_COLOR_F accentEnd;
+    D2D1_COLOR_F glow;
+};
+
+inline ModeTheme ThemeForMode(int mode) {
+    switch (mode) {
+        case 1:  return { D2D1::ColorF(0x2575F5), D2D1::ColorF(0x38BDF8), D2D1::ColorF(0x38BDF8, 0.16f) };
+        case 2:  return { D2D1::ColorF(0x6366F1), D2D1::ColorF(0xA78BFA), D2D1::ColorF(0x818CF8, 0.17f) };
+        case 3:  return { D2D1::ColorF(0x3B82F6), D2D1::ColorF(0x93C5FD), D2D1::ColorF(0x93C5FD, 0.15f) };
+        case 4:  return { D2D1::ColorF(0x64748B), D2D1::ColorF(0xCBD5E1), D2D1::ColorF(0x94A3B8, 0.13f) };
+        case 5:  return { D2D1::ColorF(0xEA8C1E), D2D1::ColorF(0xFCD34D), D2D1::ColorF(0xF59E0B, 0.16f) };
+        case 6:  return { D2D1::ColorF(0x4F46E5), D2D1::ColorF(0x818CF8), D2D1::ColorF(0x6366F1, 0.17f) };
+        case -1: return { D2D1::ColorF(0x475569), D2D1::ColorF(0x94A3B8), D2D1::ColorF(0x64748B, 0.10f) };
+        default: return { D2D1::ColorF(0x2575F5), D2D1::ColorF(0x56CCF2), D2D1::ColorF(0x38BDF8, 0.15f) };
+    }
+}
+
+struct TunerState {
+    HWND hwnd = nullptr;
+    float dpi = 96.0f;
+    bool chinese = true;
+    bool trackingMouse = false;
+    bool saved = false;
+    bool rolledBack = false;
+    bool done = false;
+
+    int mode = 0;
+    int scope = 0;
+    int values[5]{ 100, 100, 100, 75, 100 };
+
+    int origMode = 0;
+    int origScope = 0;
+    int origValues[5]{ 100, 100, 100, 75, 100 };
+
+    int hoverModeChip = -1;
+    int hoverScopeSeg = -1;
+    int hoverSlider = -1;
+    int dragSlider = -1;
+    int lastSlider = 0;
+    int hoverBtn = -1; // 0=Close, 1=Reset, 2=Cancel, 3=Save
+    int pressBtn = -1;
+
+    Microsoft::WRL::ComPtr<ID2D1Factory> d2d;
+    Microsoft::WRL::ComPtr<IDWriteFactory> dw;
+    Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> rt;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    Microsoft::WRL::ComPtr<ID2D1StrokeStyle> roundStroke;
+    Microsoft::WRL::ComPtr<IDWriteFontFallback> fallback;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtTitle;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtSub;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtSec;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtSecR;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtHintR;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtChip;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtSeg;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtLabel;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtVal;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtBtn;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtBtnLeft;
+
+    void ReleaseTarget() {
+        brush.Reset();
+        rt.Reset();
+    }
+
+    void ReleaseAll() {
+        ReleaseTarget();
+        roundStroke.Reset();
+        fmtTitle.Reset(); fmtSub.Reset(); fmtSec.Reset(); fmtSecR.Reset();
+        fmtHintR.Reset(); fmtChip.Reset(); fmtSeg.Reset(); fmtLabel.Reset();
+        fmtVal.Reset(); fmtBtn.Reset(); fmtBtnLeft.Reset();
+        fallback.Reset();
+        dw.Reset();
+        d2d.Reset();
+    }
+
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> CreateFmt(float size, DWRITE_FONT_WEIGHT weight,
+                                                        DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING) {
+        Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
+        if (!dw) return fmt;
+        if (FAILED(dw->CreateTextFormat(L"SF Pro Text", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+                                        DWRITE_FONT_STRETCH_NORMAL, size, L"zh-CN", &fmt))) {
+            dw->CreateTextFormat(L"Microsoft YaHei UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+                                 DWRITE_FONT_STRETCH_NORMAL, size, L"zh-CN", &fmt);
+        }
+        if (fmt) {
+            fmt->SetTextAlignment(align);
+            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            if (fallback) {
+                Microsoft::WRL::ComPtr<IDWriteTextFormat1> fmt1;
+                if (SUCCEEDED(fmt.As(&fmt1))) fmt1->SetFontFallback(fallback.Get());
+            }
+        }
+        return fmt;
+    }
+
+    bool InitDeviceIndependent() {
+        if (!d2d) {
+            if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2d.GetAddressOf()))) return false;
+        }
+        if (!dw) {
+            if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                           reinterpret_cast<IUnknown**>(dw.GetAddressOf())))) return false;
+        }
+        if (!roundStroke) {
+            D2D1_STROKE_STYLE_PROPERTIES sp = D2D1::StrokeStyleProperties(
+                D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND);
+            d2d->CreateStrokeStyle(sp, nullptr, 0, &roundStroke);
+        }
+        if (!fallback && dw) {
+            Microsoft::WRL::ComPtr<IDWriteFactory2> f2;
+            Microsoft::WRL::ComPtr<IDWriteFontFallbackBuilder> builder;
+            Microsoft::WRL::ComPtr<IDWriteFontFallback> sys;
+            if (SUCCEEDED(dw.As(&f2)) && SUCCEEDED(f2->CreateFontFallbackBuilder(&builder))) {
+                constexpr DWRITE_UNICODE_RANGE cjk[] = {
+                    {0x2E80, 0x303F}, {0x3100, 0x312F}, {0x3400, 0x9FFF}, {0xF900, 0xFAFF}, {0xFF00, 0xFFEF}
+                };
+                const wchar_t* fams[] = { L"PingFang SC", L"Microsoft YaHei UI" };
+                if (SUCCEEDED(builder->AddMapping(cjk, ARRAYSIZE(cjk), fams, ARRAYSIZE(fams), nullptr, nullptr, nullptr, 1.0f)) &&
+                    SUCCEEDED(f2->GetSystemFontFallback(&sys)) &&
+                    SUCCEEDED(builder->AddMappings(sys.Get()))) {
+                    builder->CreateFontFallback(&fallback);
+                }
+            }
+        }
+        if (!fmtTitle) {
+            fmtTitle   = CreateFmt(15.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+            fmtSub     = CreateFmt(11.2f, DWRITE_FONT_WEIGHT_NORMAL);
+            fmtSec     = CreateFmt(12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+            fmtSecR    = CreateFmt(11.0f, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            fmtHintR   = CreateFmt(10.6f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            fmtChip    = CreateFmt(12.0f, DWRITE_FONT_WEIGHT_MEDIUM);
+            fmtSeg     = CreateFmt(11.8f, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmtLabel   = CreateFmt(12.5f, DWRITE_FONT_WEIGHT_NORMAL);
+            fmtVal     = CreateFmt(11.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmtBtn     = CreateFmt(12.6f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmtBtnLeft = CreateFmt(12.6f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING);
+        }
+        return true;
+    }
+
+    bool EnsureRenderTarget() {
+        if (rt) return true;
+        if (!hwnd || !InitDeviceIndependent()) return false;
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+        const UINT pxW = static_cast<UINT>((std::max)(1L, rc.right - rc.left));
+        const UINT pxH = static_cast<UINT>((std::max)(1L, rc.bottom - rc.top));
+        if (FAILED(d2d->CreateHwndRenderTarget(
+                D2D1::RenderTargetProperties(),
+                D2D1::HwndRenderTargetProperties(hwnd, D2D1::SizeU(pxW, pxH)),
+                &rt))) {
+            return false;
+        }
+        rt->SetDpi(dpi, dpi);
+        rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &brush);
+        return rt && brush;
+    }
+
+    void ApplyLive() const {
+        g_weatherFxOverride.store(mode, std::memory_order_relaxed);
+        g_weatherFxScope.store(ClampInt(scope, 0, 2), std::memory_order_relaxed);
+        g_weatherFxIntensityPct.store(ClampInt(values[0], kSliders[0].minV, kSliders[0].maxV), std::memory_order_relaxed);
+        g_weatherFxSpeedPct.store(ClampInt(values[1], kSliders[1].minV, kSliders[1].maxV), std::memory_order_relaxed);
+        g_weatherFxScalePct.store(ClampInt(values[2], kSliders[2].minV, kSliders[2].maxV), std::memory_order_relaxed);
+        g_weatherFxFogPct.store(ClampInt(values[3], kSliders[3].minV, kSliders[3].maxV), std::memory_order_relaxed);
+        g_weatherFxRefractPct.store(ClampInt(values[4], kSliders[4].minV, kSliders[4].maxV), std::memory_order_relaxed);
+        g_layoutDirty = true;
+    }
+
+    void SaveAndClose() {
+        ApplyLive();
+        Wh_SetIntValue(L"WeatherGlassFxMode", g_weatherFxOverride.load(std::memory_order_relaxed));
+        Wh_SetIntValue(L"WeatherGlassFxScope", g_weatherFxScope.load(std::memory_order_relaxed));
+        Wh_SetIntValue(L"WeatherGlassFxIntensity", g_weatherFxIntensityPct.load(std::memory_order_relaxed));
+        Wh_SetIntValue(L"WeatherGlassFxSpeed", g_weatherFxSpeedPct.load(std::memory_order_relaxed));
+        Wh_SetIntValue(L"WeatherGlassFxScale", g_weatherFxScalePct.load(std::memory_order_relaxed));
+        Wh_SetIntValue(L"WeatherGlassFxFog", g_weatherFxFogPct.load(std::memory_order_relaxed));
+        Wh_SetIntValue(L"WeatherGlassFxRefract", g_weatherFxRefractPct.load(std::memory_order_relaxed));
+        saved = true;
+        done = true;
+        if (hwnd && IsWindow(hwnd)) DestroyWindow(hwnd);
+    }
+
+    void Rollback() {
+        if (saved || rolledBack) return;
+        rolledBack = true;
+        g_weatherFxOverride.store(origMode, std::memory_order_relaxed);
+        g_weatherFxScope.store(origScope, std::memory_order_relaxed);
+        g_weatherFxIntensityPct.store(origValues[0], std::memory_order_relaxed);
+        g_weatherFxSpeedPct.store(origValues[1], std::memory_order_relaxed);
+        g_weatherFxScalePct.store(origValues[2], std::memory_order_relaxed);
+        g_weatherFxFogPct.store(origValues[3], std::memory_order_relaxed);
+        g_weatherFxRefractPct.store(origValues[4], std::memory_order_relaxed);
+        g_layoutDirty = true;
+    }
+
+    void CancelAndClose() {
+        Rollback();
+        done = true;
+        if (hwnd && IsWindow(hwnd)) DestroyWindow(hwnd);
+    }
+
+    void ResetDefaults() {
+        scope = 0;
+        for (int i = 0; i < 5; ++i) values[i] = kSliders[i].defV;
+        ApplyLive();
+        if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+    }
+
+    bool SetSliderFromX(int idx, float dipX) {
+        if (idx < 0 || idx >= 5) return false;
+        const D2D1_RECT_F tr = SliderTrackRect(idx);
+        const float frac = (std::max)(0.0f, (std::min)(1.0f, (dipX - tr.left) / (tr.right - tr.left)));
+        const int v = ClampInt(static_cast<int>(std::lround(kSliders[idx].minV + frac * (kSliders[idx].maxV - kSliders[idx].minV))),
+                               kSliders[idx].minV, kSliders[idx].maxV);
+        if (v == values[idx]) return false;
+        values[idx] = v;
+        ApplyLive();
+        return true;
+    }
+
+    int HitButton(float x, float y) const {
+        if (PtInRectF(CloseBtnRect(), x, y))  return 0;
+        if (PtInRectF(ResetBtnRect(), x, y))  return 1;
+        if (PtInRectF(CancelBtnRect(), x, y)) return 2;
+        if (PtInRectF(SaveBtnRect(), x, y))   return 3;
+        return -1;
+    }
+
+    int HitModeChip(float x, float y) const {
+        for (int i = 0; i < 8; ++i) if (PtInRectF(ModeChipRect(i), x, y)) return i;
+        return -1;
+    }
+
+    int HitScopeSeg(float x, float y) const {
+        for (int i = 0; i < 3; ++i) if (PtInRectF(ScopeSegRect(i), x, y)) return i;
+        return -1;
+    }
+
+    int HitSliderRow(float x, float y) const {
+        for (int i = 0; i < 5; ++i) if (PtInRectF(SliderRowRect(i), x, y)) return i;
+        return -1;
+    }
+
+    int HitSliderTrackArea(float x, float y) const {
+        for (int i = 0; i < 5; ++i) {
+            const D2D1_RECT_F row = SliderRowRect(i);
+            const D2D1_RECT_F tr = SliderTrackRect(i);
+            if (x >= tr.left - 12.0f && x <= tr.right + 12.0f && y >= row.top && y <= row.bottom) return i;
+        }
+        return -1;
+    }
+};
+
+inline void DrawModeGlyph(ID2D1RenderTarget* rt, ID2D1Factory* factory, int mode,
+                          float cx, float cy, float sz, ID2D1SolidColorBrush* brush,
+                          ID2D1StrokeStyle* roundStroke) {
+    const float r = sz * 0.5f;
+    if (mode == 0) {
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> geo;
+        if (SUCCEEDED(factory->CreatePathGeometry(&geo))) {
+            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(geo->Open(&sink))) {
+                const float o = r * 0.92f;
+                const float i = r * 0.28f;
+                sink->BeginFigure(D2D1::Point2F(cx, cy - o), D2D1_FIGURE_BEGIN_FILLED);
+                sink->AddLine(D2D1::Point2F(cx + i, cy - i));
+                sink->AddLine(D2D1::Point2F(cx + o, cy));
+                sink->AddLine(D2D1::Point2F(cx + i, cy + i));
+                sink->AddLine(D2D1::Point2F(cx, cy + o));
+                sink->AddLine(D2D1::Point2F(cx - i, cy + i));
+                sink->AddLine(D2D1::Point2F(cx - o, cy));
+                sink->AddLine(D2D1::Point2F(cx - i, cy - i));
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink->Close();
+                rt->FillGeometry(geo.Get(), brush);
+            }
+        }
+    } else if (mode == 1) {
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> geo;
+        if (SUCCEEDED(factory->CreatePathGeometry(&geo))) {
+            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(geo->Open(&sink))) {
+                sink->BeginFigure(D2D1::Point2F(cx, cy - r * 0.92f), D2D1_FIGURE_BEGIN_FILLED);
+                sink->AddBezier(D2D1::BezierSegment(
+                    D2D1::Point2F(cx + r * 0.72f, cy - r * 0.05f),
+                    D2D1::Point2F(cx + r * 0.76f, cy + r * 0.88f),
+                    D2D1::Point2F(cx, cy + r * 0.88f)));
+                sink->AddBezier(D2D1::BezierSegment(
+                    D2D1::Point2F(cx - r * 0.76f, cy + r * 0.88f),
+                    D2D1::Point2F(cx - r * 0.72f, cy - r * 0.05f),
+                    D2D1::Point2F(cx, cy - r * 0.92f)));
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink->Close();
+                rt->FillGeometry(geo.Get(), brush);
+            }
+        }
+    } else if (mode == 2) {
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> geo;
+        if (SUCCEEDED(factory->CreatePathGeometry(&geo))) {
+            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(geo->Open(&sink))) {
+                sink->BeginFigure(D2D1::Point2F(cx + r * 0.14f, cy - r * 0.96f), D2D1_FIGURE_BEGIN_FILLED);
+                sink->AddLine(D2D1::Point2F(cx - r * 0.62f, cy + r * 0.08f));
+                sink->AddLine(D2D1::Point2F(cx - r * 0.02f, cy + r * 0.08f));
+                sink->AddLine(D2D1::Point2F(cx - r * 0.22f, cy + r * 0.96f));
+                sink->AddLine(D2D1::Point2F(cx + r * 0.64f, cy - r * 0.14f));
+                sink->AddLine(D2D1::Point2F(cx + r * 0.04f, cy - r * 0.14f));
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink->Close();
+                rt->FillGeometry(geo.Get(), brush);
+            }
+        }
+    } else if (mode == 3) {
+        for (int k = 0; k < 3; ++k) {
+            const float ang = k * 3.14159265f / 3.0f;
+            const float dx = std::cos(ang) * r * 0.88f;
+            const float dy = std::sin(ang) * r * 0.88f;
+            rt->DrawLine(D2D1::Point2F(cx - dx, cy - dy), D2D1::Point2F(cx + dx, cy + dy),
+                         brush, 1.35f, roundStroke);
+        }
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r * 0.24f, r * 0.24f), brush);
+    } else if (mode == 4) {
+        rt->FillRoundedRectangle(
+            D2D1::RoundedRect(D2D1::RectF(cx - r * 0.86f, cy - r * 0.16f, cx + r * 0.86f, cy + r * 0.36f), r * 0.26f, r * 0.26f),
+            brush);
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx - r * 0.22f, cy - r * 0.34f), r * 0.42f, r * 0.38f), brush);
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + r * 0.30f, cy - r * 0.20f), r * 0.31f, r * 0.29f), brush);
+        rt->DrawLine(D2D1::Point2F(cx - r * 0.56f, cy + r * 0.78f),
+                     D2D1::Point2F(cx + r * 0.44f, cy + r * 0.78f), brush, 1.15f, roundStroke);
+    } else if (mode == 5) {
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r * 0.44f, r * 0.44f), brush);
+        for (int k = 0; k < 8; ++k) {
+            const float ang = k * 3.14159265f / 4.0f;
+            const float c = std::cos(ang), s = std::sin(ang);
+            rt->DrawLine(D2D1::Point2F(cx + c * r * 0.68f, cy + s * r * 0.68f),
+                         D2D1::Point2F(cx + c * r * 0.94f, cy + s * r * 0.94f),
+                         brush, 1.25f, roundStroke);
+        }
+    } else if (mode == 6) {
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> geo;
+        if (SUCCEEDED(factory->CreatePathGeometry(&geo))) {
+            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(geo->Open(&sink))) {
+                const float mr = r * 0.76f;
+                sink->BeginFigure(D2D1::Point2F(cx + mr * 0.20f, cy - mr * 0.92f), D2D1_FIGURE_BEGIN_FILLED);
+                sink->AddArc(D2D1::ArcSegment(
+                    D2D1::Point2F(cx + mr * 0.85f, cy + mr * 0.46f),
+                    D2D1::SizeF(mr, mr), 0.0f, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
+                sink->AddArc(D2D1::ArcSegment(
+                    D2D1::Point2F(cx + mr * 0.20f, cy - mr * 0.92f),
+                    D2D1::SizeF(mr * 0.78f, mr * 0.78f), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink->Close();
+                rt->FillGeometry(geo.Get(), brush);
+            }
+        }
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + r * 0.56f, cy - r * 0.48f), r * 0.16f, r * 0.16f), brush);
+    } else {
+        rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r * 0.74f, r * 0.74f), brush, 1.35f);
+        rt->DrawLine(D2D1::Point2F(cx - r * 0.50f, cy - r * 0.50f),
+                     D2D1::Point2F(cx + r * 0.50f, cy + r * 0.50f), brush, 1.35f, roundStroke);
+    }
+}
+
+inline void PaintTuner(TunerState& st) {
+    if (!st.EnsureRenderTarget()) return;
+    ID2D1RenderTarget* rt = st.rt.Get();
+    ID2D1Factory* d2d = st.d2d.Get();
+    ID2D1SolidColorBrush* brush = st.brush.Get();
+    ID2D1StrokeStyle* roundStroke = st.roundStroke.Get();
+    const bool chinese = st.chinese;
+    const ModeTheme theme = ThemeForMode(st.mode);
+
+    rt->BeginDraw();
+
+    // 1. Deep Obsidian Glass Background Gradient
+    {
+        D2D1_GRADIENT_STOP stops[2] = {
+            { 0.0f, D2D1::ColorF(0x161922, 1.0f) },
+            { 1.0f, D2D1::ColorF(0x0F1117, 1.0f) }
+        };
+        Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> gsc;
+        Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> bgBrush;
+        if (SUCCEEDED(rt->CreateGradientStopCollection(stops, 2, &gsc)) &&
+            SUCCEEDED(rt->CreateLinearGradientBrush(
+                D2D1::LinearGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(0, kWinH)),
+                gsc.Get(), &bgBrush))) {
+            rt->FillRectangle(D2D1::RectF(0, 0, kWinW, kWinH), bgBrush.Get());
+        } else {
+            rt->Clear(D2D1::ColorF(0x13161E, 1.0f));
+        }
+    }
+
+    // 2. Subtle Mode-Tinted Top Ambient Radial Bloom
+    {
+        D2D1_GRADIENT_STOP stops[2] = {
+            { 0.0f, theme.glow },
+            { 1.0f, D2D1::ColorF(theme.glow.r, theme.glow.g, theme.glow.b, 0.0f) }
+        };
+        Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> gsc;
+        Microsoft::WRL::ComPtr<ID2D1RadialGradientBrush> rad;
+        if (SUCCEEDED(rt->CreateGradientStopCollection(stops, 2, &gsc)) &&
+            SUCCEEDED(rt->CreateRadialGradientBrush(
+                D2D1::RadialGradientBrushProperties(D2D1::Point2F(kWinW * 0.32f, -12.0f), D2D1::Point2F(0, 0), 340.0f, 165.0f),
+                gsc.Get(), &rad))) {
+            rt->FillRectangle(D2D1::RectF(0, 0, kWinW, 180.0f), rad.Get());
+        }
+    }
+
+    // 3. Header Bar
+    {
+        const D2D1_RECT_F badgeR = D2D1::RectF(20.0f, 16.0f, 50.0f, 46.0f);
+        brush->SetColor(D2D1::ColorF(theme.accentEnd.r, theme.accentEnd.g, theme.accentEnd.b, 0.16f));
+        rt->FillRoundedRectangle(D2D1::RoundedRect(badgeR, 9.0f, 9.0f), brush);
+        brush->SetColor(D2D1::ColorF(theme.accentEnd.r, theme.accentEnd.g, theme.accentEnd.b, 0.42f));
+        rt->DrawRoundedRectangle(D2D1::RoundedRect(badgeR, 9.0f, 9.0f), brush, 1.0f);
+        brush->SetColor(theme.accentEnd);
+        DrawModeGlyph(rt, d2d, st.mode, 35.0f, 31.0f, 15.0f, brush, roundStroke);
+
+        const wchar_t* title = chinese ? L"天气液态玻璃动效 · 实时调节" : L"Weather Glass FX · Live Tuner";
+        brush->SetColor(D2D1::ColorF(0xF5F7FC, 1.0f));
+        rt->DrawTextW(title, static_cast<UINT32>(wcslen(title)), st.fmtTitle.Get(),
+                      D2D1::RectF(60.0f, 12.0f, 410.0f, 33.0f), brush);
+
+        brush->SetColor(D2D1::ColorF(0x34D399, 0.25f));
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(64.5f, 42.5f), 5.8f, 5.8f), brush);
+        brush->SetColor(D2D1::ColorF(0x34D399, 1.0f));
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(64.5f, 42.5f), 2.9f, 2.9f), brush);
+
+        const wchar_t* sub = chinese ? L"实时预览中 · 拖动滑块上方灵动岛即刻生效" : L"Live preview active · changes apply to island instantly";
+        brush->SetColor(D2D1::ColorF(0x8D96AA, 1.0f));
+        rt->DrawTextW(sub, static_cast<UINT32>(wcslen(sub)), st.fmtSub.Get(),
+                      D2D1::RectF(74.0f, 34.0f, 414.0f, 51.0f), brush);
+
+        const D2D1_RECT_F cr = CloseBtnRect();
+        const float ccx = (cr.left + cr.right) * 0.5f;
+        const float ccy = (cr.top + cr.bottom) * 0.5f;
+        if (st.pressBtn == 0) {
+            brush->SetColor(D2D1::ColorF(0xFFFFFF, 0.16f));
+            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(ccx, ccy), 14.0f, 14.0f), brush);
+        } else if (st.hoverBtn == 0) {
+            brush->SetColor(D2D1::ColorF(0xFFFFFF, 0.09f));
+            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(ccx, ccy), 14.0f, 14.0f), brush);
+        }
+        brush->SetColor(st.hoverBtn == 0 ? D2D1::ColorF(0xFFFFFF, 0.95f) : D2D1::ColorF(0x8E97AB, 0.90f));
+        rt->DrawLine(D2D1::Point2F(ccx - 4.5f, ccy - 4.5f), D2D1::Point2F(ccx + 4.5f, ccy + 4.5f), brush, 1.45f, roundStroke);
+        rt->DrawLine(D2D1::Point2F(ccx + 4.5f, ccy - 4.5f), D2D1::Point2F(ccx - 4.5f, ccy + 4.5f), brush, 1.45f, roundStroke);
+    }
+
+    auto DrawGlassCard = [&](const D2D1_RECT_F& r) {
+        D2D1_GRADIENT_STOP stops[2] = {
+            { 0.0f, D2D1::ColorF(0x1E222E, 0.94f) },
+            { 1.0f, D2D1::ColorF(0x171A24, 0.94f) }
+        };
+        Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> gsc;
+        Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> cardFill;
+        if (SUCCEEDED(rt->CreateGradientStopCollection(stops, 2, &gsc)) &&
+            SUCCEEDED(rt->CreateLinearGradientBrush(
+                D2D1::LinearGradientBrushProperties(D2D1::Point2F(r.left, r.top), D2D1::Point2F(r.left, r.bottom)),
+                gsc.Get(), &cardFill))) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(r, 14.0f, 14.0f), cardFill.Get());
+        }
+        D2D1_GRADIENT_STOP bStops[2] = {
+            { 0.0f, D2D1::ColorF(0xFFFFFF, 0.14f) },
+            { 1.0f, D2D1::ColorF(0xFFFFFF, 0.05f) }
+        };
+        Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> bgsc;
+        Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> borderBrush;
+        if (SUCCEEDED(rt->CreateGradientStopCollection(bStops, 2, &bgsc)) &&
+            SUCCEEDED(rt->CreateLinearGradientBrush(
+                D2D1::LinearGradientBrushProperties(D2D1::Point2F(r.left, r.top), D2D1::Point2F(r.left, r.bottom)),
+                bgsc.Get(), &borderBrush))) {
+            rt->DrawRoundedRectangle(
+                D2D1::RoundedRect(D2D1::RectF(r.left + 0.5f, r.top + 0.5f, r.right - 0.5f, r.bottom - 0.5f), 13.5f, 13.5f),
+                borderBrush.Get(), 1.0f);
+        }
+    };
+
+    // 4. Card 1: Weather Mode Selector (2x4 Interactive Chips)
+    {
+        DrawGlassCard(D2D1::RectF(18.0f, 66.0f, 450.0f, 186.0f));
+        const wchar_t* sec = chinese ? L"动效模式" : L"Effect Mode";
+        brush->SetColor(D2D1::ColorF(0xA4ADC2, 1.0f));
+        rt->DrawTextW(sec, static_cast<UINT32>(wcslen(sec)), st.fmtSec.Get(),
+                      D2D1::RectF(31.0f, 75.0f, 160.0f, 94.0f), brush);
+
+        const wchar_t* activeBadgeZh[8] = {
+            L"自动匹配当前天气", L"下雨 · 真实水珠折射", L"雷暴 · 水珠与闪电",
+            L"下雪 · 柔焦飘雪", L"多云 · 流动雾霭", L"晴天 · 暖金阳光",
+            L"晴夜 · 深邃星空", L"已关闭天气动效"
+        };
+        const wchar_t* activeBadgeEn[8] = {
+            L"Auto-matches live weather", L"Rain · Glass droplets", L"Storm · Rain & lightning",
+            L"Snow · Soft bokeh flakes", L"Cloudy · Drifting mist", L"Clear Day · Warm sunbeams",
+            L"Clear Night · Starfield", L"Weather FX disabled"
+        };
+        int activeChipIdx = 0;
+        for (int i = 0; i < 8; ++i) if (kChipModes[i] == st.mode) activeChipIdx = i;
+        const wchar_t* badge = chinese ? activeBadgeZh[activeChipIdx] : activeBadgeEn[activeChipIdx];
+        brush->SetColor(theme.accentEnd);
+        rt->DrawTextW(badge, static_cast<UINT32>(wcslen(badge)), st.fmtSecR.Get(),
+                      D2D1::RectF(170.0f, 75.0f, 437.0f, 94.0f), brush);
+
+        const wchar_t* chipZh[8] = { L"跟随实时", L"下雨", L"雷暴", L"下雪", L"多云薄雾", L"晴天", L"晴夜星空", L"关闭动效" };
+        const wchar_t* chipEn[8] = { L"Live Auto", L"Rain", L"Storm", L"Snow", L"Cloud/Fog", L"Clear Day", L"Night Sky", L"Off" };
+
+        for (int i = 0; i < 8; ++i) {
+            const D2D1_RECT_F r = ModeChipRect(i);
+            const bool selected = (kChipModes[i] == st.mode);
+            const bool hovered = (st.hoverModeChip == i);
+            const ModeTheme chipTheme = ThemeForMode(kChipModes[i]);
+
+            if (selected) {
+                D2D1_GRADIENT_STOP stops[2] = {
+                    { 0.0f, D2D1::ColorF(chipTheme.accentEnd.r, chipTheme.accentEnd.g, chipTheme.accentEnd.b, 0.25f) },
+                    { 1.0f, D2D1::ColorF(chipTheme.accentStart.r, chipTheme.accentStart.g, chipTheme.accentStart.b, 0.14f) }
+                };
+                Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> gsc;
+                Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> selBrush;
+                if (SUCCEEDED(rt->CreateGradientStopCollection(stops, 2, &gsc)) &&
+                    SUCCEEDED(rt->CreateLinearGradientBrush(
+                        D2D1::LinearGradientBrushProperties(D2D1::Point2F(r.left, r.top), D2D1::Point2F(r.left, r.bottom)),
+                        gsc.Get(), &selBrush))) {
+                    rt->FillRoundedRectangle(D2D1::RoundedRect(r, 9.0f, 9.0f), selBrush.Get());
+                }
+                brush->SetColor(D2D1::ColorF(chipTheme.accentEnd.r, chipTheme.accentEnd.g, chipTheme.accentEnd.b, 0.78f));
+                rt->DrawRoundedRectangle(
+                    D2D1::RoundedRect(D2D1::RectF(r.left + 0.5f, r.top + 0.5f, r.right - 0.5f, r.bottom - 0.5f), 8.5f, 8.5f),
+                    brush, 1.1f);
+            } else {
+                brush->SetColor(hovered ? D2D1::ColorF(0x252B3B, 1.0f) : D2D1::ColorF(0x131620, 0.96f));
+                rt->FillRoundedRectangle(D2D1::RoundedRect(r, 9.0f, 9.0f), brush);
+                brush->SetColor(hovered ? D2D1::ColorF(0xFFFFFF, 0.16f) : D2D1::ColorF(0xFFFFFF, 0.07f));
+                rt->DrawRoundedRectangle(
+                    D2D1::RoundedRect(D2D1::RectF(r.left + 0.5f, r.top + 0.5f, r.right - 0.5f, r.bottom - 0.5f), 8.5f, 8.5f),
+                    brush, 1.0f);
+            }
+
+            const float cy = (r.top + r.bottom) * 0.5f;
+            brush->SetColor(selected ? chipTheme.accentEnd : (hovered ? D2D1::ColorF(0xDCE3F2, 0.92f) : D2D1::ColorF(0x8D97AC, 0.90f)));
+            DrawModeGlyph(rt, d2d, kChipModes[i], r.left + 16.5f, cy, 12.5f, brush, roundStroke);
+
+            const wchar_t* lbl = chinese ? chipZh[i] : chipEn[i];
+            brush->SetColor(selected ? D2D1::ColorF(0xFFFFFF, 1.0f) : (hovered ? D2D1::ColorF(0xEAEFF8, 1.0f) : D2D1::ColorF(0xBAC3D6, 1.0f)));
+            rt->DrawTextW(lbl, static_cast<UINT32>(wcslen(lbl)), st.fmtChip.Get(),
+                          D2D1::RectF(r.left + 28.0f, r.top, r.right - 5.0f, r.bottom), brush);
+        }
+    }
+
+    // 5. Card 2: Display Scope Segmented Control
+    {
+        DrawGlassCard(D2D1::RectF(18.0f, 196.0f, 450.0f, 265.0f));
+        const wchar_t* sec = chinese ? L"显示范围" : L"Display Scope";
+        brush->SetColor(D2D1::ColorF(0xA4ADC2, 1.0f));
+        rt->DrawTextW(sec, static_cast<UINT32>(wcslen(sec)), st.fmtSec.Get(),
+                      D2D1::RectF(31.0f, 203.0f, 150.0f, 221.0f), brush);
+
+        const wchar_t* hint = chinese ? L"调节期间临时全局预览" : L"Temporarily previews live while open";
+        brush->SetColor(D2D1::ColorF(0x6D768A, 1.0f));
+        rt->DrawTextW(hint, static_cast<UINT32>(wcslen(hint)), st.fmtHintR.Get(),
+                      D2D1::RectF(160.0f, 203.0f, 437.0f, 221.0f), brush);
+
+        const D2D1_RECT_F well = D2D1::RectF(30.0f, 225.0f, 438.0f, 253.0f);
+        brush->SetColor(D2D1::ColorF(0x11141C, 1.0f));
+        rt->FillRoundedRectangle(D2D1::RoundedRect(well, 8.5f, 8.5f), brush);
+        brush->SetColor(D2D1::ColorF(0xFFFFFF, 0.08f));
+        rt->DrawRoundedRectangle(
+            D2D1::RoundedRect(D2D1::RectF(well.left + 0.5f, well.top + 0.5f, well.right - 0.5f, well.bottom - 0.5f), 8.0f, 8.0f),
+            brush, 1.0f);
+
+        const wchar_t* segZh[3] = { L"全局持续显示", L"仅展开时显示", L"仅天气页显示" };
+        const wchar_t* segEn[3] = { L"Always", L"Expanded Only", L"Weather Tab" };
+        for (int i = 0; i < 3; ++i) {
+            const D2D1_RECT_F sr = ScopeSegRect(i);
+            const bool sel = (st.scope == i);
+            const bool hov = (st.hoverScopeSeg == i);
+            if (sel) {
+                D2D1_GRADIENT_STOP stops[2] = {
+                    { 0.0f, D2D1::ColorF(0x30374A, 1.0f) },
+                    { 1.0f, D2D1::ColorF(0x252B3B, 1.0f) }
+                };
+                Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> gsc;
+                Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> segBrush;
+                if (SUCCEEDED(rt->CreateGradientStopCollection(stops, 2, &gsc)) &&
+                    SUCCEEDED(rt->CreateLinearGradientBrush(
+                        D2D1::LinearGradientBrushProperties(D2D1::Point2F(sr.left, sr.top), D2D1::Point2F(sr.left, sr.bottom)),
+                        gsc.Get(), &segBrush))) {
+                    rt->FillRoundedRectangle(D2D1::RoundedRect(sr, 6.0f, 6.0f), segBrush.Get());
+                }
+                brush->SetColor(D2D1::ColorF(0xFFFFFF, 0.16f));
+                rt->DrawRoundedRectangle(
+                    D2D1::RoundedRect(D2D1::RectF(sr.left + 0.5f, sr.top + 0.5f, sr.right - 0.5f, sr.bottom - 0.5f), 5.5f, 5.5f),
+                    brush, 0.9f);
+            } else if (hov) {
+                brush->SetColor(D2D1::ColorF(0xFFFFFF, 0.05f));
+                rt->FillRoundedRectangle(D2D1::RoundedRect(sr, 6.0f, 6.0f), brush);
+            }
+            const wchar_t* lbl = chinese ? segZh[i] : segEn[i];
+            brush->SetColor(sel ? D2D1::ColorF(0xFFFFFF, 1.0f) : (hov ? D2D1::ColorF(0xDCE2EE, 1.0f) : D2D1::ColorF(0x8E97AB, 1.0f)));
+            rt->DrawTextW(lbl, static_cast<UINT32>(wcslen(lbl)), st.fmtSeg.Get(), sr, brush);
+        }
+    }
+
+    // 6. Card 3: Fine Tuning Sliders
+    {
+        DrawGlassCard(D2D1::RectF(18.0f, 275.0f, 450.0f, 490.0f));
+        const wchar_t* sec = chinese ? L"精细参数" : L"Parameters";
+        brush->SetColor(D2D1::ColorF(0xA4ADC2, 1.0f));
+        rt->DrawTextW(sec, static_cast<UINT32>(wcslen(sec)), st.fmtSec.Get(),
+                      D2D1::RectF(31.0f, 283.0f, 150.0f, 302.0f), brush);
+
+        const wchar_t* hint = chinese ? L"滚轮微调 · 双击恢复默认" : L"Scroll to nudge · Double-click to reset";
+        brush->SetColor(D2D1::ColorF(0x6D768A, 1.0f));
+        rt->DrawTextW(hint, static_cast<UINT32>(wcslen(hint)), st.fmtHintR.Get(),
+                      D2D1::RectF(170.0f, 283.0f, 437.0f, 302.0f), brush);
+
+        for (int i = 0; i < 5; ++i) {
+            const D2D1_RECT_F row = SliderRowRect(i);
+            const D2D1_RECT_F track = SliderTrackRect(i);
+            const float cy = (track.top + track.bottom) * 0.5f;
+            const bool active = (st.dragSlider == i);
+            const bool hovered = (st.hoverSlider == i) || active;
+
+            if (i > 0) {
+                brush->SetColor(D2D1::ColorF(0xFFFFFF, 0.045f));
+                rt->DrawLine(D2D1::Point2F(31.0f, row.top - 1.5f), D2D1::Point2F(437.0f, row.top - 1.5f), brush, 1.0f);
+            }
+
+            const wchar_t* lbl = chinese ? kSliders[i].zh : kSliders[i].en;
+            brush->SetColor(hovered ? D2D1::ColorF(0xFFFFFF, 1.0f) : D2D1::ColorF(0xDCE2EE, 0.95f));
+            rt->DrawTextW(lbl, static_cast<UINT32>(wcslen(lbl)), st.fmtLabel.Get(),
+                          D2D1::RectF(31.0f, row.top, 118.0f, row.bottom), brush);
+
+            const float span = static_cast<float>(kSliders[i].maxV - kSliders[i].minV);
+            const float frac = (std::max)(0.0f, (std::min)(1.0f, static_cast<float>(st.values[i] - kSliders[i].minV) / span));
+            const float defFrac = (std::max)(0.0f, (std::min)(1.0f, static_cast<float>(kSliders[i].defV - kSliders[i].minV) / span));
+            const float trackW = track.right - track.left;
+            const float thumbX = track.left + frac * trackW;
+            const float defX = track.left + defFrac * trackW;
+
+            // Subtle default reference pip cleanly tucked beneath the rail
+            if (std::fabs(thumbX - defX) > 7.5f) {
+                brush->SetColor(D2D1::ColorF(0xFFFFFF, 0.26f));
+                rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(defX, cy + 6.6f), 1.35f, 1.35f), brush);
+            }
+
+            // Inactive track rail
+            brush->SetColor(D2D1::ColorF(0x0E1118, 1.0f));
+            rt->FillRoundedRectangle(D2D1::RoundedRect(track, 2.5f, 2.5f), brush);
+            brush->SetColor(D2D1::ColorF(0xFFFFFF, 0.09f));
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(track, 2.5f, 2.5f), brush, 0.8f);
+
+            // Active gradient track fill
+            if (thumbX > track.left + 1.0f) {
+                D2D1_GRADIENT_STOP stops[2] = {
+                    { 0.0f, theme.accentStart },
+                    { 1.0f, theme.accentEnd }
+                };
+                Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> gsc;
+                Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> fillBrush;
+                if (SUCCEEDED(rt->CreateGradientStopCollection(stops, 2, &gsc)) &&
+                    SUCCEEDED(rt->CreateLinearGradientBrush(
+                        D2D1::LinearGradientBrushProperties(D2D1::Point2F(track.left, cy), D2D1::Point2F(track.right, cy)),
+                        gsc.Get(), &fillBrush))) {
+                    rt->FillRoundedRectangle(
+                        D2D1::RoundedRect(D2D1::RectF(track.left, track.top, thumbX, track.bottom), 2.5f, 2.5f),
+                        fillBrush.Get());
+                }
+            }
+
+            // Thumb glow + shadow + crisp white knob
+            const float thumbR = active ? 8.2f : (hovered ? 7.6f : 6.8f);
+            if (hovered) {
+                brush->SetColor(D2D1::ColorF(theme.accentEnd.r, theme.accentEnd.g, theme.accentEnd.b, active ? 0.30f : 0.18f));
+                rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, cy), thumbR + 4.2f, thumbR + 4.2f), brush);
+            }
+            brush->SetColor(D2D1::ColorF(0x000000, 0.42f));
+            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, cy + 1.0f), thumbR + 0.6f, thumbR + 0.6f), brush);
+            brush->SetColor(D2D1::ColorF(0xF8FAFC, 1.0f));
+            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, cy), thumbR, thumbR), brush);
+            if (active) {
+                brush->SetColor(theme.accentStart);
+                rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, cy), 2.6f, 2.6f), brush);
+            }
+
+            // Tabular percentage pill
+            const D2D1_RECT_F badge = D2D1::RectF(384.0f, cy - 10.5f, 438.0f, cy + 10.5f);
+            brush->SetColor(active ? D2D1::ColorF(theme.accentStart.r, theme.accentStart.g, theme.accentStart.b, 0.22f)
+                                   : D2D1::ColorF(0x11141C, 0.96f));
+            rt->FillRoundedRectangle(D2D1::RoundedRect(badge, 6.0f, 6.0f), brush);
+            brush->SetColor(active ? D2D1::ColorF(theme.accentEnd.r, theme.accentEnd.g, theme.accentEnd.b, 0.72f)
+                                   : (hovered ? D2D1::ColorF(0xFFFFFF, 0.16f) : D2D1::ColorF(0xFFFFFF, 0.08f)));
+            rt->DrawRoundedRectangle(
+                D2D1::RoundedRect(D2D1::RectF(badge.left + 0.5f, badge.top + 0.5f, badge.right - 0.5f, badge.bottom - 0.5f), 5.5f, 5.5f),
+                brush, 1.0f);
+
+            const std::wstring valStr = std::to_wstring(st.values[i]) + L"%";
+            brush->SetColor(hovered ? D2D1::ColorF(0xFFFFFF, 1.0f) : D2D1::ColorF(0xCDD5E4, 1.0f));
+            rt->DrawTextW(valStr.c_str(), static_cast<UINT32>(valStr.size()), st.fmtVal.Get(), badge, brush);
+        }
+    }
+
+    // 7. Bottom Action Buttons
+    auto DrawGhostBtn = [&](const D2D1_RECT_F& r, int btnId, const wchar_t* txt, bool withResetIcon) {
+        const bool hov = (st.hoverBtn == btnId);
+        const bool prs = (st.pressBtn == btnId);
+        brush->SetColor(prs ? D2D1::ColorF(0x151822, 1.0f) : (hov ? D2D1::ColorF(0x252B3B, 1.0f) : D2D1::ColorF(0x1A1E29, 1.0f)));
+        rt->FillRoundedRectangle(D2D1::RoundedRect(r, 9.0f, 9.0f), brush);
+        brush->SetColor(hov ? D2D1::ColorF(0xFFFFFF, 0.20f) : D2D1::ColorF(0xFFFFFF, 0.11f));
+        rt->DrawRoundedRectangle(
+            D2D1::RoundedRect(D2D1::RectF(r.left + 0.5f, r.top + 0.5f, r.right - 0.5f, r.bottom - 0.5f), 8.5f, 8.5f),
+            brush, 1.0f);
+        if (withResetIcon) {
+            const float cx = r.left + (chinese ? 23.0f : 31.0f);
+            const float cy = (r.top + r.bottom) * 0.5f;
+            brush->SetColor(hov ? D2D1::ColorF(0xFFFFFF, 0.95f) : D2D1::ColorF(0xA6B0C4, 0.92f));
+            Microsoft::WRL::ComPtr<ID2D1PathGeometry> arcGeo;
+            if (SUCCEEDED(d2d->CreatePathGeometry(&arcGeo))) {
+                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                if (SUCCEEDED(arcGeo->Open(&sink))) {
+                    sink->BeginFigure(D2D1::Point2F(cx - 4.2f, cy - 2.2f), D2D1_FIGURE_BEGIN_HOLLOW);
+                    sink->AddArc(D2D1::ArcSegment(
+                        D2D1::Point2F(cx - 3.6f, cy + 3.4f),
+                        D2D1::SizeF(4.8f, 4.8f), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
+                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                    sink->Close();
+                    rt->DrawGeometry(arcGeo.Get(), brush, 1.35f, roundStroke);
+                }
+            }
+            rt->DrawLine(D2D1::Point2F(cx - 4.5f, cy - 2.0f), D2D1::Point2F(cx - 4.6f, cy - 5.2f), brush, 1.35f, roundStroke);
+            rt->DrawLine(D2D1::Point2F(cx - 4.5f, cy - 2.0f), D2D1::Point2F(cx - 1.4f, cy - 1.8f), brush, 1.35f, roundStroke);
+
+            brush->SetColor(hov ? D2D1::ColorF(0xFFFFFF, 1.0f) : D2D1::ColorF(0xCFD7E6, 1.0f));
+            rt->DrawTextW(txt, static_cast<UINT32>(wcslen(txt)), st.fmtBtnLeft.Get(),
+                          D2D1::RectF(cx + 10.5f, r.top, r.right - 6.0f, r.bottom), brush);
+        } else {
+            brush->SetColor(hov ? D2D1::ColorF(0xFFFFFF, 1.0f) : D2D1::ColorF(0xCFD7E6, 1.0f));
+            rt->DrawTextW(txt, static_cast<UINT32>(wcslen(txt)), st.fmtBtn.Get(), r, brush);
+        }
+    };
+
+    DrawGhostBtn(ResetBtnRect(), 1, chinese ? L"恢复默认" : L"Reset", true);
+    DrawGhostBtn(CancelBtnRect(), 2, chinese ? L"取消" : L"Cancel", false);
+
+    {
+        const D2D1_RECT_F sr = SaveBtnRect();
+        const bool hov = (st.hoverBtn == 3);
+        const bool prs = (st.pressBtn == 3);
+        D2D1_GRADIENT_STOP stops[2] = {
+            { 0.0f, prs ? D2D1::ColorF(0x1D5FD6) : (hov ? D2D1::ColorF(0x3B8DFF) : D2D1::ColorF(0x2876F5)) },
+            { 1.0f, prs ? D2D1::ColorF(0x2574E8) : (hov ? D2D1::ColorF(0x52B4FF) : D2D1::ColorF(0x399BF8)) }
+        };
+        Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> gsc;
+        Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> ctaBrush;
+        if (SUCCEEDED(rt->CreateGradientStopCollection(stops, 2, &gsc)) &&
+            SUCCEEDED(rt->CreateLinearGradientBrush(
+                D2D1::LinearGradientBrushProperties(D2D1::Point2F(sr.left, sr.top), D2D1::Point2F(sr.right, sr.bottom)),
+                gsc.Get(), &ctaBrush))) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(sr, 9.0f, 9.0f), ctaBrush.Get());
+        }
+        brush->SetColor(D2D1::ColorF(0xFFFFFF, 0.28f));
+        rt->DrawRoundedRectangle(
+            D2D1::RoundedRect(D2D1::RectF(sr.left + 0.5f, sr.top + 0.5f, sr.right - 0.5f, sr.bottom - 0.5f), 8.5f, 8.5f),
+            brush, 1.0f);
+        const wchar_t* saveTxt = chinese ? L"保存设置" : L"Save";
+        brush->SetColor(D2D1::ColorF(0xFFFFFF, 1.0f));
+        rt->DrawTextW(saveTxt, static_cast<UINT32>(wcslen(saveTxt)), st.fmtBtn.Get(), sr, brush);
+    }
+
+    // 8. Subtle Glass Window Rim Hairline
+    brush->SetColor(D2D1::ColorF(0xFFFFFF, 0.14f));
+    rt->DrawRoundedRectangle(
+        D2D1::RoundedRect(D2D1::RectF(0.5f, 0.5f, kWinW - 0.5f, kWinH - 0.5f), 8.0f, 8.0f),
+        brush, 1.0f);
+
+    if (rt->EndDraw() == D2DERR_RECREATE_TARGET) {
+        st.ReleaseTarget();
+        InvalidateRect(st.hwnd, nullptr, FALSE);
+    }
+}
+
+inline HWND g_activeTunerHwnd = nullptr;
+
+inline LRESULT CALLBACK TunerWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    auto* st = reinterpret_cast<TunerState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        st = reinterpret_cast<TunerState*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
+        if (st) st->hwnd = hwnd;
+        return TRUE;
+    }
+    if (!st) return DefWindowProcW(hwnd, message, wParam, lParam);
+
+    const float scale = (st->dpi > 1.0f ? st->dpi : 96.0f) / 96.0f;
+
+    switch (message) {
+        case WM_CREATE: {
+            const UINT curDpi = GetDpiForWindow(hwnd);
+            st->dpi = curDpi > 0 ? static_cast<float>(curDpi) : 96.0f;
+            const int targetW = static_cast<int>(std::lround(kWinW * st->dpi / 96.0f));
+            const int targetH = static_cast<int>(std::lround(kWinH * st->dpi / 96.0f));
+            RECT rc{};
+            GetWindowRect(hwnd, &rc);
+            if ((rc.right - rc.left) != targetW || (rc.bottom - rc.top) != targetH) {
+                SetWindowPos(hwnd, nullptr, 0, 0, targetW, targetH, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            BOOL useDark = TRUE;
+            DwmSetWindowAttribute(hwnd, static_cast<DWMWINDOWATTRIBUTE>(20), &useDark, sizeof(useDark));
+            const int roundPref = 2; // DWMWCP_ROUND
+            DwmSetWindowAttribute(hwnd, static_cast<DWMWINDOWATTRIBUTE>(33), &roundPref, sizeof(roundPref));
+            const COLORREF noBorder = 0xFFFFFFFE; // DWMWA_COLOR_NONE
+            DwmSetWindowAttribute(hwnd, static_cast<DWMWINDOWATTRIBUTE>(34), &noBorder, sizeof(noBorder));
+            const MARGINS margins{ 0, 0, 0, 1 };
+            DwmExtendFrameIntoClientArea(hwnd, &margins);
+            return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            BeginPaint(hwnd, &ps);
+            PaintTuner(*st);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_DPICHANGED: {
+            const float newDpi = static_cast<float>(HIWORD(wParam));
+            st->dpi = newDpi > 1.0f ? newDpi : 96.0f;
+            const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+            const int w = static_cast<int>(std::lround(kWinW * st->dpi / 96.0f));
+            const int h = static_cast<int>(std::lround(kWinH * st->dpi / 96.0f));
+            SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+            if (st->rt) {
+                st->rt->SetDpi(st->dpi, st->dpi);
+                st->rt->Resize(D2D1::SizeU(static_cast<UINT>((std::max)(1, w)), static_cast<UINT>((std::max)(1, h))));
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        case WM_NCHITTEST: {
+            POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(hwnd, &pt);
+            const float mx = static_cast<float>(pt.x) / scale;
+            const float my = static_cast<float>(pt.y) / scale;
+            if (my < 64.0f && !PtInRectF(CloseBtnRect(), mx, my)) return HTCAPTION;
+            if (my > 492.0f && st->HitButton(mx, my) < 0) return HTCAPTION;
+            return HTCLIENT;
+        }
+        case WM_SETCURSOR: {
+            if (LOWORD(lParam) == HTCLIENT) {
+                const bool interactive = (st->dragSlider >= 0 || st->hoverModeChip >= 0 ||
+                                          st->hoverScopeSeg >= 0 || st->hoverSlider >= 0 || st->hoverBtn >= 0);
+                SetCursor(LoadCursorW(nullptr, interactive ? IDC_HAND : IDC_ARROW));
+                return TRUE;
+            }
+            break;
+        }
+        case WM_MOUSEMOVE: {
+            if (!st->trackingMouse) {
+                TRACKMOUSEEVENT tme{ sizeof(tme), TME_LEAVE, hwnd, 0 };
+                if (TrackMouseEvent(&tme)) st->trackingMouse = true;
+            }
+            const float mx = static_cast<float>(GET_X_LPARAM(lParam)) / scale;
+            const float my = static_cast<float>(GET_Y_LPARAM(lParam)) / scale;
+            if (st->dragSlider >= 0) {
+                if (st->SetSliderFromX(st->dragSlider, mx)) {
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            const int nChip = st->HitModeChip(mx, my);
+            const int nSeg  = st->HitScopeSeg(mx, my);
+            const int nSld  = st->HitSliderRow(mx, my);
+            const int nBtn  = st->HitButton(mx, my);
+            if (nChip != st->hoverModeChip || nSeg != st->hoverScopeSeg ||
+                nSld != st->hoverSlider || nBtn != st->hoverBtn) {
+                st->hoverModeChip = nChip;
+                st->hoverScopeSeg = nSeg;
+                st->hoverSlider = nSld;
+                st->hoverBtn = nBtn;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+        case WM_MOUSELEAVE:
+        case WM_NCMOUSEMOVE: {
+            if (message == WM_MOUSELEAVE) st->trackingMouse = false;
+            if (st->hoverModeChip != -1 || st->hoverScopeSeg != -1 || st->hoverSlider != -1 || st->hoverBtn != -1) {
+                st->hoverModeChip = -1;
+                st->hoverScopeSeg = -1;
+                st->hoverSlider = -1;
+                st->hoverBtn = -1;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            if (message == WM_NCMOUSEMOVE) break;
+            return 0;
+        }
+        case WM_LBUTTONDOWN: {
+            SetFocus(hwnd);
+            const float mx = static_cast<float>(GET_X_LPARAM(lParam)) / scale;
+            const float my = static_cast<float>(GET_Y_LPARAM(lParam)) / scale;
+
+            const int btn = st->HitButton(mx, my);
+            if (btn >= 0) {
+                st->pressBtn = btn;
+                SetCapture(hwnd);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            const int chip = st->HitModeChip(mx, my);
+            if (chip >= 0) {
+                st->mode = kChipModes[chip];
+                st->ApplyLive();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            const int seg = st->HitScopeSeg(mx, my);
+            if (seg >= 0) {
+                st->scope = seg;
+                st->ApplyLive();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            const int sld = st->HitSliderTrackArea(mx, my);
+            if (sld >= 0) {
+                st->dragSlider = sld;
+                st->lastSlider = sld;
+                st->hoverSlider = sld;
+                SetCapture(hwnd);
+                st->SetSliderFromX(sld, mx);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            return 0;
+        }
+        case WM_LBUTTONDBLCLK: {
+            const float mx = static_cast<float>(GET_X_LPARAM(lParam)) / scale;
+            const float my = static_cast<float>(GET_Y_LPARAM(lParam)) / scale;
+            const int sld = st->HitSliderRow(mx, my);
+            if (sld >= 0) {
+                st->lastSlider = sld;
+                st->values[sld] = kSliders[sld].defV;
+                st->ApplyLive();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            return 0;
+        }
+        case WM_LBUTTONUP: {
+            const float mx = static_cast<float>(GET_X_LPARAM(lParam)) / scale;
+            const float my = static_cast<float>(GET_Y_LPARAM(lParam)) / scale;
+            if (st->dragSlider >= 0) {
+                st->dragSlider = -1;
+                if (GetCapture() == hwnd) ReleaseCapture();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            if (st->pressBtn >= 0) {
+                const int pressed = st->pressBtn;
+                st->pressBtn = -1;
+                if (GetCapture() == hwnd) ReleaseCapture();
+                const int released = st->HitButton(mx, my);
+                if (released == pressed) {
+                    if (pressed == 0 || pressed == 2) { st->CancelAndClose(); return 0; }
+                    if (pressed == 1) { st->ResetDefaults(); return 0; }
+                    if (pressed == 3) { st->SaveAndClose(); return 0; }
+                }
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            return 0;
+        }
+        case WM_CAPTURECHANGED: {
+            if (st->dragSlider >= 0 || st->pressBtn >= 0) {
+                st->dragSlider = -1;
+                st->pressBtn = -1;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+        case WM_MOUSEWHEEL: {
+            POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(hwnd, &pt);
+            const float mx = static_cast<float>(pt.x) / scale;
+            const float my = static_cast<float>(pt.y) / scale;
+            int sld = st->HitSliderRow(mx, my);
+            if (sld < 0 && my >= 275.0f && my <= 490.0f) sld = st->lastSlider;
+            if (sld >= 0 && sld < 5) {
+                st->lastSlider = sld;
+                const int delta = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? 1 : -1;
+                const int step = (wParam & (MK_SHIFT | MK_CONTROL)) ? 1 : 5;
+                const int nv = ClampInt(st->values[sld] + delta * step, kSliders[sld].minV, kSliders[sld].maxV);
+                if (nv != st->values[sld]) {
+                    st->values[sld] = nv;
+                    st->ApplyLive();
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            return 0;
+        }
+        case WM_KEYDOWN: {
+            if (wParam == VK_ESCAPE) { st->CancelAndClose(); return 0; }
+            if (wParam == VK_RETURN) { st->SaveAndClose(); return 0; }
+            if (wParam == VK_LEFT || wParam == VK_RIGHT) {
+                const int sld = ClampInt(st->lastSlider, 0, 4);
+                const int step = (GetKeyState(VK_SHIFT) < 0) ? 5 : 1;
+                const int dir = (wParam == VK_RIGHT) ? 1 : -1;
+                const int nv = ClampInt(st->values[sld] + dir * step, kSliders[sld].minV, kSliders[sld].maxV);
+                if (nv != st->values[sld]) {
+                    st->values[sld] = nv;
+                    st->ApplyLive();
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            return 0;
+        }
+        case WM_CLOSE:
+            st->CancelAndClose();
+            return 0;
+        case WM_DESTROY:
+            st->ReleaseAll();
+            st->done = true;
+            if (g_activeTunerHwnd == hwnd) g_activeTunerHwnd = nullptr;
+            return 0;
+        case WM_NCDESTROY:
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+} // namespace WeatherFxTunerUi
+
+void ShowWeatherFxSetup(HWND owner) {
+    if (Wh_GetIntValue(L"UpdateRequested", 0)) return;
+    if (WeatherFxTunerUi::g_activeTunerHwnd && IsWindow(WeatherFxTunerUi::g_activeTunerHwnd)) {
+        ShowWindow(WeatherFxTunerUi::g_activeTunerHwnd, SW_RESTORE);
+        SetForegroundWindow(WeatherFxTunerUi::g_activeTunerHwnd);
+        return;
+    }
+
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    // Unregister any leftover class before registering so Windhawk mod reloads never invoke a stale WndProc
+    UnregisterClassW(WeatherFxTunerUi::kWndClassName, hInst);
+    HBRUSH bgBrush = CreateSolidBrush(RGB(19, 22, 30));
+    WNDCLASSEXW wc{ sizeof(wc) };
+    wc.style = CS_DBLCLKS;
+    wc.lpfnWndProc = WeatherFxTunerUi::TunerWndProc;
+    wc.hInstance = hInst;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = bgBrush;
+    wc.lpszClassName = WeatherFxTunerUi::kWndClassName;
+    const bool classRegistered = (RegisterClassExW(&wc) != 0);
+    if (!classRegistered && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        if (bgBrush) DeleteObject(bgBrush);
+        return;
+    }
+
+    WeatherFxTunerUi::TunerState state;
+    state.chinese = UiChinese();
+    state.mode = state.origMode = g_weatherFxOverride.load(std::memory_order_relaxed);
+    state.scope = state.origScope = ClampInt(g_weatherFxScope.load(std::memory_order_relaxed), 0, 2);
+    state.values[0] = state.origValues[0] = ClampInt(g_weatherFxIntensityPct.load(std::memory_order_relaxed), 0, 150);
+    state.values[1] = state.origValues[1] = ClampInt(g_weatherFxSpeedPct.load(std::memory_order_relaxed), 20, 250);
+    state.values[2] = state.origValues[2] = ClampInt(g_weatherFxScalePct.load(std::memory_order_relaxed), 50, 200);
+    state.values[3] = state.origValues[3] = ClampInt(g_weatherFxFogPct.load(std::memory_order_relaxed), 0, 100);
+    state.values[4] = state.origValues[4] = ClampInt(g_weatherFxRefractPct.load(std::memory_order_relaxed), 0, 200);
+
+    HMONITOR mon = MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{ sizeof(mi) };
+    GetMonitorInfoW(mon, &mi);
+    const UINT monDpi = owner ? GetDpiForWindow(owner) : 96;
+    const float scale = (monDpi > 0 ? static_cast<float>(monDpi) : 96.0f) / 96.0f;
+    const int winW = static_cast<int>(std::lround(WeatherFxTunerUi::kWinW * scale));
+    const int winH = static_cast<int>(std::lround(WeatherFxTunerUi::kWinH * scale));
+    const int workW = mi.rcWork.right - mi.rcWork.left;
+    const int workH = mi.rcWork.bottom - mi.rcWork.top;
+    // Place comfortably below top-center so the live Dynamic Island preview above is never occluded
+    int posX = mi.rcWork.left + (workW - winW) / 2;
+    int posY = mi.rcWork.top + (std::max)(static_cast<int>(210 * scale), (workH - winH) / 2);
+    if (posY + winH > mi.rcWork.bottom - 12) posY = (std::max)(mi.rcWork.top + 12, mi.rcWork.bottom - winH - 12);
+
+    HWND hwnd = CreateWindowExW(
+        WS_EX_TOPMOST,
+        WeatherFxTunerUi::kWndClassName,
+        UiText(L"Weather Glass FX · Live Tuner", L"天气液态玻璃动效 · 实时调节"),
+        WS_POPUP | WS_CLIPCHILDREN,
+        posX, posY, winW, winH,
+        owner, nullptr, hInst, &state);
+    if (!hwnd) {
+        if (classRegistered) UnregisterClassW(WeatherFxTunerUi::kWndClassName, hInst);
+        if (bgBrush) DeleteObject(bgBrush);
+        return;
+    }
+
+    WeatherFxTunerUi::g_activeTunerHwnd = hwnd;
+    g_importantDaysOpen = true;
+    g_weatherFxTuningOpen.store(true, std::memory_order_relaxed);
+    g_layoutDirty = true;
+
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    SetForegroundWindow(hwnd);
+
+    MSG msg{};
+    while (!state.done && IsWindow(hwnd)) {
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                state.CancelAndClose();
+                PostQuitMessage(static_cast<int>(msg.wParam));
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+            if (state.done || !IsWindow(hwnd)) break;
+        }
+        if (state.done || !IsWindow(hwnd)) break;
+        if (g_stopEvent) {
+            const DWORD waitRes = MsgWaitForMultipleObjectsEx(1, &g_stopEvent, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            if (waitRes == WAIT_OBJECT_0) {
+                state.CancelAndClose();
+                break;
+            }
+        } else {
+            WaitMessage();
+        }
+    }
+
+    if (IsWindow(hwnd)) DestroyWindow(hwnd);
+    if (!state.saved) state.Rollback();
+    state.ReleaseAll();
+    if (classRegistered) UnregisterClassW(WeatherFxTunerUi::kWndClassName, hInst);
+    if (bgBrush) DeleteObject(bgBrush);
+    WeatherFxTunerUi::g_activeTunerHwnd = nullptr;
+    g_weatherFxTuningOpen.store(false, std::memory_order_relaxed);
+    g_importantDaysOpen = false;
+    g_layoutDirty = true;
+}
+
 void ShowContextMenu(HWND hwnd, POINT screenPoint) {
     if (Wh_GetIntValue(L"UpdateRequested", 0)) return;
     bool timerActive = false;
@@ -13912,65 +15938,127 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
     }
 
     HMENU menu = CreatePopupMenu();
-    {
+    const auto menuSettings = GetSettingsCopy();
+
+    // ── Section 1: Core Modules (NBA / Media & Lyrics / Weather FX) ──
+    if (menuSettings.nbaScores) {
         std::wstring schedule;
         {
             std::lock_guard lock(g_stateMutex);
             schedule = g_state.nbaSchedule;
             if (schedule == L"NBA：赛程待查询") schedule = UiText(L"NBA: schedule pending", L"NBA：赛程待查询");
         }
-        const auto nbaSettings = GetSettingsCopy();
-        if (nbaSettings.nbaScores) {
-            AppendMenuW(menu, MF_STRING, 47, Wh_GetIntValue(L"NBAShowClock", 0)
-                ? UiText(L"Show NBA scores", L"切换到 NBA 比分") : UiText(L"Show clock", L"切换到时间"));
-            AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, schedule.c_str());
-            const auto favorites = UiText(L"Favorites: ", L"主队：") + NbaFavoritesLabel(nbaSettings.nbaTeam) + UiText(L" (priority order)", L"（优先顺序）");
-            AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, favorites.c_str());
-            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        }
+        HMENU nbaMenu = CreatePopupMenu();
+        AppendMenuW(nbaMenu, MF_STRING, 47, Wh_GetIntValue(L"NBAShowClock", 0)
+            ? UiText(L"Show NBA scores", L"切换到 NBA 比分") : UiText(L"Show clock", L"切换到时间"));
+        AppendMenuW(nbaMenu, MF_STRING, 48, UiText(L"NBA favorites…", L"NBA 主队设置…"));
+        AppendMenuW(nbaMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(nbaMenu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, schedule.c_str());
+        const auto favorites = UiText(L"Favorites: ", L"主队：") + NbaFavoritesLabel(menuSettings.nbaTeam);
+        AppendMenuW(nbaMenu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, favorites.c_str());
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(nbaMenu), UiText(L"NBA Scores", L"NBA 比分"));
+    } else {
+        AppendMenuW(menu, MF_STRING, 48, UiText(L"NBA favorites…", L"NBA 主队设置…"));
     }
-    const auto sourceMenuItems = AppendMediaSources(menu);
-    AppendLyricsMenu(menu);
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, 1, UiText(L"Dismiss", L"关闭"));
-    AppendMenuW(menu, MF_STRING, 46, UiText(L"Important dates…", L"重要日子…"));
-    AppendMenuW(menu, MF_STRING, 48, UiText(L"NBA favorites…", L"NBA 主队设置…"));
 
-    HMENU timerMenu = CreatePopupMenu();
-    AppendMenuW(timerMenu, MF_STRING, 30, UiText(L"Start 25 min Focus", L"开始 25 分钟专注"));
-    AppendMenuW(timerMenu, MF_STRING, 31, UiText(L"Start 50 min Focus", L"开始 50 分钟专注"));
-    AppendMenuW(timerMenu, MF_STRING, 32, UiText(L"Start 5 min Break", L"开始 5 分钟休息"));
-    if (timerActive) {
-        AppendMenuW(timerMenu, MF_STRING, 33, timerRunning ? UiText(L"Pause Timer", L"暂停计时") : UiText(L"Resume Timer", L"继续计时"));
-        AppendMenuW(timerMenu, MF_STRING, 34, UiText(L"Stop Timer", L"结束计时"));
+    std::vector<MediaSourceInfo> sourceMenuItems;
+    {
+        HMENU mediaMenu = CreatePopupMenu();
+        sourceMenuItems = AppendMediaSources(mediaMenu);
+        AppendMenuW(mediaMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(mediaMenu, MF_STRING | (menuSettings.collapsedLyrics ? MF_CHECKED : 0), 2001,
+                    UiText(L"Show lyrics when collapsed", L"收起时显示歌词"));
+        AppendMenuW(mediaMenu, MF_STRING | (menuSettings.lyricsPinnedFirst ? MF_CHECKED : 0), 2002,
+                    UiText(L"Pin lyrics page first", L"歌词页置顶"));
+        HMENU syncMenu = CreatePopupMenu();
+        const bool bt = g_defaultOutputIsBluetooth.load();
+        const auto offsetLabel = std::wstring(bt ? UiText(L"Bluetooth offset: ", L"蓝牙偏移：")
+                                                 : UiText(L"Speaker / wired offset: ", L"扬声器／有线偏移："))
+            + std::to_wstring(bt ? g_lyricsEffectiveOffsetBtMs.load() : g_lyricsEffectiveOffsetMs.load()) + L" ms";
+        AppendMenuW(syncMenu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, offsetLabel.c_str());
+        AppendMenuW(syncMenu, MF_SEPARATOR, 0, nullptr);
+        const wchar_t* steps[] = {
+            UiText(L"10 ms earlier", L"提前 10 ms"), UiText(L"50 ms earlier", L"提前 50 ms"),
+            UiText(L"250 ms earlier", L"提前 250 ms"), UiText(L"10 ms later", L"延后 10 ms"),
+            UiText(L"50 ms later", L"延后 50 ms"), UiText(L"250 ms later", L"延后 250 ms"),
+            UiText(L"Reset current device adjustment", L"重置当前设备微调")
+        };
+        for (int i = 0; i < 7; ++i) AppendMenuW(syncMenu, MF_STRING, 2010 + i, steps[i]);
+        AppendMenuW(mediaMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(syncMenu), UiText(L"Lyrics sync", L"歌词同步"));
+        AppendMenuW(mediaMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(mediaMenu, MF_STRING, 2004, UiText(L"Clear lyrics cache", L"清除歌词缓存"));
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(mediaMenu), UiText(L"Media & Lyrics", L"媒体与歌词"));
     }
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(timerMenu), UiText(L"Focus Timer", L"专注计时器"));
-    if (g_settings.fileTrayModule) {
+
+    {
+        const int fxMode = g_weatherFxOverride.load(std::memory_order_relaxed);
+        HMENU weatherFxMenu = CreatePopupMenu();
+        AppendMenuW(weatherFxMenu, MF_STRING, 2048, UiText(L"Customize parameters…", L"自定义参数调节…"));
+        AppendMenuW(weatherFxMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(weatherFxMenu, MF_STRING | (fxMode == 0 ? MF_CHECKED : 0), 2040, UiText(L"Follow live weather", L"跟随实时天气"));
+        AppendMenuW(weatherFxMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(weatherFxMenu, MF_STRING | (fxMode == 1 ? MF_CHECKED : 0), 2041, UiText(L"Preview: Rain (Glass Drops)", L"预览：下雨（玻璃水珠）"));
+        AppendMenuW(weatherFxMenu, MF_STRING | (fxMode == 2 ? MF_CHECKED : 0), 2042, UiText(L"Preview: Thunderstorm", L"预览：雷暴闪电"));
+        AppendMenuW(weatherFxMenu, MF_STRING | (fxMode == 3 ? MF_CHECKED : 0), 2043, UiText(L"Preview: Snow", L"预览：下雪"));
+        AppendMenuW(weatherFxMenu, MF_STRING | (fxMode == 4 ? MF_CHECKED : 0), 2044, UiText(L"Preview: Cloudy / Fog", L"预览：多云 / 薄雾"));
+        AppendMenuW(weatherFxMenu, MF_STRING | (fxMode == 5 ? MF_CHECKED : 0), 2045, UiText(L"Preview: Clear Day (Sun Glow)", L"预览：晴天光晕"));
+        AppendMenuW(weatherFxMenu, MF_STRING | (fxMode == 6 ? MF_CHECKED : 0), 2046, UiText(L"Preview: Clear Night (Stars)", L"预览：晴夜星空"));
+        AppendMenuW(weatherFxMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(weatherFxMenu, MF_STRING | (fxMode < 0 ? MF_CHECKED : 0), 2047, UiText(L"Off", L"关闭天气动效"));
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(weatherFxMenu), UiText(L"Weather glass FX", L"天气动效预览"));
+    }
+
+    // ── Section 2: Productivity Tools ──
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    {
+        HMENU timerMenu = CreatePopupMenu();
+        AppendMenuW(timerMenu, MF_STRING, 30, UiText(L"Start 25 min Focus", L"开始 25 分钟专注"));
+        AppendMenuW(timerMenu, MF_STRING, 31, UiText(L"Start 50 min Focus", L"开始 50 分钟专注"));
+        AppendMenuW(timerMenu, MF_STRING, 32, UiText(L"Start 5 min Break", L"开始 5 分钟休息"));
+        if (timerActive) {
+            AppendMenuW(timerMenu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(timerMenu, MF_STRING, 33, timerRunning ? UiText(L"Pause Timer", L"暂停计时") : UiText(L"Resume Timer", L"继续计时"));
+            AppendMenuW(timerMenu, MF_STRING, 34, UiText(L"Stop Timer", L"结束计时"));
+        }
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(timerMenu), UiText(L"Focus Timer", L"专注计时器"));
+    }
+    if (menuSettings.quickLookup) {
+        AppendMenuW(menu, MF_STRING, 2020, UiText(L"Quick lookup…", L"快捷查词…"));
+    }
+    AppendMenuW(menu, MF_STRING, 46, UiText(L"Important dates…", L"重要日子…"));
+    if (menuSettings.fileTrayModule) {
         size_t trayCount = 0;
         {
             std::lock_guard lock(g_stateMutex);
             trayCount = g_state.fileTrayItems.size();
         }
-        std::wstring label = std::wstring(Loc(L"File Tray")) + L": ";
-        if (trayCount == 0) {
-            label += L"—";
-            AppendMenuW(menu, MF_STRING | MF_GRAYED | MF_DISABLED, 41, label.c_str());
-        } else {
-            label += UiText(L"Clear ", L"清空 ") + std::to_wstring(trayCount);
+        if (trayCount > 0) {
+            std::wstring label = std::wstring(Loc(L"File Tray")) + L" · " + UiText(L"Clear ", L"清空 ") + std::to_wstring(trayCount);
             AppendMenuW(menu, MF_STRING, 41, label.c_str());
         }
     }
-    AppendMenuW(menu, MF_STRING, 2, UiText(L"Pin expanded", L"固定展开"));
-    AppendMenuW(menu, MF_STRING, 3, Wh_GetIntValue(L"GameOverlayPinned", 0) ? UiText(L"Hide game overlay", L"隐藏游戏悬浮窗") : UiText(L"Show game overlay", L"显示游戏悬浮窗"));
-    const int activeExpandOnHover = Wh_GetIntValue(L"ExpandOnHoverOverride", -1) >= 0
-                          ? Wh_GetIntValue(L"ExpandOnHoverOverride", 0)
-                          : (Wh_GetIntSetting(L"Behavior.ExpandOnHover") != 0);
-    AppendMenuW(menu, MF_STRING, 11, activeExpandOnHover ? UiText(L"Expand on Click", L"点击展开") : UiText(L"Expand on Hover", L"悬停展开"));
-    AppendMenuW(menu, MF_STRING | (GetSettingsCopy().ambientAuroraGlow ? MF_CHECKED : 0),
-                2030, UiText(L"Album ambient glow", L"专辑氛围背光"));
+
+    // ── Section 3: Appearance & Behavior Toggles ──
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, 49, g_updateAvailable.load() ? UiText(L"Install available update…", L"安装可用更新…") : UiText(L"Check for updates…", L"检查更新…"));
+    {
+        HMENU displayMenu = CreatePopupMenu();
+        const bool pinnedExpanded = Wh_GetIntValue(L"PinnedExpanded", 0) != 0;
+        const bool gamePinned = Wh_GetIntValue(L"GameOverlayPinned", 0) != 0;
+        const int activeExpandOnHover = Wh_GetIntValue(L"ExpandOnHoverOverride", -1) >= 0
+                              ? Wh_GetIntValue(L"ExpandOnHoverOverride", 0)
+                              : (Wh_GetIntSetting(L"Behavior.ExpandOnHover") != 0);
+        AppendMenuW(displayMenu, MF_STRING | (pinnedExpanded ? MF_CHECKED : 0), 2, UiText(L"Pin expanded", L"固定展开"));
+        AppendMenuW(displayMenu, MF_STRING | (activeExpandOnHover ? MF_CHECKED : 0), 11, UiText(L"Expand on Hover", L"悬停自动展开"));
+        AppendMenuW(displayMenu, MF_STRING | (gamePinned ? MF_CHECKED : 0), 3, UiText(L"Game overlay", L"游戏性能悬浮窗"));
+        AppendMenuW(displayMenu, MF_STRING | (menuSettings.ambientAuroraGlow ? MF_CHECKED : 0), 2030, UiText(L"Album ambient glow", L"专辑氛围背光"));
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(displayMenu), UiText(L"Display & Interaction", L"显示与交互"));
+    }
+
+    // ── Section 4: System & Dismiss ──
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 9, UiText(L"Open Windhawk settings", L"打开 Windhawk 设置"));
+    AppendMenuW(menu, MF_STRING, 49, g_updateAvailable.load() ? UiText(L"Install available update…", L"安装可用更新…") : UiText(L"Check for updates…", L"检查更新…"));
+    AppendMenuW(menu, MF_STRING, 1, UiText(L"Dismiss", L"关闭当前状态"));
 
     SetForegroundWindow(hwnd);
     const UINT cmd = TrackGlassMenu(menu, screenPoint, hwnd);
@@ -14057,6 +16145,18 @@ void ShowContextMenu(HWND hwnd, POINT screenPoint) {
             g_layoutDirty = true;
             break;
         }
+        case 2040: case 2041: case 2042: case 2043:
+        case 2044: case 2045: case 2046: case 2047: {
+            const int newMode = (cmd == 2047) ? -1 : static_cast<int>(cmd - 2040);
+            Wh_SetIntValue(L"WeatherGlassFxMode", newMode);
+            g_weatherFxOverride.store(newMode, std::memory_order_relaxed);
+            g_layoutDirty = true;
+            TriggerNudge();
+            break;
+        }
+        case 2048:
+            ShowWeatherFxSetup(hwnd);
+            break;
         case 30:
             StartFocusTimer(25, false);
             break;
@@ -15168,6 +17268,31 @@ class Renderer {
         } else if (!settings.w11Style) {
             radius = std::min(radius, 44.0f * settings.sizeScale);
         }
+        if (!activity.companion) {
+            const int fxScope = g_weatherFxScope.load(std::memory_order_relaxed);
+            const bool islandExpanded = (rect.bottom - rect.top) > 62.0f * settings.sizeScale;
+            g_weatherFxIsExpanded.store(islandExpanded, std::memory_order_relaxed);
+            const bool scopeOk = (fxScope == 0)
+                || (fxScope == 1 && islandExpanded)
+                || (fxScope == 2 && islandExpanded && CurrentDashboardTab(settings) == 2);
+            g_weatherFxScopeAllowed.store(scopeOk, std::memory_order_relaxed);
+
+            int liveWeatherFx = 0;
+            if (state.weather.hasData && state.weather.weatherCode != 0) {
+                const bool isNight = ChinaWeatherNight(ChinaWeatherClock().wHour);
+                switch (WeatherVisualFromCode(state.weather.weatherCode)) {
+                    case WeatherVisual::Rain: liveWeatherFx = 1; break;
+                    case WeatherVisual::Storm: liveWeatherFx = 2; break;
+                    case WeatherVisual::Snow: liveWeatherFx = 3; break;
+                    case WeatherVisual::PartlyCloudy:
+                    case WeatherVisual::Cloudy:
+                    case WeatherVisual::Fog: liveWeatherFx = 4; break;
+                    case WeatherVisual::Clear: liveWeatherFx = isNight ? 6 : 5; break;
+                    default: liveWeatherFx = 0; break;
+                }
+            }
+            g_weatherFxLiveMode.store(liveWeatherFx, std::memory_order_relaxed);
+        }
         nativeGlass_.Sync(rect.left, rect.top, rect.right, rect.bottom, radius,
             settings.sizeScale, settings.pillOpacity);
         DrawSoftShadow(rect, radius);
@@ -16135,25 +18260,261 @@ class Renderer {
     void DrawWeatherIcon(D2D1_POINT_2F center, float size, WeatherVisual visual,
                          ID2D1Brush* strong, ID2D1Brush* soft, bool night = false,
                          float temperature = NAN, bool fahrenheit = false) {
-        const auto emoji = WeatherEmoji(visual, night, temperature, fahrenheit);
-        const auto count = std::count_if(emoji.begin(), emoji.end(), [](wchar_t c) {
-            return c != 0xFE0F && (c < 0xDC00 || c > 0xDFFF);
-        });
-        const float fontSize = size / static_cast<float>(std::max<ptrdiff_t>(1, count));
-        if (!weatherEmojiFormat_ || weatherEmojiFontSize_ != fontSize) {
-            weatherEmojiFormat_.Reset();
-            if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI Emoji", nullptr,
-                    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                    fontSize, L"", &weatherEmojiFormat_))) return;
-            weatherEmojiFontSize_ = fontSize;
-            weatherEmojiFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            weatherEmojiFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            weatherEmojiFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        (void)strong; (void)soft; (void)temperature; (void)fahrenheit;
+        if (!target_ || !d2dFactory_) return;
+        const float op = settingsOpacity_;
+        const float s = size;
+
+        ComPtr<ID2D1StrokeStyle> roundStroke;
+        D2D1_STROKE_STYLE_PROPERTIES ssp = D2D1::StrokeStyleProperties(
+            D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND);
+        d2dFactory_->CreateStrokeStyle(ssp, nullptr, 0, &roundStroke);
+
+        auto makeLinGrad = [&](D2D1_POINT_2F p0, D2D1_POINT_2F p1, D2D1_COLOR_F c0, D2D1_COLOR_F c1) {
+            ComPtr<ID2D1LinearGradientBrush> brush;
+            D2D1_GRADIENT_STOP stops[2] = {
+                { 0.0f, WithAlpha(c0, c0.a * op) },
+                { 1.0f, WithAlpha(c1, c1.a * op) }
+            };
+            ComPtr<ID2D1GradientStopCollection> coll;
+            if (SUCCEEDED(target_->CreateGradientStopCollection(stops, 2, &coll)) && coll) {
+                target_->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties(p0, p1), coll.Get(), &brush);
+            }
+            return brush;
+        };
+
+        auto drawSun = [&](float cx, float cy, float r, bool withRays) {
+            // Soft outer warm halo
+            D2D1_GRADIENT_STOP hStops[2] = {
+                { 0.0f, D2D1::ColorF(0xFFD54F, 0.36f * op) },
+                { 1.0f, D2D1::ColorF(0xFF9F1C, 0.0f) }
+            };
+            ComPtr<ID2D1GradientStopCollection> hColl;
+            ComPtr<ID2D1RadialGradientBrush> haloBrush;
+            if (SUCCEEDED(target_->CreateGradientStopCollection(hStops, 2, &hColl)) && hColl &&
+                SUCCEEDED(target_->CreateRadialGradientBrush(
+                    D2D1::RadialGradientBrushProperties(D2D1::Point2F(cx, cy), D2D1::Point2F(0, 0), r * 1.9f, r * 1.9f),
+                    hColl.Get(), &haloBrush)) && haloBrush) {
+                target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r * 1.9f, r * 1.9f), haloBrush.Get());
+            }
+            if (withRays) {
+                ComPtr<ID2D1SolidColorBrush> rayBrush;
+                if (SUCCEEDED(target_->CreateSolidColorBrush(D2D1::ColorF(0xFFE07D, 0.82f * op), &rayBrush)) && rayBrush) {
+                    const float innerR = r * 1.32f;
+                    const float outerR = r * 1.68f;
+                    for (int i = 0; i < 8; ++i) {
+                        const float ang = i * 0.78539816f;
+                        const float ca = std::cos(ang), sa = std::sin(ang);
+                        target_->DrawLine(D2D1::Point2F(cx + ca * innerR, cy + sa * innerR),
+                                          D2D1::Point2F(cx + ca * outerR, cy + sa * outerR),
+                                          rayBrush.Get(), std::max(1.4f, r * 0.17f), roundStroke.Get());
+                    }
+                }
+            }
+            auto sunBrush = makeLinGrad(D2D1::Point2F(cx - r * 0.5f, cy - r), D2D1::Point2F(cx + r * 0.5f, cy + r),
+                                        D2D1::ColorF(0xFFF099, 1.0f), D2D1::ColorF(0xFF9500, 1.0f));
+            if (sunBrush) {
+                target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), sunBrush.Get());
+            }
+        };
+
+        auto drawMoon = [&](float cx, float cy, float r, bool withStars) {
+            ComPtr<ID2D1PathGeometry> moonGeom;
+            if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&moonGeom)) && moonGeom) {
+                ComPtr<ID2D1GeometrySink> sink;
+                if (SUCCEEDED(moonGeom->Open(&sink)) && sink) {
+                    // Elegant crescent moon formed by two arcs
+                    const D2D1_POINT_2F pTop = D2D1::Point2F(cx + r * 0.18f, cy - r * 0.96f);
+                    const D2D1_POINT_2F pBot = D2D1::Point2F(cx + r * 0.88f, cy + r * 0.45f);
+                    sink->BeginFigure(pTop, D2D1_FIGURE_BEGIN_FILLED);
+                    sink->AddArc(D2D1::ArcSegment(pBot, D2D1::SizeF(r, r), 0.0f,
+                        D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
+                    sink->AddArc(D2D1::ArcSegment(pTop, D2D1::SizeF(r * 0.82f, r * 0.82f), 0.0f,
+                        D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                    sink->Close();
+                }
+                auto moonBrush = makeLinGrad(D2D1::Point2F(cx - r, cy - r), D2D1::Point2F(cx + r, cy + r),
+                                             D2D1::ColorF(0xF8FAFC, 0.98f), D2D1::ColorF(0x93C5FD, 0.96f));
+                if (moonBrush) target_->FillGeometry(moonGeom.Get(), moonBrush.Get());
+            }
+            if (withStars) {
+                ComPtr<ID2D1SolidColorBrush> starBrush;
+                if (SUCCEEDED(target_->CreateSolidColorBrush(D2D1::ColorF(0xFEF3C7, 0.90f * op), &starBrush)) && starBrush) {
+                    auto spark = [&](float sx, float sy, float sr) {
+                        target_->DrawLine(D2D1::Point2F(sx - sr, sy), D2D1::Point2F(sx + sr, sy),
+                                          starBrush.Get(), std::max(1.0f, sr * 0.36f), roundStroke.Get());
+                        target_->DrawLine(D2D1::Point2F(sx, sy - sr), D2D1::Point2F(sx, sy + sr),
+                                          starBrush.Get(), std::max(1.0f, sr * 0.36f), roundStroke.Get());
+                    };
+                    spark(cx + r * 0.65f, cy - r * 0.58f, r * 0.24f);
+                    spark(cx + r * 0.98f, cy - r * 0.12f, r * 0.16f);
+                }
+            }
+        };
+
+        auto drawCloud = [&](float cx, float cy, float w, bool stormy, float alphaMul = 1.0f) {
+            const float h = w * 0.56f;
+            const D2D1_COLOR_F topCol = stormy ? D2D1::ColorF(0xDCE4F0, 0.95f * alphaMul)
+                                               : D2D1::ColorF(0xFFFFFF, 0.97f * alphaMul);
+            const D2D1_COLOR_F botCol = stormy ? D2D1::ColorF(0x8EA2BC, 0.94f * alphaMul)
+                                               : D2D1::ColorF(0xCFDCEB, 0.93f * alphaMul);
+            auto cBrush = makeLinGrad(D2D1::Point2F(cx, cy - h * 0.65f), D2D1::Point2F(cx, cy + h * 0.50f), topCol, botCol);
+            if (!cBrush) return;
+
+            // Soft drop shadow beneath cloud base for Apple-style depth
+            ComPtr<ID2D1SolidColorBrush> shBrush;
+            if (SUCCEEDED(target_->CreateSolidColorBrush(D2D1::ColorF(0x0B1220, 0.20f * alphaMul * op), &shBrush)) && shBrush) {
+                target_->FillRoundedRectangle(D2D1::RoundedRect(
+                    D2D1::RectF(cx - w * 0.44f, cy + h * 0.12f, cx + w * 0.44f, cy + h * 0.48f),
+                    h * 0.22f, h * 0.22f), shBrush.Get());
+            }
+
+            // Plump 3-puff Apple cloud silhouette
+            const float rLeft = w * 0.22f;
+            const float rMid  = w * 0.29f;
+            const float rRight = w * 0.20f;
+            target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx - w * 0.23f, cy + h * 0.08f), rLeft, rLeft), cBrush.Get());
+            target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx - w * 0.02f, cy - h * 0.12f), rMid, rMid), cBrush.Get());
+            target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + w * 0.24f, cy + h * 0.10f), rRight, rRight), cBrush.Get());
+            target_->FillRoundedRectangle(D2D1::RoundedRect(
+                D2D1::RectF(cx - w * 0.45f, cy + h * 0.04f, cx + w * 0.44f, cy + h * 0.46f),
+                h * 0.22f, h * 0.22f), cBrush.Get());
+        };
+
+        switch (visual) {
+            case WeatherVisual::Clear:
+                if (night) drawMoon(center.x - s * 0.04f, center.y, s * 0.36f, true);
+                else drawSun(center.x, center.y, s * 0.25f, true);
+                break;
+
+            case WeatherVisual::PartlyCloudy:
+                if (night) drawMoon(center.x + s * 0.14f, center.y - s * 0.12f, s * 0.24f, true);
+                else drawSun(center.x + s * 0.16f, center.y - s * 0.14f, s * 0.19f, true);
+                drawCloud(center.x - s * 0.05f, center.y + s * 0.10f, s * 0.78f, false);
+                break;
+
+            case WeatherVisual::Cloudy:
+                drawCloud(center.x + s * 0.12f, center.y - s * 0.10f, s * 0.62f, true, 0.78f);
+                drawCloud(center.x - s * 0.06f, center.y + s * 0.08f, s * 0.80f, false);
+                break;
+
+            case WeatherVisual::Fog: {
+                // Airy translucent cloud + 3 sleek horizontal mist ribbons
+                drawCloud(center.x, center.y - s * 0.14f, s * 0.72f, false, 0.82f);
+                const float yBase = center.y + s * 0.16f;
+                const float gap = s * 0.115f;
+                const float strokeW = std::max(1.8f, s * 0.062f);
+                const float lens[3] = { 0.68f, 0.56f, 0.44f };
+                const float xOff[3] = { -0.02f, 0.06f, -0.05f };
+                const float alphas[3] = { 0.82f, 0.68f, 0.52f };
+                for (int i = 0; i < 3; ++i) {
+                    const float x0 = center.x + (xOff[i] - lens[i] * 0.5f) * s;
+                    const float x1 = center.x + (xOff[i] + lens[i] * 0.5f) * s;
+                    const float yy = yBase + i * gap;
+                    auto fogBrush = makeLinGrad(D2D1::Point2F(x0, yy), D2D1::Point2F(x1, yy),
+                        D2D1::ColorF(0xE2E8F0, alphas[i] * 0.45f), D2D1::ColorF(0xF8FAFC, alphas[i]));
+                    if (fogBrush) {
+                        target_->DrawLine(D2D1::Point2F(x0, yy), D2D1::Point2F(x1, yy),
+                                          fogBrush.Get(), strokeW, roundStroke.Get());
+                    }
+                }
+                break;
+            }
+
+            case WeatherVisual::Rain: {
+                drawCloud(center.x, center.y - s * 0.11f, s * 0.78f, true);
+                auto dropBrush = makeLinGrad(D2D1::Point2F(center.x, center.y + s * 0.12f),
+                                             D2D1::Point2F(center.x, center.y + s * 0.42f),
+                                             D2D1::ColorF(0x93C5FD, 0.96f), D2D1::ColorF(0x38BDF8, 0.98f));
+                if (dropBrush) {
+                    const float dx[3] = { -0.22f, 0.0f, 0.22f };
+                    const float dy[3] = { 0.0f, 0.06f, 0.0f };
+                    const float sw = std::max(1.8f, s * 0.065f);
+                    for (int i = 0; i < 3; ++i) {
+                        const float x0 = center.x + dx[i] * s;
+                        const float y0 = center.y + (0.19f + dy[i]) * s;
+                        target_->DrawLine(D2D1::Point2F(x0, y0), D2D1::Point2F(x0 - s * 0.06f, y0 + s * 0.16f),
+                                          dropBrush.Get(), sw, roundStroke.Get());
+                    }
+                }
+                break;
+            }
+
+            case WeatherVisual::Storm: {
+                drawCloud(center.x, center.y - s * 0.13f, s * 0.78f, true);
+                // Bright golden lightning bolt
+                ComPtr<ID2D1PathGeometry> boltGeom;
+                if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&boltGeom)) && boltGeom) {
+                    ComPtr<ID2D1GeometrySink> sink;
+                    if (SUCCEEDED(boltGeom->Open(&sink)) && sink) {
+                        const float bx = center.x + s * 0.01f;
+                        const float by = center.y + s * 0.07f;
+                        sink->BeginFigure(D2D1::Point2F(bx + s * 0.05f, by), D2D1_FIGURE_BEGIN_FILLED);
+                        sink->AddLine(D2D1::Point2F(bx - s * 0.11f, by + s * 0.18f));
+                        sink->AddLine(D2D1::Point2F(bx - s * 0.01f, by + s * 0.18f));
+                        sink->AddLine(D2D1::Point2F(bx - s * 0.08f, by + s * 0.36f));
+                        sink->AddLine(D2D1::Point2F(bx + s * 0.11f, by + s * 0.14f));
+                        sink->AddLine(D2D1::Point2F(bx + s * 0.01f, by + s * 0.14f));
+                        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                        sink->Close();
+                    }
+                    auto boltBrush = makeLinGrad(D2D1::Point2F(center.x, center.y + s * 0.06f),
+                                                 D2D1::Point2F(center.x, center.y + s * 0.42f),
+                                                 D2D1::ColorF(0xFEF08A, 1.0f), D2D1::ColorF(0xF59E0B, 1.0f));
+                    if (boltBrush) target_->FillGeometry(boltGeom.Get(), boltBrush.Get());
+                }
+                // Flanking rain droplets
+                ComPtr<ID2D1SolidColorBrush> rBrush;
+                if (SUCCEEDED(target_->CreateSolidColorBrush(D2D1::ColorF(0x60A5FA, 0.90f * op), &rBrush)) && rBrush) {
+                    const float sw = std::max(1.5f, s * 0.055f);
+                    target_->DrawLine(D2D1::Point2F(center.x - s * 0.22f, center.y + s * 0.18f),
+                                      D2D1::Point2F(center.x - s * 0.27f, center.y + s * 0.30f), rBrush.Get(), sw, roundStroke.Get());
+                    target_->DrawLine(D2D1::Point2F(center.x + s * 0.23f, center.y + s * 0.18f),
+                                      D2D1::Point2F(center.x + s * 0.18f, center.y + s * 0.30f), rBrush.Get(), sw, roundStroke.Get());
+                }
+                break;
+            }
+
+            case WeatherVisual::Snow: {
+                drawCloud(center.x, center.y - s * 0.12f, s * 0.78f, false);
+                ComPtr<ID2D1SolidColorBrush> snowBrush;
+                if (SUCCEEDED(target_->CreateSolidColorBrush(D2D1::ColorF(0xE0F2FE, 0.95f * op), &snowBrush)) && snowBrush) {
+                    const float fx[3] = { -0.22f, 0.0f, 0.22f };
+                    const float fy[3] = { 0.25f, 0.32f, 0.25f };
+                    const float fr = s * 0.075f;
+                    const float sw = std::max(1.2f, s * 0.036f);
+                    for (int i = 0; i < 3; ++i) {
+                        const float x = center.x + fx[i] * s;
+                        const float y = center.y + fy[i] * s;
+                        for (int k = 0; k < 3; ++k) {
+                            const float ang = k * 1.04719755f;
+                            const float ca = std::cos(ang) * fr, sa = std::sin(ang) * fr;
+                            target_->DrawLine(D2D1::Point2F(x - ca, y - sa), D2D1::Point2F(x + ca, y + sa),
+                                              snowBrush.Get(), sw, roundStroke.Get());
+                        }
+                    }
+                }
+                break;
+            }
+
+            default: {
+                // Clean minimalist thermometer fallback
+                ComPtr<ID2D1SolidColorBrush> bodyBrush, mercBrush;
+                target_->CreateSolidColorBrush(D2D1::ColorF(0xE2E8F0, 0.90f * op), &bodyBrush);
+                target_->CreateSolidColorBrush(D2D1::ColorF(0xFB7185, 0.95f * op), &mercBrush);
+                if (bodyBrush && mercBrush) {
+                    const float sw = std::max(1.5f, s * 0.055f);
+                    target_->DrawRoundedRectangle(D2D1::RoundedRect(
+                        D2D1::RectF(center.x - s * 0.08f, center.y - s * 0.34f, center.x + s * 0.08f, center.y + s * 0.14f),
+                        s * 0.08f, s * 0.08f), bodyBrush.Get(), sw);
+                    target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(center.x, center.y + s * 0.22f), s * 0.14f, s * 0.14f), mercBrush.Get());
+                    target_->DrawLine(D2D1::Point2F(center.x, center.y - s * 0.08f), D2D1::Point2F(center.x, center.y + s * 0.18f),
+                                      mercBrush.Get(), sw, roundStroke.Get());
+                }
+                break;
+            }
         }
-        target_->DrawTextW(emoji.c_str(), static_cast<UINT32>(emoji.size()), weatherEmojiFormat_.Get(),
-            D2D1::RectF(center.x - size * 0.6f, center.y - size * 0.6f,
-                        center.x + size * 0.6f, center.y + size * 0.6f),
-            strong, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
     }
 
     // Small vector glyphs shared by the weather, hardware and game-overlay cards.
@@ -16313,15 +18674,24 @@ class Renderer {
 
         std::wstring city = hasWeather ? WeatherCityForUi(state.weather) : std::wstring(Loc(L"Locating..."));
         std::wstring desc = wText;
-        if (hasWeather && state.weather.hasDailyRange) {
-            wchar_t range[64]{};
-            swprintf_s(range, UiText(L"Today %s°–%s°", L"今日 %s°～%s°"), WeatherTemperatureText(state.weather.lowTemperature).c_str(),
-                WeatherTemperatureText(state.weather.highTemperature).c_str());
-            desc = std::wstring(range) + L"\n" + WeatherCurrentDescriptionForUi(state.weather);
+        bool hasTempRange = false;
+        float rangeLow = 0.0f, rangeHigh = 0.0f, rangeCur = NAN;
+        if (page == 0 && hasWeather && state.weather.hasDailyRange) {
+            hasTempRange = true;
+            rangeLow = state.weather.lowTemperature;
+            rangeHigh = state.weather.highTemperature;
+            rangeCur = state.weather.temperature;
+            desc = WeatherCurrentDescriptionForUi(state.weather);
         }
         if (page > 0) {
-            desc = hasForecast ? WeatherTextForUi(forecast.description) + L"\n" + WeatherTemperatureText(forecast.low) + L"°～" +
-                WeatherTemperatureText(forecast.high) + L"°" : std::wstring(UiText(L"Forecast unavailable", L"暂无预报"));
+            if (hasForecast) {
+                hasTempRange = true;
+                rangeLow = forecast.low;
+                rangeHigh = forecast.high;
+                desc = WeatherTextForUi(forecast.description);
+            } else {
+                desc = std::wstring(UiText(L"Forecast unavailable", L"暂无预报"));
+            }
         }
         if (hasWeather) city += L" · " + std::wstring(dayLabels[page]) + (page > 0 ? UiText(L" high", L"最高") : L"");
         const auto button = WeatherPageButtonBounds((rect.right - rect.left) / scale);
@@ -16389,8 +18759,8 @@ class Renderer {
             hugeTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         }
 
-        const float descTop = rect.top + 120.0f * scale;
-        const float descBottom = rect.top + 162.0f * scale;
+        const float descTop = rect.top + 116.0f * scale;
+        const float descBottom = hasTempRange ? (rect.top + 138.0f * scale) : (rect.top + 162.0f * scale);
 
         // Description
         const size_t descLength = desc.length();
@@ -16444,11 +18814,68 @@ class Renderer {
             weatherDescFormatSize_ = descFontSize;
         }
 
-        textBrush_->SetOpacity(0.82f);
+        textBrush_->SetOpacity(0.86f);
         target_->DrawTextW(desc.c_str(), static_cast<UINT32>(desc.length()),
                            weatherDescFormat_ ? weatherDescFormat_.Get() : textFormat_.Get(),
                            D2D1::RectF(heroLeft, descTop, heroRight, descBottom),
-                           textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_NONE);
+                           textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+        // Apple Weather style colorful daily temperature range bar + live temperature dot
+        if (hasTempRange && smallTextFormat_) {
+            const float barRowTop = rect.top + 140.0f * scale;
+            const float barRowBot = rect.top + 158.0f * scale;
+            const float barCenterY = (barRowTop + barRowBot) * 0.5f;
+            const float labelW = 28.0f * scale;
+            const std::wstring lowTxt = WeatherTemperatureText(rangeLow) + L"°";
+            const std::wstring highTxt = WeatherTemperatureText(rangeHigh) + L"°";
+
+            smallTextFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            smallTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            mutedBrush_->SetOpacity(0.76f);
+            target_->DrawTextW(lowTxt.c_str(), static_cast<UINT32>(lowTxt.size()), smallTextFormat_.Get(),
+                               D2D1::RectF(heroLeft, barRowTop, heroLeft + labelW, barRowBot),
+                               mutedBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_NONE);
+
+            smallTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+            textBrush_->SetOpacity(0.95f);
+            target_->DrawTextW(highTxt.c_str(), static_cast<UINT32>(highTxt.size()), smallTextFormat_.Get(),
+                               D2D1::RectF(heroRight - labelW, barRowTop, heroRight, barRowBot),
+                               textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_NONE);
+            smallTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            smallTextFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+
+            const float trackL = heroLeft + labelW + 3.0f * scale;
+            const float trackR = heroRight - labelW - 3.0f * scale;
+            const float trackH = 5.0f * scale;
+            const float trackRds = trackH * 0.5f;
+            if (trackR > trackL + 10.0f * scale) {
+                const D2D1_RECT_F trackRect = D2D1::RectF(trackL, barCenterY - trackRds, trackR, barCenterY + trackRds);
+                D2D1_GRADIENT_STOP tStops[4] = {
+                    { 0.00f, D2D1::ColorF(0x38BDF8, 0.92f * settingsOpacity_) },
+                    { 0.36f, D2D1::ColorF(0x34D399, 0.92f * settingsOpacity_) },
+                    { 0.72f, D2D1::ColorF(0xFACC15, 0.95f * settingsOpacity_) },
+                    { 1.00f, D2D1::ColorF(0xFB923C, 0.96f * settingsOpacity_) }
+                };
+                ComPtr<ID2D1GradientStopCollection> tColl;
+                ComPtr<ID2D1LinearGradientBrush> tBrush;
+                if (SUCCEEDED(target_->CreateGradientStopCollection(tStops, 4, &tColl)) && tColl &&
+                    SUCCEEDED(target_->CreateLinearGradientBrush(
+                        D2D1::LinearGradientBrushProperties(D2D1::Point2F(trackL, barCenterY), D2D1::Point2F(trackR, barCenterY)),
+                        tColl.Get(), &tBrush)) && tBrush) {
+                    target_->FillRoundedRectangle(D2D1::RoundedRect(trackRect, trackRds, trackRds), tBrush.Get());
+                }
+                if (!std::isnan(rangeCur)) {
+                    const float span = rangeHigh - rangeLow;
+                    const float frac = (span > 0.1f) ? Clamp((rangeCur - rangeLow) / span, 0.0f, 1.0f) : 0.5f;
+                    const float dotX = trackL + trackRds + frac * std::max(0.0f, (trackR - trackL) - trackH);
+                    ComPtr<ID2D1SolidColorBrush> ringBrush, dotBrush;
+                    target_->CreateSolidColorBrush(D2D1::ColorF(0x0F172A, 0.55f * settingsOpacity_), &ringBrush);
+                    target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.98f * settingsOpacity_), &dotBrush);
+                    if (ringBrush) target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, barCenterY), 4.2f * scale, 4.2f * scale), ringBrush.Get());
+                    if (dotBrush) target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, barCenterY), 2.8f * scale, 2.8f * scale), dotBrush.Get());
+                }
+            }
+        }
         textBrush_->SetOpacity(0.96f);
 
         // Hairline divider, inset from both ends so it reads as a separator
@@ -16764,10 +19191,25 @@ class Renderer {
             DrawCard(card, 9.0f * scale);
 
             const bool hasBar = m.fraction >= 0.0f;
-            const D2D1_COLOR_F tint = D2D1::ColorF(0xE1E1E6);
+            // Dynamic load color palette: cool emerald/sky (<60%) -> warm amber (60-85%) -> coral red (>85%)
+            D2D1_COLOR_F tint = D2D1::ColorF(0x38BDF8);
+            D2D1_COLOR_F tintStart = D2D1::ColorF(0x34D399);
+            if (!hasBar) {
+                tint = (m.glyph == 6) ? D2D1::ColorF(0x60A5FA) : D2D1::ColorF(0x34D399);
+                tintStart = tint;
+            } else if (m.fraction >= 0.85f) {
+                tint = D2D1::ColorF(0xF87171);
+                tintStart = D2D1::ColorF(0xFB923C);
+            } else if (m.fraction >= 0.60f) {
+                tint = D2D1::ColorF(0xFB923C);
+                tintStart = D2D1::ColorF(0xFACC15);
+            } else {
+                tint = D2D1::ColorF(0x38BDF8);
+                tintStart = D2D1::ColorF(0x34D399);
+            }
 
             ComPtr<ID2D1SolidColorBrush> glyphBrush;
-            target_->CreateSolidColorBrush(WithAlpha(tint, 0.78f * settingsOpacity_), &glyphBrush);
+            target_->CreateSolidColorBrush(WithAlpha(tint, 0.88f * settingsOpacity_), &glyphBrush);
             if (glyphBrush) {
                 DrawMetricGlyph(D2D1::Point2F(card.left + 16.0f * scale, card.top + 15.0f * scale),
                                 15.0f * scale, m.glyph, glyphBrush.Get());
@@ -16815,8 +19257,17 @@ class Renderer {
 
                 const float span = (track.right - track.left) * m.fraction;
                 if (span > 0.5f) {
-                    ComPtr<ID2D1SolidColorBrush> fillBrush;
-                    if (SUCCEEDED(target_->CreateSolidColorBrush(WithAlpha(tint, 0.72f * settingsOpacity_), &fillBrush)) && fillBrush) {
+                    D2D1_GRADIENT_STOP bStops[2] = {
+                        { 0.0f, WithAlpha(tintStart, 0.88f * settingsOpacity_) },
+                        { 1.0f, WithAlpha(tint, 0.94f * settingsOpacity_) }
+                    };
+                    ComPtr<ID2D1GradientStopCollection> bColl;
+                    ComPtr<ID2D1LinearGradientBrush> fillBrush;
+                    if (SUCCEEDED(target_->CreateGradientStopCollection(bStops, 2, &bColl)) && bColl &&
+                        SUCCEEDED(target_->CreateLinearGradientBrush(
+                            D2D1::LinearGradientBrushProperties(D2D1::Point2F(track.left, track.top),
+                                                                D2D1::Point2F(track.left + span, track.top)),
+                            bColl.Get(), &fillBrush)) && fillBrush) {
                         target_->FillRoundedRectangle(
                             D2D1::RoundedRect(D2D1::RectF(track.left, track.top, track.left + span, track.bottom),
                                               1.25f * scale, 1.25f * scale),
@@ -20539,7 +22990,10 @@ std::vector<IslandKind> ChooseActivities(const SharedState& state, const Setting
     if (settings.timerEnabled &&
         ((state.timer.justFinished && now < state.timer.finishedExpiresAt) ||
          state.timer.active)) {
-        activities.push_back(g_timerDashboardExpanded.load() || Wh_GetIntValue(L"PinnedExpanded", 0) != 0
+        // Prevent 60Hz Timer <-> Idle(GameOverlay) ping-pong oscillation when both
+        // a focus timer and the game performance overlay are active simultaneously.
+        const bool gameOverlayOn = settings.gameOverlay || Wh_GetIntValue(L"GameOverlayPinned", 0) != 0;
+        activities.push_back((!gameOverlayOn && (g_timerDashboardExpanded.load() || Wh_GetIntValue(L"PinnedExpanded", 0) != 0))
             ? IslandKind::Idle : IslandKind::Timer);
     }
     if (settings.nbaScores && state.nba.active) {
@@ -22071,8 +24525,12 @@ DWORD WINAPI RenderThreadProc(void*) {
         POINT cursor = {};
         GetCursorPos(&cursor);
 
+        static bool s_lastStableHover = false;
         bool hover = false;
-        if (widthSpring.value > 1.0f && heightSpring.value > 1.0f) {
+        if (g_contextMenuOpen.load(std::memory_order_relaxed)) {
+            // Freeze hover state while right-click menu is open so the island never expands/collapses mid-menu
+            hover = s_lastStableHover;
+        } else if (widthSpring.value > 1.0f && heightSpring.value > 1.0f) {
             const float topPad = (g_settings.notchStyle || g_settings.borderMergedMode) ? 0.0f : kRenderPadY;
             RECT pillRect = {
                 windowRect.left + static_cast<int>(std::round(kRenderPadX)),
@@ -22081,9 +24539,13 @@ DWORD WINAPI RenderThreadProc(void*) {
                 windowRect.top + static_cast<int>(std::round(topPad + nudgeSpring.value + heightSpring.value))
             };
             hover = PtInRect(&pillRect, cursor) != FALSE;
+            s_lastStableHover = hover;
         } else if (g_settings.unhideOnHover) {
             RECT dockRect = GetIslandDockRect();
             hover = PtInRect(&dockRect, cursor) != FALSE;
+            s_lastStableHover = hover;
+        } else {
+            s_lastStableHover = false;
         }
 
         bool needsRender = false;
@@ -22224,6 +24686,7 @@ DWORD WINAPI RenderThreadProc(void*) {
         // while the island is hidden or suppressed so it cannot un-hide itself.
         static double lastTopmostCheck = 0.0;
         if (!isFullscreen && !g_manuallyHidden.load() && !g_autoHiddenParked.load() &&
+            !g_contextMenuOpen.load(std::memory_order_relaxed) &&
             now - lastTopmostCheck > 1.0) {
             EnsureTopmost(hwnd);
             lastTopmostCheck = now;
@@ -23558,5 +26021,5 @@ void Wh_ModUninit() {
 }
 
 /* UPDATER_CORE_BEGIN
-U2V0LVN0cmljdE1vZGUgLVZlcnNpb24gTGF0ZXN0DQokRXJyb3JBY3Rpb25QcmVmZXJlbmNlID0gJ1N0b3AnDQokc2NyaXB0Ok1vZElkID0gJ2xvY2FsQGR5bmFtaWMtaXNsYW5kLWxpcXVpZC1nbGFzcycNCiRzY3JpcHQ6UHVibGljSWQgPSAnZHluYW1pYy1pc2xhbmQtbGlxdWlkLWdsYXNzJw0KJHNjcmlwdDpVcGRhdGVyVmVyc2lvbiA9IFt2ZXJzaW9uXScxLjAuNScNCiRzY3JpcHQ6VXRmOCA9IE5ldy1PYmplY3QgU3lzdGVtLlRleHQuVVRGOEVuY29kaW5nKCRmYWxzZSwgJHRydWUpDQoNCmZ1bmN0aW9uIFJlYWQtSnNvbkZpbGUoW3N0cmluZ10kUGF0aCkgew0KICAgICR2YWx1ZT0kc2NyaXB0OlV0ZjguR2V0U3RyaW5nKFtJTy5GaWxlXTo6UmVhZEFsbEJ5dGVzKCRQYXRoKSkgfCBDb252ZXJ0RnJvbS1Kc29uDQogICAgZm9yZWFjaCAoJGVudHJ5IGluICR2YWx1ZSkgeyAkZW50cnkgfQ0KfQ0KDQpmdW5jdGlvbiBXcml0ZS1Kc29uRmlsZShbc3RyaW5nXSRQYXRoLCAkVmFsdWUpIHsNCiAgICAkdG1wID0gJFBhdGggKyAnLnRtcCcNCiAgICBbSU8uRmlsZV06OldyaXRlQWxsVGV4dCgkdG1wLCAoJFZhbHVlIHwgQ29udmVydFRvLUpzb24gLURlcHRoIDE1KSwgJHNjcmlwdDpVdGY4KQ0KICAgIGlmIChbSU8uRmlsZV06OkV4aXN0cygkUGF0aCkpIHsgW0lPLkZpbGVdOjpSZXBsYWNlKCR0bXAsICRQYXRoLCAoJFBhdGgrJy5iYWsnKSk7IFtJTy5GaWxlXTo6RGVsZXRlKCRQYXRoKycuYmFrJykgfQ0KICAgIGVsc2UgeyBbSU8uRmlsZV06Ok1vdmUoJHRtcCwgJFBhdGgpIH0NCn0NCg0KZnVuY3Rpb24gR2V0LVJlbGVhc2VWZXJzaW9uKFtzdHJpbmddJFRleHQpIHsNCiAgICBpZiAoJFRleHQgLWNub3RtYXRjaCAnXigwfFsxLTldWzAtOV17MCw4fSlcLigwfFsxLTldWzAtOV17MCw4fSlcLigwfFsxLTldWzAtOV17MCw4fSkkJykgew0KICAgICAgICB0aHJvdyAnSW52YWxpZCBzdGFibGUgdmVyc2lvbi4nDQogICAgfQ0KICAgIFt2ZXJzaW9uXSRUZXh0DQp9DQoNCmZ1bmN0aW9uIEFzc2VydC1SZXBvc2l0b3J5KFtzdHJpbmddJFJlcG9zaXRvcnkpIHsNCiAgICBpZiAoJFJlcG9zaXRvcnkgLWNub3RtYXRjaCAnXltBLVphLXowLTldW0EtWmEtejAtOS1dezAsMzh9L1tBLVphLXowLTldW0EtWmEtejAtOV8uLV17MCw5OX0kJykgew0KICAgICAgICB0aHJvdyAnSW52YWxpZCBHaXRIdWIgcmVwb3NpdG9yeS4nDQogICAgfQ0KfQ0KDQpmdW5jdGlvbiBHZXQtRmlsZURpZ2VzdChbc3RyaW5nXSRQYXRoKSB7IChHZXQtRmlsZUhhc2ggLUxpdGVyYWxQYXRoICRQYXRoIC1BbGdvcml0aG0gU0hBMjU2KS5IYXNoLlRvTG93ZXJJbnZhcmlhbnQoKSB9DQoNCmZ1bmN0aW9uIEdldC1WZXJpZmllZE1hbmlmZXN0KFtieXRlW11dJEJ5dGVzLCBbYnl0ZVtdXSRTaWduYXR1cmUsIFtzdHJpbmddJFB1YmxpY0tleSkgew0KICAgIGlmICgkQnl0ZXMuTGVuZ3RoIC1ndCAyNjIxNDQgLW9yICRTaWduYXR1cmUuTGVuZ3RoIC1ndCAxMDI0KSB7IHRocm93ICdNYW5pZmVzdCB0b28gbGFyZ2UuJyB9DQogICAgJHJzYSA9IE5ldy1PYmplY3QgU2VjdXJpdHkuQ3J5cHRvZ3JhcGh5LlJTQUNyeXB0b1NlcnZpY2VQcm92aWRlcg0KICAgICRyc2EuUGVyc2lzdEtleUluQ3NwID0gJGZhbHNlDQogICAgdHJ5IHsNCiAgICAgICAgJHJzYS5Gcm9tWG1sU3RyaW5nKCRQdWJsaWNLZXkpDQogICAgICAgIGlmICgkcnNhLktleVNpemUgLWx0IDMwNzIgLW9yIC1ub3QgJHJzYS5WZXJpZnlEYXRhKCRCeXRlcywgJ1NIQTI1NicsICRTaWduYXR1cmUpKSB7IHRocm93ICdSZWxlYXNlIHNpZ25hdHVyZSBpbnZhbGlkLicgfQ0KICAgIH0gZmluYWxseSB7ICRyc2EuRGlzcG9zZSgpIH0NCiAgICAkbSA9ICRzY3JpcHQ6VXRmOC5HZXRTdHJpbmcoJEJ5dGVzKSB8IENvbnZlcnRGcm9tLUpzb24NCiAgICAkcmVxdWlyZWQgPSBAKCdzY2hlbWEnLCd2ZXJzaW9uJywndGFnJywnbW9kSWQnLCdzb3VyY2VBc3NldCcsJ3NvdXJjZVNoYTI1NicsJ3NvdXJjZUJ5dGVzJywnbWluVXBkYXRlclZlcnNpb24nLCdzZXR0aW5ncycpDQogICAgaWYgKEAoJG0uUFNPYmplY3QuUHJvcGVydGllcykuQ291bnQgLW5lICRyZXF1aXJlZC5Db3VudCkgeyB0aHJvdyAnVW5leHBlY3RlZCBtYW5pZmVzdCBmaWVsZHMuJyB9DQogICAgZm9yZWFjaCAoJG5hbWUgaW4gJHJlcXVpcmVkKSB7IGlmICgtbm90ICRtLlBTT2JqZWN0LlByb3BlcnRpZXNbJG5hbWVdKSB7IHRocm93ICJNaXNzaW5nIG1hbmlmZXN0IGZpZWxkOiAkbmFtZSIgfSB9DQogICAgJHYgPSBHZXQtUmVsZWFzZVZlcnNpb24gJG0udmVyc2lvbg0KICAgIGlmICgkbS5zY2hlbWEgLW5lIDEgLW9yICRtLnRhZyAtY25lICJ2JCgkbS52ZXJzaW9uKSIgLW9yICRtLm1vZElkIC1jbmUgJHNjcmlwdDpQdWJsaWNJZCAtb3INCiAgICAgICAgJG0uc291cmNlQXNzZXQgLWNuZSAnZHluYW1pYy1pc2xhbmQtbGlxdWlkLWdsYXNzLndoLmNwcCcgLW9yICRtLnNvdXJjZVNoYTI1NiAtY25vdG1hdGNoICdeW2EtZjAtOV17NjR9JCcgLW9yDQogICAgICAgICRtLnNvdXJjZUJ5dGVzIC1pc25vdCBbVmFsdWVUeXBlXSAtb3IgJG0uc291cmNlQnl0ZXMgLWx0IDEgLW9yICRtLnNvdXJjZUJ5dGVzIC1ndCA4Mzg4NjA4KSB7DQogICAgICAgIHRocm93ICdJbnZhbGlkIHJlbGVhc2UgbWFuaWZlc3QuJw0KICAgIH0NCiAgICBpZiAoKEdldC1SZWxlYXNlVmVyc2lvbiAkbS5taW5VcGRhdGVyVmVyc2lvbikgLWd0ICRzY3JpcHQ6VXBkYXRlclZlcnNpb24pIHsgdGhyb3cgJ1BsZWFzZSByZWluc3RhbGwgdGhlIGxhdGVzdCBzZXR1cCBwYWNrYWdlIHRvIHVwZ3JhZGUgdGhlIHVwZGF0ZXIuJyB9DQogICAgaWYgKCRtLnNldHRpbmdzIC1pc25vdCBbYXJyYXldIC1vciAkbS5zZXR0aW5ncy5Db3VudCAtZ3QgNTEyKSB7IHRocm93ICdJbnZhbGlkIHNldHRpbmdzIGRlZmF1bHRzLicgfQ0KICAgICRzZWVuID0gQHt9DQogICAgZm9yZWFjaCAoJHMgaW4gJG0uc2V0dGluZ3MpIHsNCiAgICAgICAgaWYgKCRzLm5hbWUgLWNub3RtYXRjaCAnXltBLVphLXowLTlfLi1dezEsMTI4fSQnIC1vciAkc2Vlbi5Db250YWluc0tleSgkcy5uYW1lKSAtb3INCiAgICAgICAgICAgICRzLmtpbmQgLWNub3RpbiBAKCdEV29yZCcsJ1N0cmluZycpKSB7IHRocm93ICdJbnZhbGlkIHNldHRpbmdzIGVudHJ5LicgfQ0KICAgICAgICAkc2Vlblskcy5uYW1lXSA9ICR0cnVlDQogICAgICAgIGlmICgkcy5raW5kIC1lcSAnRFdvcmQnKSB7DQogICAgICAgICAgICBpZiAoJHMudmFsdWUgLWlzbm90IFtWYWx1ZVR5cGVdIC1vciBbbG9uZ10kcy52YWx1ZSAtbHQgW2ludF06Ok1pblZhbHVlIC1vciBbbG9uZ10kcy52YWx1ZSAtZ3QgW2ludF06Ok1heFZhbHVlKSB7IHRocm93ICdJbnZhbGlkIGludGVnZXIgZGVmYXVsdC4nIH0NCiAgICAgICAgfSBlbHNlaWYgKCRzLnZhbHVlIC1pc25vdCBbc3RyaW5nXSAtb3IgJHMudmFsdWUuTGVuZ3RoIC1ndCA0MDk2KSB7IHRocm93ICdJbnZhbGlkIHN0cmluZyBkZWZhdWx0LicgfQ0KICAgIH0NCiAgICAkbQ0KfQ0KDQpmdW5jdGlvbiBBc3NlcnQtU291cmNlKFtzdHJpbmddJFBhdGgsICRNYW5pZmVzdCkgew0KICAgIGlmICgoR2V0LUl0ZW0gLUxpdGVyYWxQYXRoICRQYXRoKS5MZW5ndGggLW5lICRNYW5pZmVzdC5zb3VyY2VCeXRlcyAtb3IgKEdldC1GaWxlRGlnZXN0ICRQYXRoKSAtY25lICRNYW5pZmVzdC5zb3VyY2VTaGEyNTYpIHsgdGhyb3cgJ1NvdXJjZSBkaWdlc3QvbGVuZ3RoIG1pc21hdGNoLicgfQ0KICAgICRzb3VyY2UgPSBbSU8uRmlsZV06OlJlYWRBbGxUZXh0KCRQYXRoLCAkc2NyaXB0OlV0ZjgpDQogICAgJG1ldGEgPSBbcmVnZXhdOjpNYXRjaCgkc291cmNlLCAnKD9zKVxBXHMqLy8gPT1XaW5kaGF3a01vZD09XHI/XG4oLio/KS8vID09L1dpbmRoYXdrTW9kPT0nKQ0KICAgIGlmICgtbm90ICRtZXRhLlN1Y2Nlc3MpIHsgdGhyb3cgJ1NvdXJjZSBtZXRhZGF0YSBtaXNzaW5nLicgfQ0KICAgIGZvcmVhY2ggKCRlbnRyeSBpbiBAKEAoJ2lkJywgJHNjcmlwdDpQdWJsaWNJZCksIEAoJ3ZlcnNpb24nLCAkTWFuaWZlc3QudmVyc2lvbiksIEAoJ2luY2x1ZGUnLCAnd2luZGhhd2suZXhlJykpKSB7DQogICAgICAgICRtYXRjaGVzID0gW3JlZ2V4XTo6TWF0Y2hlcygkbWV0YS5Hcm91cHNbMV0uVmFsdWUsICcoP20pXi8vIEAnICsgJGVudHJ5WzBdICsgJ1xzKyhbXlxyXG5dKylccj8kJykNCiAgICAgICAgaWYgKCRtYXRjaGVzLkNvdW50IC1uZSAxIC1vciAkbWF0Y2hlc1swXS5Hcm91cHNbMV0uVmFsdWUuVHJpbSgpIC1jbmUgJGVudHJ5WzFdKSB7IHRocm93ICJTb3VyY2UgJCgkZW50cnlbMF0pIG1pc21hdGNoLiIgfQ0KICAgIH0NCiAgICBpZiAoLW5vdCAkc291cmNlLkNvbnRhaW5zKCdVcGRhdGVIZWFydGJlYXQnKSAtb3IgLW5vdCAkc291cmNlLkNvbnRhaW5zKCdVcGRhdGVSZXF1ZXN0ZWQnKSkgeyB0aHJvdyAnU291cmNlIGxhY2tzIHVwZGF0ZXIgaGFuZG9mZi4nIH0NCn0NCg0KZnVuY3Rpb24gSW5zdGFsbC1VcGRhdGVyQ29yZShbc3RyaW5nXSRTb3VyY2UsIFtzdHJpbmddJEluc3RhbGxSb290KSB7DQogICAgJHRleHQ9W0lPLkZpbGVdOjpSZWFkQWxsVGV4dCgkU291cmNlLCRzY3JpcHQ6VXRmOCkNCiAgICAkbWF0Y2g9W3JlZ2V4XTo6TWF0Y2goJHRleHQsJyg/cykvXCogVVBEQVRFUl9DT1JFX0JFR0lOXHI/XG4oW0EtWmEtejAtOSsvPV0rKVxyP1xuVVBEQVRFUl9DT1JFX0VORCBcKi9ccyokJykNCiAgICBpZiAoLW5vdCAkbWF0Y2guU3VjY2VzcykgeyB0aHJvdyAnU2lnbmVkIHNvdXJjZSBsYWNrcyB1cGRhdGVyIGNvcmUuJyB9DQogICAgJGJ5dGVzPVtDb252ZXJ0XTo6RnJvbUJhc2U2NFN0cmluZygkbWF0Y2guR3JvdXBzWzFdLlZhbHVlKQ0KICAgIGlmICgkYnl0ZXMuTGVuZ3RoIC1ndCAyNjIxNDQpIHsgdGhyb3cgJ1VwZGF0ZXIgY29yZSBpcyB0b28gbGFyZ2UuJyB9DQogICAgJG5ldz0kc2NyaXB0OlV0ZjguR2V0U3RyaW5nKCRieXRlcykNCiAgICAkdmVyc2lvbj1bcmVnZXhdOjpNYXRjaCgkbmV3LCcoP20pXlwkc2NyaXB0OlVwZGF0ZXJWZXJzaW9uID0gXFt2ZXJzaW9uXF0nJyhbMC05XStcLlswLTldK1wuWzAtOV0rKScnXHI/JCcpDQogICAgaWYgKC1ub3QgJHZlcnNpb24uU3VjY2VzcykgeyB0aHJvdyAnVXBkYXRlciBjb3JlIHZlcnNpb24gbWlzc2luZy4nIH0NCiAgICAkdGFyZ2V0PUpvaW4tUGF0aCAkSW5zdGFsbFJvb3QgJ2NvcmUucHMxJw0KICAgICRjdXJyZW50PVtyZWdleF06Ok1hdGNoKFtJTy5GaWxlXTo6UmVhZEFsbFRleHQoJHRhcmdldCwkc2NyaXB0OlV0ZjgpLCcoP20pXlwkc2NyaXB0OlVwZGF0ZXJWZXJzaW9uID0gXFt2ZXJzaW9uXF0nJyhbMC05XStcLlswLTldK1wuWzAtOV0rKScnXHI/JCcpDQogICAgaWYgKC1ub3QgJGN1cnJlbnQuU3VjY2VzcykgeyB0aHJvdyAnSW5zdGFsbGVkIHVwZGF0ZXIgY29yZSB2ZXJzaW9uIG1pc3NpbmcuJyB9DQogICAgaWYgKChHZXQtUmVsZWFzZVZlcnNpb24gJHZlcnNpb24uR3JvdXBzWzFdLlZhbHVlKSAtbGUgKEdldC1SZWxlYXNlVmVyc2lvbiAkY3VycmVudC5Hcm91cHNbMV0uVmFsdWUpKSB7IHJldHVybiAkZmFsc2UgfQ0KICAgICR0b2tlbnM9JG51bGw7ICRlcnJvcnM9JG51bGwNCiAgICBbdm9pZF1bTWFuYWdlbWVudC5BdXRvbWF0aW9uLkxhbmd1YWdlLlBhcnNlcl06OlBhcnNlSW5wdXQoJG5ldyxbcmVmXSR0b2tlbnMsW3JlZl0kZXJyb3JzKQ0KICAgIGlmICgkZXJyb3JzLkNvdW50KSB7IHRocm93ICdVcGRhdGVyIGNvcmUgaGFzIGEgc3ludGF4IGVycm9yLicgfQ0KICAgICR0bXA9JHRhcmdldCsnLm5ldycNCiAgICB0cnkgew0KICAgICAgICBbSU8uRmlsZV06OldyaXRlQWxsQnl0ZXMoJHRtcCwkYnl0ZXMpDQogICAgICAgIFtJTy5GaWxlXTo6UmVwbGFjZSgkdG1wLCR0YXJnZXQsJHRhcmdldCsnLnByZXZpb3VzJykNCiAgICB9IGZpbmFsbHkgeyBpZiAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkdG1wKSB7IFJlbW92ZS1JdGVtIC1MaXRlcmFsUGF0aCAkdG1wIC1Gb3JjZSB9IH0NCiAgICAkdHJ1ZQ0KfQ0KDQpmdW5jdGlvbiBHZXQtUmVtb3RlQnl0ZXMoW3N0cmluZ10kVXJsLCBbaW50XSRMaW1pdCkgew0KICAgICR1cmkgPSBbdXJpXSRVcmwNCiAgICBpZiAoJHVyaS5TY2hlbWUgLW5lICdodHRwcycgLW9yICR1cmkuSG9zdCAtbmUgJ2dpdGh1Yi5jb20nIC1vciAkdXJpLlBvcnQgLW5lIDQ0MyAtb3IgJHVyaS5Vc2VySW5mbykgew0KICAgICAgICB0aHJvdyAnT25seSB0aGUgY29uZmlndXJlZCBHaXRIdWIgcmVsZWFzZSBzb3VyY2UgaXMgYWxsb3dlZC4nDQogICAgfQ0KICAgICRkb3dubG9hZEZhaWx1cmVzID0gQCgpDQogICAgZm9yZWFjaCAoJHByZWZpeCBpbiBAKCcnLCAnaHR0cHM6Ly9naGZhc3QudG9wLycsICdodHRwczovL2doLXByb3h5Lm9yZy8nKSkgew0KICAgICAgICB0cnkgeyByZXR1cm4gLChHZXQtRG93bmxvYWRCeXRlcyAoJHByZWZpeCArICR1cmkuQWJzb2x1dGVVcmkpICRMaW1pdCkgfQ0KICAgICAgICBjYXRjaCBbTmV0LldlYkV4Y2VwdGlvbl0sIFtJTy5JT0V4Y2VwdGlvbl0gew0KICAgICAgICAgICAgJGRvd25sb2FkRmFpbHVyZXMgKz0gKCd7MH06IHsxfScgLWYgKFt1cmldKCRwcmVmaXggKyAkdXJpLkFic29sdXRlVXJpKSkuSG9zdCwgJF8uRXhjZXB0aW9uLk1lc3NhZ2UpDQogICAgICAgIH0NCiAgICB9DQogICAgdGhyb3cgKCdHaXRIdWIgYW5kIGJhY2t1cCBkb3dubG9hZCBzb3VyY2VzIGFyZSB1bmF2YWlsYWJsZS4gVGhlIHVwZGF0ZSB3YXMgbm90IGluc3RhbGxlZC4gVHJ5IGFnYWluIGxhdGVyLiAnICsgKCRkb3dubG9hZEZhaWx1cmVzIC1qb2luICc7ICcpKQ0KfQ0KDQpmdW5jdGlvbiBHZXQtRG93bmxvYWRCeXRlcyhbc3RyaW5nXSRVcmwsIFtpbnRdJExpbWl0KSB7DQogICAgJHVyaSA9IFt1cmldJFVybA0KICAgIFtOZXQuU2VydmljZVBvaW50TWFuYWdlcl06OlNlY3VyaXR5UHJvdG9jb2wgPSBbTmV0LlNlY3VyaXR5UHJvdG9jb2xUeXBlXTo6VGxzMTINCiAgICAkcmVxdWVzdCA9IFtOZXQuSHR0cFdlYlJlcXVlc3RdOjpDcmVhdGUoJHVyaSkNCiAgICAkcmVxdWVzdC5Vc2VyQWdlbnQgPSAnV2luZGhhd2stSXNsYW5kLVVwZGF0ZXIvJyArICRzY3JpcHQ6VXBkYXRlclZlcnNpb24uVG9TdHJpbmcoMykNCiAgICAkcmVxdWVzdC5UaW1lb3V0ID0gMTAwMDANCiAgICAkcmVxdWVzdC5SZWFkV3JpdGVUaW1lb3V0ID0gMTUwMDANCiAgICAkcmVxdWVzdC5NYXhpbXVtQXV0b21hdGljUmVkaXJlY3Rpb25zID0gNQ0KICAgICRyZXF1ZXN0LkNhY2hlUG9saWN5ID0gTmV3LU9iamVjdCBOZXQuQ2FjaGUuUmVxdWVzdENhY2hlUG9saWN5KFtOZXQuQ2FjaGUuUmVxdWVzdENhY2hlTGV2ZWxdOjpOb0NhY2hlTm9TdG9yZSkNCiAgICAkcmVzcG9uc2UgPSAkbnVsbA0KICAgICRidWZmZXIgPSBOZXctT2JqZWN0IGJ5dGVbXSAxNjM4NA0KICAgICRvdXRwdXQgPSBOZXctT2JqZWN0IElPLk1lbW9yeVN0cmVhbQ0KICAgICRkZWFkbGluZSA9IFtEYXRlVGltZV06OlV0Y05vdy5BZGRTZWNvbmRzKDYwKQ0KICAgIHRyeSB7DQogICAgICAgICRyZXNwb25zZSA9ICRyZXF1ZXN0LkdldFJlc3BvbnNlKCkNCiAgICAgICAgaWYgKCRyZXNwb25zZS5SZXNwb25zZVVyaS5TY2hlbWUgLW5lICdodHRwcycgLW9yICRyZXNwb25zZS5Db250ZW50TGVuZ3RoIC1ndCAkTGltaXQpIHsgdGhyb3cgJ0ludmFsaWQgZG93bmxvYWQgcmVzcG9uc2UuJyB9DQogICAgICAgIGlmICgkcmVzcG9uc2UuQ29udGVudFR5cGUgLWxpa2UgJ3RleHQvaHRtbConKSB7IHRocm93IFtOZXQuV2ViRXhjZXB0aW9uXTo6bmV3KCdEb3dubG9hZCBzb3VyY2UgcmV0dXJuZWQgYW4gSFRNTCBwYWdlIGluc3RlYWQgb2YgYSByZWxlYXNlIGFzc2V0LicpIH0NCiAgICAgICAgJHN0cmVhbSA9ICRyZXNwb25zZS5HZXRSZXNwb25zZVN0cmVhbSgpDQogICAgICAgIHdoaWxlICgoJGNvdW50ID0gJHN0cmVhbS5SZWFkKCRidWZmZXIsIDAsICRidWZmZXIuTGVuZ3RoKSkgLWd0IDApIHsNCiAgICAgICAgICAgIGlmICgkb3V0cHV0Lkxlbmd0aCArICRjb3VudCAtZ3QgJExpbWl0IC1vciBbRGF0ZVRpbWVdOjpVdGNOb3cgLWd0ICRkZWFkbGluZSkgeyB0aHJvdyAnRG93bmxvYWQgc2l6ZS90aW1lIGxpbWl0IGV4Y2VlZGVkLicgfQ0KICAgICAgICAgICAgJG91dHB1dC5Xcml0ZSgkYnVmZmVyLCAwLCAkY291bnQpDQogICAgICAgIH0NCiAgICAgICAgaWYgKCRvdXRwdXQuTGVuZ3RoIC1lcSAwIC1vciAoJHJlc3BvbnNlLkNvbnRlbnRMZW5ndGggLWdlIDAgLWFuZCAkb3V0cHV0Lkxlbmd0aCAtbmUgJHJlc3BvbnNlLkNvbnRlbnRMZW5ndGgpKSB7DQogICAgICAgICAgICB0aHJvdyBbTmV0LldlYkV4Y2VwdGlvbl06Om5ldygnRG93bmxvYWQgcmVzcG9uc2UgaXMgZW1wdHkgb3IgaW5jb21wbGV0ZS4nKQ0KICAgICAgICB9DQogICAgICAgICwkb3V0cHV0LlRvQXJyYXkoKQ0KICAgIH0gZmluYWxseSB7IGlmICgkcmVzcG9uc2UpIHsgJHJlc3BvbnNlLkNsb3NlKCkgfTsgJG91dHB1dC5EaXNwb3NlKCkgfQ0KfQ0KDQpmdW5jdGlvbiBHZXQtV2luZGhhd2tFbnZpcm9ubWVudCB7DQogICAgaWYgKC1ub3QgW0Vudmlyb25tZW50XTo6SXM2NEJpdFByb2Nlc3MgLW9yICRlbnY6UFJPQ0VTU09SX0FSQ0hJVEVDVFVSRSAtbmUgJ0FNRDY0JykgeyB0aHJvdyAnVXNlIDY0LWJpdCBXaW5kb3dzIFBvd2VyU2hlbGwgb24geDY0IFdpbmRvd3MuJyB9DQogICAgJHJvb3QgPSBKb2luLVBhdGggJGVudjpQcm9ncmFtRmlsZXMgJ1dpbmRoYXdrJw0KICAgICRpbmkgPSBKb2luLVBhdGggJHJvb3QgJ3dpbmRoYXdrLmluaScNCiAgICBpZiAoLW5vdCAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkaW5pKSkgeyB0aHJvdyAnV2luZGhhd2sgaW5zdGFsbGF0aW9uIG5vdCBmb3VuZC4nIH0NCiAgICAkY2ZnID0gQHt9DQogICAgZm9yZWFjaCAoJGxpbmUgaW4gW0lPLkZpbGVdOjpSZWFkQWxsTGluZXMoJGluaSkpIHsNCiAgICAgICAgaWYgKCRsaW5lIC1tYXRjaCAnXihbQS1aYS16XSspPSguKikkJykgeyAkY2ZnWyRtYXRjaGVzWzFdXSA9IFtFbnZpcm9ubWVudF06OkV4cGFuZEVudmlyb25tZW50VmFyaWFibGVzKCRtYXRjaGVzWzJdLlRyaW0oKSkgfQ0KICAgIH0NCiAgICBpZiAoJGNmZy5Qb3J0YWJsZSAtbmUgJzAnIC1vciAkY2ZnLkVuZ2luZVBhdGggLW5lICdFbmdpbmVcMS43LjMnIC1vciAkY2ZnLlJlZ2lzdHJ5S2V5IC1uZSAnSEtMTVxTT0ZUV0FSRVxXaW5kaGF3aycpIHsgdGhyb3cgJ1RoaXMgdXBkYXRlciBjdXJyZW50bHkgc3VwcG9ydHMgV2luZGhhd2sgMS43LjMgaW5zdGFsbGVkIG1vZGUgb25seS4nIH0NCiAgICAkY29tcGlsZXIgPSBKb2luLVBhdGggJHJvb3QgJGNmZy5Db21waWxlclBhdGgNCiAgICAkZW5naW5lID0gSm9pbi1QYXRoICRyb290ICRjZmcuRW5naW5lUGF0aA0KICAgIGZvcmVhY2ggKCRmaWxlIGluIEAoKEpvaW4tUGF0aCAkY29tcGlsZXIgJ2JpblxjbGFuZysrLmV4ZScpLCAoSm9pbi1QYXRoICRlbmdpbmUgJzY0XHdpbmRoYXdrLmxpYicpLCAoSm9pbi1QYXRoICRlbmdpbmUgJzMyXHdpbmRoYXdrLmxpYicpKSkgew0KICAgICAgICBpZiAoLW5vdCAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkZmlsZSkpIHsgdGhyb3cgIldpbmRoYXdrIGNvbXBvbmVudCBtaXNzaW5nOiAkZmlsZSIgfQ0KICAgIH0NCiAgICBbcHNjdXN0b21vYmplY3RdQHsNCiAgICAgICAgUm9vdD0kcm9vdDsgQ29tcGlsZXI9JGNvbXBpbGVyOyBFbmdpbmU9JGVuZ2luZTsgRGF0YT0kY2ZnLkFwcERhdGFQYXRoDQogICAgICAgIEtleT0iSEtMTTpcU09GVFdBUkVcV2luZGhhd2tcRW5naW5lXE1vZHNcJHNjcmlwdDpNb2RJZCINCiAgICAgICAgU3RvcmFnZT0iSEtMTTpcU09GVFdBUkVcV2luZGhhd2tcRW5naW5lXE1vZHNXcml0YWJsZVwkc2NyaXB0Ok1vZElkXExvY2FsU3RvcmFnZSINCiAgICAgICAgU291cmNlPShKb2luLVBhdGggJGNmZy5BcHBEYXRhUGF0aCAiTW9kc1NvdXJjZVwkc2NyaXB0Ok1vZElkLndoLmNwcCIpDQogICAgfQ0KfQ0KDQpmdW5jdGlvbiBHZXQtTW9kU25hcHNob3QoJEhvc3RFbnYpIHsNCiAgICBpZiAoLW5vdCAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkSG9zdEVudi5LZXkpKSB7IHJldHVybiAkbnVsbCB9DQogICAgJGtleSA9IEdldC1JdGVtIC1MaXRlcmFsUGF0aCAkSG9zdEVudi5LZXkNCiAgICAkdmFsdWVzID0gQCgpDQogICAgZm9yZWFjaCAoJG5hbWUgaW4gJGtleS5HZXRWYWx1ZU5hbWVzKCkpIHsNCiAgICAgICAgJHZhbHVlcyArPSBbcHNjdXN0b21vYmplY3RdQHsgTmFtZT0kbmFtZTsgS2luZD0ka2V5LkdldFZhbHVlS2luZCgkbmFtZSkuVG9TdHJpbmcoKTsgVmFsdWU9JGtleS5HZXRWYWx1ZSgkbmFtZSkgfQ0KICAgIH0NCiAgICBbcHNjdXN0b21vYmplY3RdQHsgVmFsdWVzPSR2YWx1ZXM7IFZlcnNpb249JGtleS5HZXRWYWx1ZSgnVmVyc2lvbicsJycpOyBEaXNhYmxlZD1baW50XSRrZXkuR2V0VmFsdWUoJ0Rpc2FibGVkJywwKTsgTGlicmFyeT0ka2V5LkdldFZhbHVlKCdMaWJyYXJ5RmlsZU5hbWUnLCcnKSB9DQp9DQoNCmZ1bmN0aW9uIFNldC1Nb2REaXNhYmxlZCgkSG9zdEVudiwgW2ludF0kVmFsdWUpIHsNCiAgICBOZXctSXRlbVByb3BlcnR5IC1MaXRlcmFsUGF0aCAkSG9zdEVudi5LZXkgLU5hbWUgRGlzYWJsZWQgLVByb3BlcnR5VHlwZSBEV29yZCAtVmFsdWUgJFZhbHVlIC1Gb3JjZSB8IE91dC1OdWxsDQp9DQoNCmZ1bmN0aW9uIEdldC1Nb2RQcm9jZXNzZXMgew0KICAgIEAoR2V0LUNpbUluc3RhbmNlIFdpbjMyX1Byb2Nlc3MgLUZpbHRlciAiTmFtZT0nd2luZGhhd2suZXhlJyIgfCBXaGVyZS1PYmplY3QgeyAkXy5Db21tYW5kTGluZSAtbWF0Y2ggKCctdG9vbC1tb2RccysiPycgKyBbcmVnZXhdOjpFc2NhcGUoJHNjcmlwdDpNb2RJZCkgKyAnIj8oPzpcc3wkKScpIH0pDQp9DQoNCmZ1bmN0aW9uIFdhaXQtTW9kU3RvcHBlZCB7DQogICAgZm9yICgkaT0wOyAkaSAtbHQgNTA7ICRpKyspIHsgaWYgKEAoR2V0LU1vZFByb2Nlc3NlcykuQ291bnQgLWVxIDApIHsgcmV0dXJuIH07IFN0YXJ0LVNsZWVwIC1NaWxsaXNlY29uZHMgMjAwIH0NCiAgICB0aHJvdyAnSXNsYW5kIGRpZCBub3Qgc3RvcDsgbm8gcHJvY2VzcyB3YXMgZm9yY2libHkgdGVybWluYXRlZC4nDQp9DQoNCmZ1bmN0aW9uIFNldC1VcGRhdGVSZXF1ZXN0KCRIb3N0RW52LCBbaW50XSRWYWx1ZSkgew0KICAgIGlmICgtbm90IChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRIb3N0RW52LlN0b3JhZ2UpKSB7IE5ldy1JdGVtIC1QYXRoICRIb3N0RW52LlN0b3JhZ2UgLUZvcmNlIHwgT3V0LU51bGwgfQ0KICAgIE5ldy1JdGVtUHJvcGVydHkgLUxpdGVyYWxQYXRoICRIb3N0RW52LlN0b3JhZ2UgLU5hbWUgVXBkYXRlUmVxdWVzdGVkIC1Qcm9wZXJ0eVR5cGUgRFdvcmQgLVZhbHVlICRWYWx1ZSAtRm9yY2UgfCBPdXQtTnVsbA0KfQ0KDQpmdW5jdGlvbiBTZXQtVXBkYXRlQXZhaWxhYmxlKCRIb3N0RW52LCBbaW50XSRWYWx1ZSkgew0KICAgIGlmICgtbm90IChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRIb3N0RW52LlN0b3JhZ2UpKSB7IE5ldy1JdGVtIC1QYXRoICRIb3N0RW52LlN0b3JhZ2UgLUZvcmNlIHwgT3V0LU51bGwgfQ0KICAgIE5ldy1JdGVtUHJvcGVydHkgLUxpdGVyYWxQYXRoICRIb3N0RW52LlN0b3JhZ2UgLU5hbWUgVXBkYXRlQXZhaWxhYmxlIC1Qcm9wZXJ0eVR5cGUgRFdvcmQgLVZhbHVlICRWYWx1ZSAtRm9yY2UgfCBPdXQtTnVsbA0KfQ0KDQpmdW5jdGlvbiBHZXQtTW9kU3RvcmFnZSgkSG9zdEVudikgew0KICAgIGlmIChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRIb3N0RW52LlN0b3JhZ2UpIHsgR2V0LUl0ZW1Qcm9wZXJ0eSAtTGl0ZXJhbFBhdGggJEhvc3RFbnYuU3RvcmFnZSB9DQp9DQoNCmZ1bmN0aW9uIFRlc3QtSGFuZG9mZigkSG9zdEVudiwgW3N0cmluZ10kVmVyc2lvbikgew0KICAgICRzdG9yYWdlID0gR2V0LU1vZFN0b3JhZ2UgJEhvc3RFbnYNCiAgICAkcHJvY2Vzc2VzID0gQChHZXQtTW9kUHJvY2Vzc2VzKQ0KICAgIGlmICgtbm90ICRzdG9yYWdlIC1vciAtbm90ICRzdG9yYWdlLlBTT2JqZWN0LlByb3BlcnRpZXNbJ1VwZGF0ZUhlYXJ0YmVhdCddKSB7IHJldHVybiAkZmFsc2UgfQ0KICAgICR1cHRpbWUgPSAoR2V0LUNpbUluc3RhbmNlIFdpbjMyX1BlcmZGb3JtYXR0ZWREYXRhX1BlcmZPU19TeXN0ZW0pLlN5c3RlbVVwVGltZQ0KICAgICRkaWZmZXJlbmNlID0gW2xvbmddJHVwdGltZSAtIFtsb25nXSRzdG9yYWdlLlVwZGF0ZUhlYXJ0YmVhdA0KICAgICRwcm9jZXNzTWF0Y2hlcyA9IEAoJHByb2Nlc3NlcyB8IFdoZXJlLU9iamVjdCB7ICRfLlByb2Nlc3NJZCAtZXEgJHN0b3JhZ2UuVXBkYXRlUGlkIH0pLkNvdW50IC1lcSAxDQogICAgKCRzdG9yYWdlLlVwZGF0ZVZlcnNpb24gLWNlcSAkVmVyc2lvbiAtYW5kICRwcm9jZXNzTWF0Y2hlcyAtYW5kICRkaWZmZXJlbmNlIC1nZSAtMiAtYW5kICRkaWZmZXJlbmNlIC1sdCA4IC1hbmQgJHN0b3JhZ2UuVXBkYXRlUmVhZHkgLWVxIDEgLWFuZCAkc3RvcmFnZS5VcGRhdGVCdXN5IC1lcSAwKQ0KfQ0KDQpmdW5jdGlvbiBSZXF1ZXN0LU1vZEhhbmRvZmYoJEhvc3RFbnYsICRPbGQpIHsNCiAgICBpZiAoJE9sZC5EaXNhYmxlZCAtZXEgMSAtb3IgQChHZXQtTW9kUHJvY2Vzc2VzKS5Db3VudCAtZXEgMCkgeyByZXR1cm4gJHRydWUgfQ0KICAgIFNldC1VcGRhdGVSZXF1ZXN0ICRIb3N0RW52IDENCiAgICBmb3IgKCRpPTA7ICRpIC1sdCA0OyAkaSsrKSB7IFN0YXJ0LVNsZWVwIC1TZWNvbmRzIDE7IGlmIChUZXN0LUhhbmRvZmYgJEhvc3RFbnYgJE9sZC5WZXJzaW9uKSB7IHJldHVybiAkdHJ1ZSB9IH0NCiAgICBTZXQtVXBkYXRlUmVxdWVzdCAkSG9zdEVudiAwDQogICAgJGZhbHNlDQp9DQoNCmZ1bmN0aW9uIENvbXBpbGUtSXNsYW5kKCRIb3N0RW52LCBbc3RyaW5nXSRTb3VyY2UsIFtzdHJpbmddJFZlcnNpb24sIFtzdHJpbmddJFN0YWdlKSB7DQogICAgJGNsYW5nID0gSm9pbi1QYXRoICRIb3N0RW52LkNvbXBpbGVyICdiaW5cY2xhbmcrKy5leGUnDQogICAgJGxpYnJhcmllcyA9ICdvbGUzMiBvbGVhdXQzMiBzaGNvcmUgZDJkMSBkd3JpdGUgZHdtYXBpIGdkaTMyIHVzZXIzMiBzaGVsbDMyIHJ1bnRpbWVvYmplY3Qgd2luZG93c2NvZGVjcyBhdnJ0IHNldHVwYXBpIHdpbmh0dHAgcGRoIHdpbm1tIGQzZDExIGR4Z2kgZGNvbXAgZDNkY29tcGlsZXIgZHhndWlkIGNvbWN0bDMyJy5TcGxpdCgnICcpDQogICAgZm9yZWFjaCAoJGJpdHMgaW4gQCgnNjQnLCczMicpKSB7DQogICAgICAgICR0YXJnZXQgPSBpZiAoJGJpdHMgLWVxICc2NCcpIHsgJ3g4Nl82NC13NjQtbWluZ3czMicgfSBlbHNlIHsgJ2k2ODYtdzY0LW1pbmd3MzInIH0NCiAgICAgICAgJG91dHB1dCA9IEpvaW4tUGF0aCAkU3RhZ2UgIiRiaXRzLmRsbCINCiAgICAgICAgJGFyZ3VtZW50cyA9IEAoJy1zdGQ9YysrMjMnLCctTzInLCctc2hhcmVkJywnLURVTklDT0RFJywnLURfVU5JQ09ERScsJy1EV0hfTU9EJywNCiAgICAgICAgICAgICctRFdJTlZFUj0weDBBMDAnLCctRF9XSU4zMl9XSU5OVD0weDBBMDAnLCctRF9XSU4zMl9JRT0weDBBMDAnLCctRE5URERJX1ZFUlNJT049MHgwQTAwMDAwOCcsJy1EX19VU0VfTUlOR1dfQU5TSV9TVERJTz0wJywNCiAgICAgICAgICAgICgnLURXSF9NT0RfSUQ9TFwiJyArICRzY3JpcHQ6TW9kSWQgKyAnXCInKSwgKCctRFdIX01PRF9WRVJTSU9OPUxcIicgKyAkVmVyc2lvbiArICdcIicpLA0KICAgICAgICAgICAgKEpvaW4tUGF0aCAkSG9zdEVudi5FbmdpbmUgIiRiaXRzXHdpbmRoYXdrLmxpYiIpLCAnLXgnLCdjKysnLCRTb3VyY2UsJy1pbmNsdWRlJywnd2luZGhhd2tfYXBpLmgnLCctdGFyZ2V0JywkdGFyZ2V0LA0KICAgICAgICAgICAgJy1XbCwtLWV4cG9ydC1hbGwtc3ltYm9scycsJy1vJywkb3V0cHV0KSArIEAoJGxpYnJhcmllcyB8IEZvckVhY2gtT2JqZWN0IHsgJy1sJyArICRfIH0pDQogICAgICAgIFB1c2gtTG9jYXRpb24gJEhvc3RFbnYuQ29tcGlsZXINCiAgICAgICAgdHJ5IHsNCiAgICAgICAgICAgICYgJGNsYW5nIEBhcmd1bWVudHMgMj4mMSB8IE91dC1GaWxlIC1MaXRlcmFsUGF0aCAoSm9pbi1QYXRoICRTdGFnZSAiY29tcGlsZS0kYml0cy5sb2ciKSAtRW5jb2RpbmcgdXRmOA0KICAgICAgICAgICAgaWYgKCRMQVNURVhJVENPREUgLW5lIDAgLW9yIC1ub3QgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJG91dHB1dCkpIHsgdGhyb3cgIkNvbXBpbGUgZmFpbGVkICgkYml0cy1iaXQpLiBTZWUgY29tcGlsZS0kYml0cy5sb2cuIiB9DQogICAgICAgIH0gZmluYWxseSB7IFBvcC1Mb2NhdGlvbiB9DQogICAgfQ0KfQ0KDQpmdW5jdGlvbiBBZGQtTWlzc2luZ1NldHRpbmdzKCRIb3N0RW52LCAkU2V0dGluZ3MpIHsNCiAgICAkcGF0aCA9IEpvaW4tUGF0aCAkSG9zdEVudi5LZXkgJ1NldHRpbmdzJw0KICAgIGlmICgtbm90IChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRwYXRoKSkgeyBOZXctSXRlbSAtUGF0aCAkcGF0aCB8IE91dC1OdWxsIH0NCiAgICAka2V5ID0gR2V0LUl0ZW0gLUxpdGVyYWxQYXRoICRwYXRoDQogICAgZm9yZWFjaCAoJHMgaW4gJFNldHRpbmdzKSB7DQogICAgICAgIGlmICgkcy5uYW1lIC1ub3RpbiAka2V5LkdldFZhbHVlTmFtZXMoKSkgeyBOZXctSXRlbVByb3BlcnR5IC1MaXRlcmFsUGF0aCAkcGF0aCAtTmFtZSAkcy5uYW1lIC1WYWx1ZSAkcy52YWx1ZSAtUHJvcGVydHlUeXBlICRzLmtpbmQgfCBPdXQtTnVsbCB9DQogICAgfQ0KfQ0KDQpmdW5jdGlvbiBTZXQtTmV3TW9kKCRIb3N0RW52LCAkTWFuaWZlc3QsIFtzdHJpbmddJExpYnJhcnkpIHsNCiAgICBpZiAoLW5vdCAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkSG9zdEVudi5LZXkpKSB7IE5ldy1JdGVtIC1QYXRoICRIb3N0RW52LktleSAtRm9yY2UgfCBPdXQtTnVsbCB9DQogICAgU2V0LU1vZERpc2FibGVkICRIb3N0RW52IDENCiAgICBmb3JlYWNoICgkcGFpciBpbiBAKEAoJ0xpYnJhcnlGaWxlTmFtZScsJExpYnJhcnkpLCBAKCdWZXJzaW9uJywkTWFuaWZlc3QudmVyc2lvbiksIEAoJ0luY2x1ZGUnLCd3aW5kaGF3ay5leGUnKSwgQCgnRXhjbHVkZScsJycpLCBAKCdBcmNoaXRlY3R1cmUnLCcnKSkpIHsNCiAgICAgICAgTmV3LUl0ZW1Qcm9wZXJ0eSAtTGl0ZXJhbFBhdGggJEhvc3RFbnYuS2V5IC1OYW1lICRwYWlyWzBdIC1WYWx1ZSAkcGFpclsxXSAtUHJvcGVydHlUeXBlIFN0cmluZyAtRm9yY2UgfCBPdXQtTnVsbA0KICAgIH0NCiAgICBBZGQtTWlzc2luZ1NldHRpbmdzICRIb3N0RW52ICRNYW5pZmVzdC5zZXR0aW5ncw0KfQ0KDQpmdW5jdGlvbiBSZXN0b3JlLU1vZFNuYXBzaG90KCRIb3N0RW52LCAkT2xkLCBbc3RyaW5nXSRCYWNrdXApIHsNCiAgICBpZiAoJG51bGwgLWVxICRPbGQpIHsNCiAgICAgICAgaWYgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJEhvc3RFbnYuS2V5KSB7IFJlbW92ZS1JdGVtIC1MaXRlcmFsUGF0aCAkSG9zdEVudi5LZXkgLVJlY3Vyc2UgLUZvcmNlIH0NCiAgICAgICAgaWYgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJEhvc3RFbnYuU291cmNlKSB7IFJlbW92ZS1JdGVtIC1MaXRlcmFsUGF0aCAkSG9zdEVudi5Tb3VyY2UgLUZvcmNlIH0NCiAgICAgICAgcmV0dXJuDQogICAgfQ0KICAgIGZvcmVhY2ggKCR2IGluICRPbGQuVmFsdWVzKSB7DQogICAgICAgIGlmICgkdi5OYW1lIC1uZSAnRGlzYWJsZWQnKSB7IE5ldy1JdGVtUHJvcGVydHkgLUxpdGVyYWxQYXRoICRIb3N0RW52LktleSAtTmFtZSAkdi5OYW1lIC1WYWx1ZSAkdi5WYWx1ZSAtUHJvcGVydHlUeXBlICR2LktpbmQgLUZvcmNlIHwgT3V0LU51bGwgfQ0KICAgIH0NCiAgICBDb3B5LUl0ZW0gLUxpdGVyYWxQYXRoIChKb2luLVBhdGggJEJhY2t1cCAncHJldmlvdXMud2guY3BwJykgLURlc3RpbmF0aW9uICRIb3N0RW52LlNvdXJjZSAtRm9yY2UNCiAgICBTZXQtTW9kRGlzYWJsZWQgJEhvc3RFbnYgJE9sZC5EaXNhYmxlZA0KfQ0KDQpmdW5jdGlvbiBXYWl0LU1vZEhlYWx0aHkoJEhvc3RFbnYsIFtzdHJpbmddJFZlcnNpb24pIHsNCiAgICAkZXhwZWN0ZWRQaWQgPSAwDQogICAgJG9ic2VydmF0aW9uID0gJG51bGwNCiAgICBmb3IgKCRpPTA7ICRpIC1sdCA0MDsgJGkrKykgew0KICAgICAgICBTdGFydC1TbGVlcCAtU2Vjb25kcyAxDQogICAgICAgICRzdG9yYWdlID0gR2V0LU1vZFN0b3JhZ2UgJEhvc3RFbnYNCiAgICAgICAgJHByb2Nlc3NlcyA9IEAoR2V0LU1vZFByb2Nlc3NlcykNCiAgICAgICAgaWYgKCRzdG9yYWdlIC1hbmQgJHN0b3JhZ2UuUFNPYmplY3QuUHJvcGVydGllc1snVXBkYXRlVmVyc2lvbiddIC1hbmQgJHN0b3JhZ2UuVXBkYXRlVmVyc2lvbiAtY2VxICRWZXJzaW9uIC1hbmQNCiAgICAgICAgICAgICRzdG9yYWdlLlBTT2JqZWN0LlByb3BlcnRpZXNbJ1VwZGF0ZVJlcXVpcmVzR2xhc3MnXSAtYW5kDQogICAgICAgICAgICAoJHN0b3JhZ2UuVXBkYXRlUmVxdWlyZXNHbGFzcyAtZXEgMCAtb3IgKCRzdG9yYWdlLlBTT2JqZWN0LlByb3BlcnRpZXNbJ05hdGl2ZUdsYXNzUmVhZHknXSAtYW5kICRzdG9yYWdlLk5hdGl2ZUdsYXNzUmVhZHkgLWVxIDEpKSAtYW5kDQogICAgICAgICAgICBAKCRwcm9jZXNzZXMgfCBXaGVyZS1PYmplY3QgeyAkXy5Qcm9jZXNzSWQgLWVxICRzdG9yYWdlLlVwZGF0ZVBpZCB9KS5Db3VudCAtZXEgMSkgew0KICAgICAgICAgICAgaWYgKCRleHBlY3RlZFBpZCAtZXEgMCkgeyAkZXhwZWN0ZWRQaWQgPSBbaW50XSRzdG9yYWdlLlVwZGF0ZVBpZDsgJG9ic2VydmF0aW9uPVtEaWFnbm9zdGljcy5TdG9wd2F0Y2hdOjpTdGFydE5ldygpIH0NCiAgICAgICAgICAgIGlmICgkZXhwZWN0ZWRQaWQgLW5lICRzdG9yYWdlLlVwZGF0ZVBpZCkgeyB0aHJvdyAnSXNsYW5kIHJlc3RhcnRlZCBkdXJpbmcgc3RhcnR1cCBvYnNlcnZhdGlvbi4nIH0NCiAgICAgICAgICAgICR1cHRpbWUgPSAoR2V0LUNpbUluc3RhbmNlIFdpbjMyX1BlcmZGb3JtYXR0ZWREYXRhX1BlcmZPU19TeXN0ZW0pLlN5c3RlbVVwVGltZQ0KICAgICAgICAgICAgJGFnZT1bbG9uZ10kdXB0aW1lIC0gW2xvbmddJHN0b3JhZ2UuVXBkYXRlSGVhcnRiZWF0DQogICAgICAgICAgICBpZiAoJGFnZSAtZ2UgLTIgLWFuZCAkYWdlIC1sdCA4IC1hbmQgJG9ic2VydmF0aW9uLkVsYXBzZWQuVG90YWxTZWNvbmRzIC1nZSAzMCkgeyByZXR1cm4gfQ0KICAgICAgICB9IGVsc2VpZiAoJGV4cGVjdGVkUGlkIC1uZSAwKSB7IHRocm93ICdJc2xhbmQgZmFpbGVkIGR1cmluZyBzdGFydHVwIG9ic2VydmF0aW9uLicgfQ0KICAgIH0NCiAgICB0aHJvdyAnTmV3IGlzbGFuZCBzdGFydHVwIGRpZCBub3QgcGFzcyB0aGUgMzAtc2Vjb25kIGhlYWx0aCBjaGVjay4nDQp9DQoNCmZ1bmN0aW9uIEdldC1NYW5hZ2VkRGxsUGF0aCgkSG9zdEVudiwgW3N0cmluZ10kQml0cywgW3N0cmluZ10kTGlicmFyeSkgew0KICAgIGlmICgkQml0cyAtbm90aW4gQCgnMzInLCc2NCcpIC1vciAkTGlicmFyeSAtY25vdG1hdGNoICdebG9jYWxAZHluYW1pYy1pc2xhbmQtbGlxdWlkLWdsYXNzX1swLTkuXStfW2EtZjAtOV17MTJ9XC5kbGwkJykgeyB0aHJvdyAnSW52YWxpZCBtYW5hZ2VkIERMTCBuYW1lLicgfQ0KICAgIEpvaW4tUGF0aCAkSG9zdEVudi5EYXRhICJFbmdpbmVcTW9kc1wkQml0c1wkTGlicmFyeSINCn0NCg0KZnVuY3Rpb24gUmVzdG9yZS1UcmFuc2FjdGlvbigkSG9zdEVudiwgW3N0cmluZ10kU3RhdGVSb290LCAkSm91cm5hbCkgew0KICAgIGlmICgkSm91cm5hbC5zY2hlbWEgLW5lIDEgLW9yICRKb3VybmFsLnN0YWdlIC1jbm90bWF0Y2ggJ15bYS1mMC05XXszMn0kJykgeyB0aHJvdyAnSW52YWxpZCB0cmFuc2FjdGlvbiBqb3VybmFsLicgfQ0KICAgICRiYWNrdXAgPSBKb2luLVBhdGggJFN0YXRlUm9vdCAkSm91cm5hbC5zdGFnZQ0KICAgIGlmIChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRIb3N0RW52LktleSkgeyBTZXQtTW9kRGlzYWJsZWQgJEhvc3RFbnYgMTsgV2FpdC1Nb2RTdG9wcGVkIH0NCiAgICBSZXN0b3JlLU1vZFNuYXBzaG90ICRIb3N0RW52ICRKb3VybmFsLm9sZCAkYmFja3VwDQogICAgU2V0LVVwZGF0ZVJlcXVlc3QgJEhvc3RFbnYgMA0KICAgIGlmICgkSm91cm5hbC5vbGQgLWFuZCAkSm91cm5hbC5vbGQuRGlzYWJsZWQgLWVxIDApIHsNCiAgICAgICAgIyBzaG9ydGN1dDogb2xkIHByZS11cGRhdGVyIHJlbGVhc2VzIGhhdmUgbm8gaGVhcnRiZWF0OyB2ZXJpZnkgdGhlaXIgdG9vbCBwcm9jZXNzIHN0YXJ0cy4NCiAgICAgICAgZm9yICgkaT0wOyAkaSAtbHQgNTA7ICRpKyspIHsgaWYgKEAoR2V0LU1vZFByb2Nlc3NlcykuQ291bnQgLWd0IDApIHsgYnJlYWsgfTsgU3RhcnQtU2xlZXAgLU1pbGxpc2Vjb25kcyAyMDAgfQ0KICAgICAgICBpZiAoQChHZXQtTW9kUHJvY2Vzc2VzKS5Db3VudCAtZXEgMCkgeyB0aHJvdyAnUm9sbGJhY2sgY29uZmlndXJhdGlvbiByZXN0b3JlZCwgYnV0IHRoZSBvbGQgaXNsYW5kIGRpZCBub3Qgc3RhcnQuJyB9DQogICAgfQ0KfQ0KDQpmdW5jdGlvbiBJbnZva2UtSXNsYW5kSW5zdGFsbCgkSG9zdEVudiwgW3N0cmluZ10kU3RhdGVSb290LCAkTWFuaWZlc3QsIFtzdHJpbmddJFNvdXJjZSwgJFN0YXRlKSB7DQogICAgJG9sZCA9IEdldC1Nb2RTbmFwc2hvdCAkSG9zdEVudg0KICAgIGlmICgkb2xkKSB7DQogICAgICAgIGlmICgtbm90IChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRIb3N0RW52LlNvdXJjZSkpIHsgdGhyb3cgJ0V4aXN0aW5nIHNvdXJjZSBtaXNzaW5nOyBwcmVzZXJ2aW5nIGluc3RhbGxlZCBtb2QuJyB9DQogICAgICAgIGlmICgkU3RhdGUuc291cmNlU2hhMjU2IC1hbmQgKEdldC1GaWxlRGlnZXN0ICRIb3N0RW52LlNvdXJjZSkgLWNuZSAkU3RhdGUuc291cmNlU2hhMjU2KSB7IHRocm93ICdMb2NhbCBzb3VyY2Ugd2FzIGVkaXRlZDsgcmVmdXNpbmcgdG8gb3ZlcndyaXRlIGl0LicgfQ0KICAgICAgICBpZiAoLW5vdCAkU3RhdGUuc291cmNlU2hhMjU2KSB7IHRocm93ICdFeGlzdGluZyBtb2QgaXMgbm90IG1hbmFnZWQgYnkgdGhpcyB1cGRhdGVyLiBCYWNrIGl0IHVwIGFuZCBtaWdyYXRlIGV4cGxpY2l0bHkuJyB9DQogICAgICAgIGlmICgoR2V0LVJlbGVhc2VWZXJzaW9uICRvbGQuVmVyc2lvbikgLWdlIChHZXQtUmVsZWFzZVZlcnNpb24gJE1hbmlmZXN0LnZlcnNpb24pKSB7IHJldHVybiAnQWxyZWFkeSBjdXJyZW50LicgfQ0KICAgIH0NCiAgICAkc3RhZ2VJZCA9IFtndWlkXTo6TmV3R3VpZCgpLlRvU3RyaW5nKCdOJykNCiAgICAkc3RhZ2UgPSBKb2luLVBhdGggJFN0YXRlUm9vdCAkc3RhZ2VJZA0KICAgIE5ldy1JdGVtIC1JdGVtVHlwZSBEaXJlY3RvcnkgLVBhdGggJHN0YWdlIHwgT3V0LU51bGwNCiAgICBDb3B5LUl0ZW0gLUxpdGVyYWxQYXRoICRTb3VyY2UgLURlc3RpbmF0aW9uIChKb2luLVBhdGggJHN0YWdlICdzb3VyY2Uud2guY3BwJykNCiAgICB0cnkgeyBDb21waWxlLUlzbGFuZCAkSG9zdEVudiAoSm9pbi1QYXRoICRzdGFnZSAnc291cmNlLndoLmNwcCcpICRNYW5pZmVzdC52ZXJzaW9uICRzdGFnZSB9DQogICAgY2F0Y2ggeyAkU3RhdGUuZmFpbGVkVmVyc2lvbj0kTWFuaWZlc3QudmVyc2lvbjsgV3JpdGUtSnNvbkZpbGUgKEpvaW4tUGF0aCAkU3RhdGVSb290ICdzdGF0ZS5qc29uJykgJFN0YXRlOyB0aHJvdyB9DQogICAgJGpvdXJuYWxQYXRoID0gSm9pbi1QYXRoICRTdGF0ZVJvb3QgJ3RyYW5zYWN0aW9uLmpzb24nDQogICAgdHJ5IHsNCiAgICAgICAgaWYgKCRvbGQgLWFuZCAtbm90IChSZXF1ZXN0LU1vZEhhbmRvZmYgJEhvc3RFbnYgJG9sZCkpIHsgcmV0dXJuICdJc2xhbmQgaXMgYnVzeTsgY2hlY2sgYWdhaW4gYWZ0ZXIgZmluaXNoaW5nIHRoZSB0aW1lci9kaWFsb2cuJyB9DQogICAgICAgICRqb3VybmFsID0gW3BzY3VzdG9tb2JqZWN0XUB7IHNjaGVtYT0xOyBzdGFnZT0kc3RhZ2VJZDsgdmVyc2lvbj0kTWFuaWZlc3QudmVyc2lvbjsgb2xkPSRvbGQ7IG9sZFN0YXRlPSRTdGF0ZS5QU09iamVjdC5Db3B5KCkgfQ0KICAgICAgICBpZiAoJG9sZCkgeyBDb3B5LUl0ZW0gLUxpdGVyYWxQYXRoICRIb3N0RW52LlNvdXJjZSAtRGVzdGluYXRpb24gKEpvaW4tUGF0aCAkc3RhZ2UgJ3ByZXZpb3VzLndoLmNwcCcpIH0NCiAgICAgICAgV3JpdGUtSnNvbkZpbGUgJGpvdXJuYWxQYXRoICRqb3VybmFsDQogICAgfSBjYXRjaCB7IFNldC1VcGRhdGVSZXF1ZXN0ICRIb3N0RW52IDA7IHRocm93IH0NCiAgICB0cnkgew0KICAgICAgICBpZiAoJG9sZCkgeyBTZXQtTW9kRGlzYWJsZWQgJEhvc3RFbnYgMTsgV2FpdC1Nb2RTdG9wcGVkIH0NCiAgICAgICAgZm9yZWFjaCAoJGRpciBpbiBAKChKb2luLVBhdGggJEhvc3RFbnYuRGF0YSAnRW5naW5lXE1vZHNcNjQnKSwoSm9pbi1QYXRoICRIb3N0RW52LkRhdGEgJ0VuZ2luZVxNb2RzXDMyJyksKFNwbGl0LVBhdGggJEhvc3RFbnYuU291cmNlIC1QYXJlbnQpKSkgew0KICAgICAgICAgICAgaWYgKC1ub3QgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJGRpcikpIHsgTmV3LUl0ZW0gLUl0ZW1UeXBlIERpcmVjdG9yeSAtUGF0aCAkZGlyIC1Gb3JjZSB8IE91dC1OdWxsIH0NCiAgICAgICAgfQ0KICAgICAgICAkbGlicmFyeSA9ICIkc2NyaXB0Ok1vZElkYF8kKCRNYW5pZmVzdC52ZXJzaW9uKV8kKCRzdGFnZUlkLlN1YnN0cmluZygwLDEyKSkuZGxsIg0KICAgICAgICBmb3JlYWNoICgkYml0cyBpbiBAKCc2NCcsJzMyJykpIHsgQ29weS1JdGVtIC1MaXRlcmFsUGF0aCAoSm9pbi1QYXRoICRzdGFnZSAiJGJpdHMuZGxsIikgLURlc3RpbmF0aW9uIChHZXQtTWFuYWdlZERsbFBhdGggJEhvc3RFbnYgJGJpdHMgJGxpYnJhcnkpIH0NCiAgICAgICAgQ29weS1JdGVtIC1MaXRlcmFsUGF0aCAoSm9pbi1QYXRoICRzdGFnZSAnc291cmNlLndoLmNwcCcpIC1EZXN0aW5hdGlvbiAkSG9zdEVudi5Tb3VyY2UgLUZvcmNlDQogICAgICAgIFNldC1OZXdNb2QgJEhvc3RFbnYgJE1hbmlmZXN0ICRsaWJyYXJ5DQogICAgICAgIFNldC1VcGRhdGVSZXF1ZXN0ICRIb3N0RW52IDANCiAgICAgICAgTmV3LUl0ZW1Qcm9wZXJ0eSAtTGl0ZXJhbFBhdGggJEhvc3RFbnYuU3RvcmFnZSAtTmFtZSBOYXRpdmVHbGFzc1JlYWR5IC1WYWx1ZSAwIC1Qcm9wZXJ0eVR5cGUgRFdvcmQgLUZvcmNlIHwgT3V0LU51bGwNCiAgICAgICAgJGRpc2FibGVkID0gaWYgKCRvbGQpIHsgJG9sZC5EaXNhYmxlZCB9IGVsc2UgeyAwIH0NCiAgICAgICAgU2V0LU1vZERpc2FibGVkICRIb3N0RW52ICRkaXNhYmxlZA0KICAgICAgICBpZiAoJGRpc2FibGVkIC1lcSAwKSB7IFdhaXQtTW9kSGVhbHRoeSAkSG9zdEVudiAkTWFuaWZlc3QudmVyc2lvbiB9DQogICAgICAgICRTdGF0ZS52ZXJzaW9uPSRNYW5pZmVzdC52ZXJzaW9uDQogICAgICAgICRTdGF0ZS5zb3VyY2VTaGEyNTY9JE1hbmlmZXN0LnNvdXJjZVNoYTI1Ng0KICAgICAgICAkU3RhdGUuZmFpbGVkVmVyc2lvbj0nJw0KICAgICAgICBTZXQtVXBkYXRlQXZhaWxhYmxlICRIb3N0RW52IDANCiAgICAgICAgV3JpdGUtSnNvbkZpbGUgKEpvaW4tUGF0aCAkU3RhdGVSb290ICdzdGF0ZS5qc29uJykgJFN0YXRlDQogICAgICAgIFdyaXRlLUpzb25GaWxlIChKb2luLVBhdGggJFN0YXRlUm9vdCAncHJldmlvdXMuanNvbicpICRqb3VybmFsDQogICAgICAgIFJlbW92ZS1JdGVtIC1MaXRlcmFsUGF0aCAkam91cm5hbFBhdGggLUZvcmNlDQogICAgICAgICdVcGRhdGVkIHRvICcgKyAkTWFuaWZlc3QudmVyc2lvbg0KICAgIH0gY2F0Y2ggew0KICAgICAgICAkZmFpbHVyZSA9ICRfDQogICAgICAgIFJlc3RvcmUtVHJhbnNhY3Rpb24gJEhvc3RFbnYgJFN0YXRlUm9vdCAkam91cm5hbA0KICAgICAgICAkb2xkU3RhdGUgPSAkam91cm5hbC5vbGRTdGF0ZQ0KICAgICAgICAkb2xkU3RhdGUuZmFpbGVkVmVyc2lvbj0kTWFuaWZlc3QudmVyc2lvbg0KICAgICAgICBXcml0ZS1Kc29uRmlsZSAoSm9pbi1QYXRoICRTdGF0ZVJvb3QgJ3N0YXRlLmpzb24nKSAkb2xkU3RhdGUNCiAgICAgICAgUmVtb3ZlLUl0ZW0gLUxpdGVyYWxQYXRoICRqb3VybmFsUGF0aCAtRm9yY2UNCiAgICAgICAgdGhyb3cgJGZhaWx1cmUNCiAgICB9IGZpbmFsbHkgeyBTZXQtVXBkYXRlUmVxdWVzdCAkSG9zdEVudiAwIH0NCn0NCg0KZnVuY3Rpb24gR2V0LVVwZGF0ZXJTdGF0ZShbc3RyaW5nXSRSb290KSB7DQogICAgJHBhdGggPSBKb2luLVBhdGggJFJvb3QgJ3N0YXRlLmpzb24nDQogICAgaWYgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJHBhdGgpIHsgcmV0dXJuIFJlYWQtSnNvbkZpbGUgJHBhdGggfQ0KICAgIFtwc2N1c3RvbW9iamVjdF1AeyB2ZXJzaW9uPScwLjAuMCc7IHNvdXJjZVNoYTI1Nj0nJzsgZmFpbGVkVmVyc2lvbj0nJzsgbGFzdEF1dG9DaGVjaz0wIH0NCn0NCg0KZnVuY3Rpb24gQ2xlYXItT2xkU3RhZ2VzKFtzdHJpbmddJFJvb3QsIFtzdHJpbmdbXV0kS2VlcCkgew0KICAgICRwcmVmaXg9W0lPLlBhdGhdOjpHZXRGdWxsUGF0aCgkUm9vdCkrW0lPLlBhdGhdOjpEaXJlY3RvcnlTZXBhcmF0b3JDaGFyDQogICAgZm9yZWFjaCAoJGRpciBpbiBHZXQtQ2hpbGRJdGVtIC1MaXRlcmFsUGF0aCAkUm9vdCAtRGlyZWN0b3J5KSB7DQogICAgICAgIGlmICgkZGlyLk5hbWUgLWNub3RtYXRjaCAnXlthLWYwLTldezMyfSQnIC1vciAkZGlyLk5hbWUgLWluICRLZWVwKSB7IGNvbnRpbnVlIH0NCiAgICAgICAgJHRhcmdldD1bSU8uUGF0aF06OkdldEZ1bGxQYXRoKCRkaXIuRnVsbE5hbWUpDQogICAgICAgIGlmICgtbm90ICR0YXJnZXQuU3RhcnRzV2l0aCgkcHJlZml4LFtTdHJpbmdDb21wYXJpc29uXTo6T3JkaW5hbElnbm9yZUNhc2UpKSB7IHRocm93ICdVbnNhZmUgc3RhZ2UgY2xlYW51cCBwYXRoLicgfQ0KICAgICAgICAkY29udGVudHM9QCgkZGlyKStAKEdldC1DaGlsZEl0ZW0gLUxpdGVyYWxQYXRoICR0YXJnZXQgLVJlY3Vyc2UgLUZvcmNlKQ0KICAgICAgICBpZiAoQCgkY29udGVudHMgfCBXaGVyZS1PYmplY3QgeyAkXy5BdHRyaWJ1dGVzIC1iYW5kIFtJTy5GaWxlQXR0cmlidXRlc106OlJlcGFyc2VQb2ludCB9KS5Db3VudCkgeyB0aHJvdyAnU3RhZ2UgY29udGFpbnMgYSBsaW5rOyBjbGVhbnVwIHJlZnVzZWQuJyB9DQogICAgICAgIFJlbW92ZS1JdGVtIC1MaXRlcmFsUGF0aCAkdGFyZ2V0IC1SZWN1cnNlIC1Gb3JjZQ0KICAgIH0NCn0NCg0KZnVuY3Rpb24gSW52b2tlLUlzbGFuZFVwZGF0ZSgkSG9zdEVudiwgW3N0cmluZ10kU3RhdGVSb290LCAkQ29uZmlnLCBbc3RyaW5nXSRQdWJsaWNLZXksIFtzdHJpbmddJE1vZGUpIHsNCiAgICBBc3NlcnQtUmVwb3NpdG9yeSAkQ29uZmlnLnJlcG9zaXRvcnkNCiAgICAkc3RhdGUgPSBHZXQtVXBkYXRlclN0YXRlICRTdGF0ZVJvb3QNCiAgICAkam91cm5hbFBhdGggPSBKb2luLVBhdGggJFN0YXRlUm9vdCAndHJhbnNhY3Rpb24uanNvbicNCiAgICBpZiAoJE1vZGUgLWVxICdBdXRvJykgew0KICAgICAgICBpZiAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkam91cm5hbFBhdGgpIHsgcmV0dXJuICdJbnRlcnJ1cHRlZCB1cGRhdGUgcGVuZGluZzsgdXNlIHRoZSBtYW51YWwgdXBkYXRlIGNvbW1hbmQgdG8gcmVjb3Zlci4nIH0NCiAgICAgICAgJG5vdyA9IFtEYXRlVGltZU9mZnNldF06OlV0Y05vdy5Ub1VuaXhUaW1lU2Vjb25kcygpDQogICAgICAgICRsYXN0ID0gMEwNCiAgICAgICAgaWYgKCRzdGF0ZS5QU09iamVjdC5Qcm9wZXJ0aWVzWydsYXN0QXV0b0NoZWNrJ10gLWFuZA0KICAgICAgICAgICAgW2xvbmddOjpUcnlQYXJzZShbc3RyaW5nXSRzdGF0ZS5sYXN0QXV0b0NoZWNrLCBbcmVmXSRsYXN0KSAtYW5kDQogICAgICAgICAgICAkbm93IC1nZSAkbGFzdCAtYW5kICRub3cgLSAkbGFzdCAtbHQgODY0MDApIHsgcmV0dXJuICdBbHJlYWR5IGNoZWNrZWQgd2l0aGluIDI0IGhvdXJzLicgfQ0KICAgICAgICAkc3RhdGUgfCBBZGQtTWVtYmVyIC1Ob3RlUHJvcGVydHlOYW1lIGxhc3RBdXRvQ2hlY2sgLU5vdGVQcm9wZXJ0eVZhbHVlICRub3cgLUZvcmNlDQogICAgICAgIFdyaXRlLUpzb25GaWxlIChKb2luLVBhdGggJFN0YXRlUm9vdCAnc3RhdGUuanNvbicpICRzdGF0ZQ0KICAgIH0gZWxzZSB7DQogICAgICAgIGlmIChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRqb3VybmFsUGF0aCkgew0KICAgICAgICAgICAgJGpvdXJuYWwgPSBSZWFkLUpzb25GaWxlICRqb3VybmFsUGF0aA0KICAgICAgICAgICAgUmVzdG9yZS1UcmFuc2FjdGlvbiAkSG9zdEVudiAkU3RhdGVSb290ICRqb3VybmFsDQogICAgICAgICAgICAkc3RhdGUgPSAkam91cm5hbC5vbGRTdGF0ZQ0KICAgICAgICAgICAgJHN0YXRlLmZhaWxlZFZlcnNpb249JGpvdXJuYWwudmVyc2lvbg0KICAgICAgICAgICAgV3JpdGUtSnNvbkZpbGUgKEpvaW4tUGF0aCAkU3RhdGVSb290ICdzdGF0ZS5qc29uJykgJHN0YXRlDQogICAgICAgICAgICBSZW1vdmUtSXRlbSAtTGl0ZXJhbFBhdGggJGpvdXJuYWxQYXRoIC1Gb3JjZQ0KICAgICAgICB9DQogICAgICAgICRrZWVwPUAoKQ0KICAgICAgICAkcHJldmlvdXNQYXRoPUpvaW4tUGF0aCAkU3RhdGVSb290ICdwcmV2aW91cy5qc29uJw0KICAgICAgICBpZiAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkcHJldmlvdXNQYXRoKSB7ICRrZWVwKz0gKFJlYWQtSnNvbkZpbGUgJHByZXZpb3VzUGF0aCkuc3RhZ2UgfQ0KICAgICAgICAkbGF0ZXN0U3RhZ2U9QChHZXQtQ2hpbGRJdGVtIC1MaXRlcmFsUGF0aCAkU3RhdGVSb290IC1EaXJlY3RvcnkgfCBXaGVyZS1PYmplY3QgeyAkXy5OYW1lIC1jbWF0Y2ggJ15bYS1mMC05XXszMn0kJyB9IHwgU29ydC1PYmplY3QgTGFzdFdyaXRlVGltZSAtRGVzY2VuZGluZyB8IFNlbGVjdC1PYmplY3QgLUZpcnN0IDEpDQogICAgICAgIGlmICgkbGF0ZXN0U3RhZ2UuQ291bnQpIHsgJGtlZXArPSRsYXRlc3RTdGFnZVswXS5OYW1lIH0NCiAgICAgICAgQ2xlYXItT2xkU3RhZ2VzICRTdGF0ZVJvb3QgJGtlZXANCiAgICAgICAgU2V0LVVwZGF0ZVJlcXVlc3QgJEhvc3RFbnYgMA0KICAgIH0NCiAgICAkYmFzZSA9ICdodHRwczovL2dpdGh1Yi5jb20vJyArICRDb25maWcucmVwb3NpdG9yeSArICcvcmVsZWFzZXMvJw0KICAgICRieXRlcyA9IEdldC1SZW1vdGVCeXRlcyAoJGJhc2UgKyAnbGF0ZXN0L2Rvd25sb2FkL3VwZGF0ZS5qc29uJykgMjYyMTQ0DQogICAgJHNpZ25hdHVyZSA9IEdldC1SZW1vdGVCeXRlcyAoJGJhc2UgKyAnbGF0ZXN0L2Rvd25sb2FkL3VwZGF0ZS5zaWcnKSAxMDI0DQogICAgJG1hbmlmZXN0ID0gR2V0LVZlcmlmaWVkTWFuaWZlc3QgJGJ5dGVzICRzaWduYXR1cmUgJFB1YmxpY0tleQ0KICAgIGlmICgoR2V0LVJlbGVhc2VWZXJzaW9uICRtYW5pZmVzdC52ZXJzaW9uKSAtbGUgKEdldC1SZWxlYXNlVmVyc2lvbiAkc3RhdGUudmVyc2lvbikpIHsNCiAgICAgICAgU2V0LVVwZGF0ZUF2YWlsYWJsZSAkSG9zdEVudiAwDQogICAgICAgIHJldHVybiAnQWxyZWFkeSBjdXJyZW50LicNCiAgICB9DQogICAgU2V0LVVwZGF0ZUF2YWlsYWJsZSAkSG9zdEVudiAxDQogICAgaWYgKCRNb2RlIC1lcSAnQXV0bycpIHsgcmV0dXJuICdVcGRhdGUgYXZhaWxhYmxlOiAnICsgJG1hbmlmZXN0LnZlcnNpb24gfQ0KICAgIGlmICgkc3RhdGUuZmFpbGVkVmVyc2lvbiAtY2VxICRtYW5pZmVzdC52ZXJzaW9uKSB7IHRocm93ICdUaGlzIHZlcnNpb24gcHJldmlvdXNseSBmYWlsZWQuIFdhaXRpbmcgZm9yIGEgbmV3ZXIgcmVsZWFzZS4nIH0NCiAgICAkc291cmNlID0gR2V0LVJlbW90ZUJ5dGVzICgkYmFzZSArICdkb3dubG9hZC8nICsgJG1hbmlmZXN0LnRhZyArICcvJyArICRtYW5pZmVzdC5zb3VyY2VBc3NldCkgODM4ODYwOA0KICAgICRkb3dubG9hZCA9IEpvaW4tUGF0aCAkU3RhdGVSb290ICdkb3dubG9hZC53aC5jcHAnDQogICAgW0lPLkZpbGVdOjpXcml0ZUFsbEJ5dGVzKCRkb3dubG9hZCwgJHNvdXJjZSkNCiAgICBBc3NlcnQtU291cmNlICRkb3dubG9hZCAkbWFuaWZlc3QNCiAgICAkY29yZUNoYW5nZWQ9SW5zdGFsbC1VcGRhdGVyQ29yZSAkZG93bmxvYWQgJFBTU2NyaXB0Um9vdA0KICAgIHRyeSB7IEludm9rZS1Jc2xhbmRJbnN0YWxsICRIb3N0RW52ICRTdGF0ZVJvb3QgJG1hbmlmZXN0ICRkb3dubG9hZCAkc3RhdGUgfQ0KICAgIGNhdGNoIHsNCiAgICAgICAgaWYgKCRjb3JlQ2hhbmdlZCkgeyBbSU8uRmlsZV06OlJlcGxhY2UoKEpvaW4tUGF0aCAkUFNTY3JpcHRSb290ICdjb3JlLnBzMS5wcmV2aW91cycpLChKb2luLVBhdGggJFBTU2NyaXB0Um9vdCAnY29yZS5wczEnKSwkbnVsbCkgfQ0KICAgICAgICB0aHJvdw0KICAgIH0NCn0NCg0KZnVuY3Rpb24gQXNzZXJ0LUFkbWluaXN0cmF0b3Igew0KICAgICRwcmluY2lwYWwgPSBOZXctT2JqZWN0IFNlY3VyaXR5LlByaW5jaXBhbC5XaW5kb3dzUHJpbmNpcGFsKFtTZWN1cml0eS5QcmluY2lwYWwuV2luZG93c0lkZW50aXR5XTo6R2V0Q3VycmVudCgpKQ0KICAgIGlmICgtbm90ICRwcmluY2lwYWwuSXNJblJvbGUoW1NlY3VyaXR5LlByaW5jaXBhbC5XaW5kb3dzQnVpbHRJblJvbGVdOjpBZG1pbmlzdHJhdG9yKSkgeyB0aHJvdyAnQWRtaW5pc3RyYXRvciBwZXJtaXNzaW9uIGlzIHJlcXVpcmVkIGZvciBzZXR1cC91cGRhdGUuJyB9DQp9DQoNCmZ1bmN0aW9uIFByb3RlY3QtVXBkYXRlckRpcmVjdG9yeShbc3RyaW5nXSRQYXRoKSB7DQogICAgaWYgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJFBhdGgpIHsNCiAgICAgICAgaWYgKChHZXQtSXRlbSAtTGl0ZXJhbFBhdGggJFBhdGgpLkF0dHJpYnV0ZXMgLWJhbmQgW0lPLkZpbGVBdHRyaWJ1dGVzXTo6UmVwYXJzZVBvaW50KSB7IHRocm93ICdVcGRhdGVyIGRpcmVjdG9yeSBtdXN0IG5vdCBiZSBhIGxpbmsuJyB9DQogICAgfSBlbHNlIHsgTmV3LUl0ZW0gLUl0ZW1UeXBlIERpcmVjdG9yeSAtUGF0aCAkUGF0aCB8IE91dC1OdWxsIH0NCiAgICAkYWNsID0gTmV3LU9iamVjdCBTZWN1cml0eS5BY2Nlc3NDb250cm9sLkRpcmVjdG9yeVNlY3VyaXR5DQogICAgJGFjbC5TZXRBY2Nlc3NSdWxlUHJvdGVjdGlvbigkdHJ1ZSwkZmFsc2UpDQogICAgJGFkbWlucyA9IE5ldy1PYmplY3QgU2VjdXJpdHkuUHJpbmNpcGFsLlNlY3VyaXR5SWRlbnRpZmllcignUy0xLTUtMzItNTQ0JykNCiAgICAkYWNsLlNldE93bmVyKCRhZG1pbnMpDQogICAgZm9yZWFjaCAoJHNpZCBpbiBAKCdTLTEtNS0zMi01NDQnLCdTLTEtNS0xOCcpKSB7DQogICAgICAgICRpZGVudGl0eSA9IE5ldy1PYmplY3QgU2VjdXJpdHkuUHJpbmNpcGFsLlNlY3VyaXR5SWRlbnRpZmllcigkc2lkKQ0KICAgICAgICAkcnVsZSA9IE5ldy1PYmplY3QgU2VjdXJpdHkuQWNjZXNzQ29udHJvbC5GaWxlU3lzdGVtQWNjZXNzUnVsZSgkaWRlbnRpdHksJ0Z1bGxDb250cm9sJywnQ29udGFpbmVySW5oZXJpdCxPYmplY3RJbmhlcml0JywnTm9uZScsJ0FsbG93JykNCiAgICAgICAgJGFjbC5BZGRBY2Nlc3NSdWxlKCRydWxlKQ0KICAgIH0NCiAgICAkdXNlcnMgPSBOZXctT2JqZWN0IFNlY3VyaXR5LlByaW5jaXBhbC5TZWN1cml0eUlkZW50aWZpZXIoJ1MtMS01LTMyLTU0NScpDQogICAgJGFjbC5BZGRBY2Nlc3NSdWxlKChOZXctT2JqZWN0IFNlY3VyaXR5LkFjY2Vzc0NvbnRyb2wuRmlsZVN5c3RlbUFjY2Vzc1J1bGUoJHVzZXJzLCdSZWFkQW5kRXhlY3V0ZScsJ0NvbnRhaW5lckluaGVyaXQsT2JqZWN0SW5oZXJpdCcsJ05vbmUnLCdBbGxvdycpKSkNCiAgICBTZXQtQWNsIC1MaXRlcmFsUGF0aCAkUGF0aCAtQWNsT2JqZWN0ICRhY2wNCiAgICAkZW50cmllcz1AKEdldC1DaGlsZEl0ZW0gLUxpdGVyYWxQYXRoICRQYXRoIC1Gb3JjZSAtUmVjdXJzZSkNCiAgICBmb3JlYWNoICgkZW50cnkgaW4gJGVudHJpZXMpIHsNCiAgICAgICAgaWYgKCRlbnRyeS5BdHRyaWJ1dGVzIC1iYW5kIFtJTy5GaWxlQXR0cmlidXRlc106OlJlcGFyc2VQb2ludCkgeyB0aHJvdyAnVXBkYXRlciBjb250ZW50cyBtdXN0IG5vdCBjb250YWluIGxpbmtzLicgfQ0KICAgIH0NCiAgICBmb3JlYWNoICgkZW50cnkgaW4gJGVudHJpZXMpIHsNCiAgICAgICAgaWYgKCRlbnRyeS5QU0lzQ29udGFpbmVyKSB7ICRjaGlsZEFjbD1OZXctT2JqZWN0IFNlY3VyaXR5LkFjY2Vzc0NvbnRyb2wuRGlyZWN0b3J5U2VjdXJpdHkgfQ0KICAgICAgICBlbHNlIHsgJGNoaWxkQWNsPU5ldy1PYmplY3QgU2VjdXJpdHkuQWNjZXNzQ29udHJvbC5GaWxlU2VjdXJpdHkgfQ0KICAgICAgICAkY2hpbGRBY2wuU2V0T3duZXIoJGFkbWlucykNCiAgICAgICAgJGNoaWxkQWNsLlNldEFjY2Vzc1J1bGVQcm90ZWN0aW9uKCR0cnVlLCRmYWxzZSkNCiAgICAgICAgZm9yZWFjaCAoJHBhaXIgaW4gQChAKCdTLTEtNS0zMi01NDQnLCdGdWxsQ29udHJvbCcpLEAoJ1MtMS01LTE4JywnRnVsbENvbnRyb2wnKSxAKCdTLTEtNS0zMi01NDUnLCdSZWFkQW5kRXhlY3V0ZScpKSkgew0KICAgICAgICAgICAgJGlkZW50aXR5PU5ldy1PYmplY3QgU2VjdXJpdHkuUHJpbmNpcGFsLlNlY3VyaXR5SWRlbnRpZmllcigkcGFpclswXSkNCiAgICAgICAgICAgIGlmICgkZW50cnkuUFNJc0NvbnRhaW5lcikgeyAkcnVsZT1OZXctT2JqZWN0IFNlY3VyaXR5LkFjY2Vzc0NvbnRyb2wuRmlsZVN5c3RlbUFjY2Vzc1J1bGUoJGlkZW50aXR5LCRwYWlyWzFdLCdDb250YWluZXJJbmhlcml0LE9iamVjdEluaGVyaXQnLCdOb25lJywnQWxsb3cnKSB9DQogICAgICAgICAgICBlbHNlIHsgJHJ1bGU9TmV3LU9iamVjdCBTZWN1cml0eS5BY2Nlc3NDb250cm9sLkZpbGVTeXN0ZW1BY2Nlc3NSdWxlKCRpZGVudGl0eSwkcGFpclsxXSwnQWxsb3cnKSB9DQogICAgICAgICAgICAkY2hpbGRBY2wuQWRkQWNjZXNzUnVsZSgkcnVsZSkNCiAgICAgICAgfQ0KICAgICAgICBTZXQtQWNsIC1MaXRlcmFsUGF0aCAkZW50cnkuRnVsbE5hbWUgLUFjbE9iamVjdCAkY2hpbGRBY2wNCiAgICB9DQp9DQo=
+U2V0LVN0cmljdE1vZGUgLVZlcnNpb24gTGF0ZXN0CiRFcnJvckFjdGlvblByZWZlcmVuY2UgPSAnU3RvcCcKJHNjcmlwdDpNb2RJZCA9ICdsb2NhbEBkeW5hbWljLWlzbGFuZC1saXF1aWQtZ2xhc3MnCiRzY3JpcHQ6UHVibGljSWQgPSAnZHluYW1pYy1pc2xhbmQtbGlxdWlkLWdsYXNzJwokc2NyaXB0OlVwZGF0ZXJWZXJzaW9uID0gW3ZlcnNpb25dJzEuMC41Jwokc2NyaXB0OlV0ZjggPSBOZXctT2JqZWN0IFN5c3RlbS5UZXh0LlVURjhFbmNvZGluZygkZmFsc2UsICR0cnVlKQoKZnVuY3Rpb24gUmVhZC1Kc29uRmlsZShbc3RyaW5nXSRQYXRoKSB7CiAgICAkdmFsdWU9JHNjcmlwdDpVdGY4LkdldFN0cmluZyhbSU8uRmlsZV06OlJlYWRBbGxCeXRlcygkUGF0aCkpIHwgQ29udmVydEZyb20tSnNvbgogICAgZm9yZWFjaCAoJGVudHJ5IGluICR2YWx1ZSkgeyAkZW50cnkgfQp9CgpmdW5jdGlvbiBXcml0ZS1Kc29uRmlsZShbc3RyaW5nXSRQYXRoLCAkVmFsdWUpIHsKICAgICR0bXAgPSAkUGF0aCArICcudG1wJwogICAgW0lPLkZpbGVdOjpXcml0ZUFsbFRleHQoJHRtcCwgKCRWYWx1ZSB8IENvbnZlcnRUby1Kc29uIC1EZXB0aCAxNSksICRzY3JpcHQ6VXRmOCkKICAgIGlmIChbSU8uRmlsZV06OkV4aXN0cygkUGF0aCkpIHsgW0lPLkZpbGVdOjpSZXBsYWNlKCR0bXAsICRQYXRoLCAoJFBhdGgrJy5iYWsnKSk7IFtJTy5GaWxlXTo6RGVsZXRlKCRQYXRoKycuYmFrJykgfQogICAgZWxzZSB7IFtJTy5GaWxlXTo6TW92ZSgkdG1wLCAkUGF0aCkgfQp9CgpmdW5jdGlvbiBHZXQtUmVsZWFzZVZlcnNpb24oW3N0cmluZ10kVGV4dCkgewogICAgaWYgKCRUZXh0IC1jbm90bWF0Y2ggJ14oMHxbMS05XVswLTldezAsOH0pXC4oMHxbMS05XVswLTldezAsOH0pXC4oMHxbMS05XVswLTldezAsOH0pJCcpIHsKICAgICAgICB0aHJvdyAnSW52YWxpZCBzdGFibGUgdmVyc2lvbi4nCiAgICB9CiAgICBbdmVyc2lvbl0kVGV4dAp9CgpmdW5jdGlvbiBBc3NlcnQtUmVwb3NpdG9yeShbc3RyaW5nXSRSZXBvc2l0b3J5KSB7CiAgICBpZiAoJFJlcG9zaXRvcnkgLWNub3RtYXRjaCAnXltBLVphLXowLTldW0EtWmEtejAtOS1dezAsMzh9L1tBLVphLXowLTldW0EtWmEtejAtOV8uLV17MCw5OX0kJykgewogICAgICAgIHRocm93ICdJbnZhbGlkIEdpdEh1YiByZXBvc2l0b3J5LicKICAgIH0KfQoKZnVuY3Rpb24gR2V0LUZpbGVEaWdlc3QoW3N0cmluZ10kUGF0aCkgeyAoR2V0LUZpbGVIYXNoIC1MaXRlcmFsUGF0aCAkUGF0aCAtQWxnb3JpdGhtIFNIQTI1NikuSGFzaC5Ub0xvd2VySW52YXJpYW50KCkgfQoKZnVuY3Rpb24gR2V0LVZlcmlmaWVkTWFuaWZlc3QoW2J5dGVbXV0kQnl0ZXMsIFtieXRlW11dJFNpZ25hdHVyZSwgW3N0cmluZ10kUHVibGljS2V5KSB7CiAgICBpZiAoJEJ5dGVzLkxlbmd0aCAtZ3QgMjYyMTQ0IC1vciAkU2lnbmF0dXJlLkxlbmd0aCAtZ3QgMTAyNCkgeyB0aHJvdyAnTWFuaWZlc3QgdG9vIGxhcmdlLicgfQogICAgJHJzYSA9IE5ldy1PYmplY3QgU2VjdXJpdHkuQ3J5cHRvZ3JhcGh5LlJTQUNyeXB0b1NlcnZpY2VQcm92aWRlcgogICAgJHJzYS5QZXJzaXN0S2V5SW5Dc3AgPSAkZmFsc2UKICAgIHRyeSB7CiAgICAgICAgJHJzYS5Gcm9tWG1sU3RyaW5nKCRQdWJsaWNLZXkpCiAgICAgICAgaWYgKCRyc2EuS2V5U2l6ZSAtbHQgMzA3MiAtb3IgLW5vdCAkcnNhLlZlcmlmeURhdGEoJEJ5dGVzLCAnU0hBMjU2JywgJFNpZ25hdHVyZSkpIHsgdGhyb3cgJ1JlbGVhc2Ugc2lnbmF0dXJlIGludmFsaWQuJyB9CiAgICB9IGZpbmFsbHkgeyAkcnNhLkRpc3Bvc2UoKSB9CiAgICAkbSA9ICRzY3JpcHQ6VXRmOC5HZXRTdHJpbmcoJEJ5dGVzKSB8IENvbnZlcnRGcm9tLUpzb24KICAgICRyZXF1aXJlZCA9IEAoJ3NjaGVtYScsJ3ZlcnNpb24nLCd0YWcnLCdtb2RJZCcsJ3NvdXJjZUFzc2V0Jywnc291cmNlU2hhMjU2Jywnc291cmNlQnl0ZXMnLCdtaW5VcGRhdGVyVmVyc2lvbicsJ3NldHRpbmdzJykKICAgIGlmIChAKCRtLlBTT2JqZWN0LlByb3BlcnRpZXMpLkNvdW50IC1uZSAkcmVxdWlyZWQuQ291bnQpIHsgdGhyb3cgJ1VuZXhwZWN0ZWQgbWFuaWZlc3QgZmllbGRzLicgfQogICAgZm9yZWFjaCAoJG5hbWUgaW4gJHJlcXVpcmVkKSB7IGlmICgtbm90ICRtLlBTT2JqZWN0LlByb3BlcnRpZXNbJG5hbWVdKSB7IHRocm93ICJNaXNzaW5nIG1hbmlmZXN0IGZpZWxkOiAkbmFtZSIgfSB9CiAgICAkdiA9IEdldC1SZWxlYXNlVmVyc2lvbiAkbS52ZXJzaW9uCiAgICBpZiAoJG0uc2NoZW1hIC1uZSAxIC1vciAkbS50YWcgLWNuZSAidiQoJG0udmVyc2lvbikiIC1vciAkbS5tb2RJZCAtY25lICRzY3JpcHQ6UHVibGljSWQgLW9yCiAgICAgICAgJG0uc291cmNlQXNzZXQgLWNuZSAnZHluYW1pYy1pc2xhbmQtbGlxdWlkLWdsYXNzLndoLmNwcCcgLW9yICRtLnNvdXJjZVNoYTI1NiAtY25vdG1hdGNoICdeW2EtZjAtOV17NjR9JCcgLW9yCiAgICAgICAgJG0uc291cmNlQnl0ZXMgLWlzbm90IFtWYWx1ZVR5cGVdIC1vciAkbS5zb3VyY2VCeXRlcyAtbHQgMSAtb3IgJG0uc291cmNlQnl0ZXMgLWd0IDgzODg2MDgpIHsKICAgICAgICB0aHJvdyAnSW52YWxpZCByZWxlYXNlIG1hbmlmZXN0LicKICAgIH0KICAgIGlmICgoR2V0LVJlbGVhc2VWZXJzaW9uICRtLm1pblVwZGF0ZXJWZXJzaW9uKSAtZ3QgJHNjcmlwdDpVcGRhdGVyVmVyc2lvbikgeyB0aHJvdyAnUGxlYXNlIHJlaW5zdGFsbCB0aGUgbGF0ZXN0IHNldHVwIHBhY2thZ2UgdG8gdXBncmFkZSB0aGUgdXBkYXRlci4nIH0KICAgIGlmICgkbS5zZXR0aW5ncyAtaXNub3QgW2FycmF5XSAtb3IgJG0uc2V0dGluZ3MuQ291bnQgLWd0IDUxMikgeyB0aHJvdyAnSW52YWxpZCBzZXR0aW5ncyBkZWZhdWx0cy4nIH0KICAgICRzZWVuID0gQHt9CiAgICBmb3JlYWNoICgkcyBpbiAkbS5zZXR0aW5ncykgewogICAgICAgIGlmICgkcy5uYW1lIC1jbm90bWF0Y2ggJ15bQS1aYS16MC05Xy4tXXsxLDEyOH0kJyAtb3IgJHNlZW4uQ29udGFpbnNLZXkoJHMubmFtZSkgLW9yCiAgICAgICAgICAgICRzLmtpbmQgLWNub3RpbiBAKCdEV29yZCcsJ1N0cmluZycpKSB7IHRocm93ICdJbnZhbGlkIHNldHRpbmdzIGVudHJ5LicgfQogICAgICAgICRzZWVuWyRzLm5hbWVdID0gJHRydWUKICAgICAgICBpZiAoJHMua2luZCAtZXEgJ0RXb3JkJykgewogICAgICAgICAgICBpZiAoJHMudmFsdWUgLWlzbm90IFtWYWx1ZVR5cGVdIC1vciBbbG9uZ10kcy52YWx1ZSAtbHQgW2ludF06Ok1pblZhbHVlIC1vciBbbG9uZ10kcy52YWx1ZSAtZ3QgW2ludF06Ok1heFZhbHVlKSB7IHRocm93ICdJbnZhbGlkIGludGVnZXIgZGVmYXVsdC4nIH0KICAgICAgICB9IGVsc2VpZiAoJHMudmFsdWUgLWlzbm90IFtzdHJpbmddIC1vciAkcy52YWx1ZS5MZW5ndGggLWd0IDQwOTYpIHsgdGhyb3cgJ0ludmFsaWQgc3RyaW5nIGRlZmF1bHQuJyB9CiAgICB9CiAgICAkbQp9CgpmdW5jdGlvbiBBc3NlcnQtU291cmNlKFtzdHJpbmddJFBhdGgsICRNYW5pZmVzdCkgewogICAgaWYgKChHZXQtSXRlbSAtTGl0ZXJhbFBhdGggJFBhdGgpLkxlbmd0aCAtbmUgJE1hbmlmZXN0LnNvdXJjZUJ5dGVzIC1vciAoR2V0LUZpbGVEaWdlc3QgJFBhdGgpIC1jbmUgJE1hbmlmZXN0LnNvdXJjZVNoYTI1NikgeyB0aHJvdyAnU291cmNlIGRpZ2VzdC9sZW5ndGggbWlzbWF0Y2guJyB9CiAgICAkc291cmNlID0gW0lPLkZpbGVdOjpSZWFkQWxsVGV4dCgkUGF0aCwgJHNjcmlwdDpVdGY4KQogICAgJG1ldGEgPSBbcmVnZXhdOjpNYXRjaCgkc291cmNlLCAnKD9zKVxBXHMqLy8gPT1XaW5kaGF3a01vZD09XHI/XG4oLio/KS8vID09L1dpbmRoYXdrTW9kPT0nKQogICAgaWYgKC1ub3QgJG1ldGEuU3VjY2VzcykgeyB0aHJvdyAnU291cmNlIG1ldGFkYXRhIG1pc3NpbmcuJyB9CiAgICBmb3JlYWNoICgkZW50cnkgaW4gQChAKCdpZCcsICRzY3JpcHQ6UHVibGljSWQpLCBAKCd2ZXJzaW9uJywgJE1hbmlmZXN0LnZlcnNpb24pLCBAKCdpbmNsdWRlJywgJ3dpbmRoYXdrLmV4ZScpKSkgewogICAgICAgICRtYXRjaGVzID0gW3JlZ2V4XTo6TWF0Y2hlcygkbWV0YS5Hcm91cHNbMV0uVmFsdWUsICcoP20pXi8vIEAnICsgJGVudHJ5WzBdICsgJ1xzKyhbXlxyXG5dKylccj8kJykKICAgICAgICBpZiAoJG1hdGNoZXMuQ291bnQgLW5lIDEgLW9yICRtYXRjaGVzWzBdLkdyb3Vwc1sxXS5WYWx1ZS5UcmltKCkgLWNuZSAkZW50cnlbMV0pIHsgdGhyb3cgIlNvdXJjZSAkKCRlbnRyeVswXSkgbWlzbWF0Y2guIiB9CiAgICB9CiAgICBpZiAoLW5vdCAkc291cmNlLkNvbnRhaW5zKCdVcGRhdGVIZWFydGJlYXQnKSAtb3IgLW5vdCAkc291cmNlLkNvbnRhaW5zKCdVcGRhdGVSZXF1ZXN0ZWQnKSkgeyB0aHJvdyAnU291cmNlIGxhY2tzIHVwZGF0ZXIgaGFuZG9mZi4nIH0KfQoKZnVuY3Rpb24gSW5zdGFsbC1VcGRhdGVyQ29yZShbc3RyaW5nXSRTb3VyY2UsIFtzdHJpbmddJEluc3RhbGxSb290KSB7CiAgICAkdGV4dD1bSU8uRmlsZV06OlJlYWRBbGxUZXh0KCRTb3VyY2UsJHNjcmlwdDpVdGY4KQogICAgJG1hdGNoPVtyZWdleF06Ok1hdGNoKCR0ZXh0LCcoP3MpL1wqIFVQREFURVJfQ09SRV9CRUdJTlxyP1xuKFtBLVphLXowLTkrLz1dKylccj9cblVQREFURVJfQ09SRV9FTkQgXCovXHMqJCcpCiAgICBpZiAoLW5vdCAkbWF0Y2guU3VjY2VzcykgeyB0aHJvdyAnU2lnbmVkIHNvdXJjZSBsYWNrcyB1cGRhdGVyIGNvcmUuJyB9CiAgICAkYnl0ZXM9W0NvbnZlcnRdOjpGcm9tQmFzZTY0U3RyaW5nKCRtYXRjaC5Hcm91cHNbMV0uVmFsdWUpCiAgICBpZiAoJGJ5dGVzLkxlbmd0aCAtZ3QgMjYyMTQ0KSB7IHRocm93ICdVcGRhdGVyIGNvcmUgaXMgdG9vIGxhcmdlLicgfQogICAgJG5ldz0kc2NyaXB0OlV0ZjguR2V0U3RyaW5nKCRieXRlcykKICAgICR2ZXJzaW9uPVtyZWdleF06Ok1hdGNoKCRuZXcsJyg/bSleXCRzY3JpcHQ6VXBkYXRlclZlcnNpb24gPSBcW3ZlcnNpb25cXScnKFswLTldK1wuWzAtOV0rXC5bMC05XSspJydccj8kJykKICAgIGlmICgtbm90ICR2ZXJzaW9uLlN1Y2Nlc3MpIHsgdGhyb3cgJ1VwZGF0ZXIgY29yZSB2ZXJzaW9uIG1pc3NpbmcuJyB9CiAgICAkdGFyZ2V0PUpvaW4tUGF0aCAkSW5zdGFsbFJvb3QgJ2NvcmUucHMxJwogICAgJGN1cnJlbnQ9W3JlZ2V4XTo6TWF0Y2goW0lPLkZpbGVdOjpSZWFkQWxsVGV4dCgkdGFyZ2V0LCRzY3JpcHQ6VXRmOCksJyg/bSleXCRzY3JpcHQ6VXBkYXRlclZlcnNpb24gPSBcW3ZlcnNpb25cXScnKFswLTldK1wuWzAtOV0rXC5bMC05XSspJydccj8kJykKICAgIGlmICgtbm90ICRjdXJyZW50LlN1Y2Nlc3MpIHsgdGhyb3cgJ0luc3RhbGxlZCB1cGRhdGVyIGNvcmUgdmVyc2lvbiBtaXNzaW5nLicgfQogICAgaWYgKChHZXQtUmVsZWFzZVZlcnNpb24gJHZlcnNpb24uR3JvdXBzWzFdLlZhbHVlKSAtbGUgKEdldC1SZWxlYXNlVmVyc2lvbiAkY3VycmVudC5Hcm91cHNbMV0uVmFsdWUpKSB7IHJldHVybiAkZmFsc2UgfQogICAgJHRva2Vucz0kbnVsbDsgJGVycm9ycz0kbnVsbAogICAgW3ZvaWRdW01hbmFnZW1lbnQuQXV0b21hdGlvbi5MYW5ndWFnZS5QYXJzZXJdOjpQYXJzZUlucHV0KCRuZXcsW3JlZl0kdG9rZW5zLFtyZWZdJGVycm9ycykKICAgIGlmICgkZXJyb3JzLkNvdW50KSB7IHRocm93ICdVcGRhdGVyIGNvcmUgaGFzIGEgc3ludGF4IGVycm9yLicgfQogICAgJHRtcD0kdGFyZ2V0KycubmV3JwogICAgdHJ5IHsKICAgICAgICBbSU8uRmlsZV06OldyaXRlQWxsQnl0ZXMoJHRtcCwkYnl0ZXMpCiAgICAgICAgW0lPLkZpbGVdOjpSZXBsYWNlKCR0bXAsJHRhcmdldCwkdGFyZ2V0KycucHJldmlvdXMnKQogICAgfSBmaW5hbGx5IHsgaWYgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJHRtcCkgeyBSZW1vdmUtSXRlbSAtTGl0ZXJhbFBhdGggJHRtcCAtRm9yY2UgfSB9CiAgICAkdHJ1ZQp9CgpmdW5jdGlvbiBHZXQtUmVtb3RlQnl0ZXMoW3N0cmluZ10kVXJsLCBbaW50XSRMaW1pdCkgewogICAgJHVyaSA9IFt1cmldJFVybAogICAgaWYgKCR1cmkuU2NoZW1lIC1uZSAnaHR0cHMnIC1vciAkdXJpLkhvc3QgLW5lICdnaXRodWIuY29tJyAtb3IgJHVyaS5Qb3J0IC1uZSA0NDMgLW9yICR1cmkuVXNlckluZm8pIHsKICAgICAgICB0aHJvdyAnT25seSB0aGUgY29uZmlndXJlZCBHaXRIdWIgcmVsZWFzZSBzb3VyY2UgaXMgYWxsb3dlZC4nCiAgICB9CiAgICAkZG93bmxvYWRGYWlsdXJlcyA9IEAoKQogICAgZm9yZWFjaCAoJHByZWZpeCBpbiBAKCcnLCAnaHR0cHM6Ly9naGZhc3QudG9wLycsICdodHRwczovL2doLXByb3h5Lm9yZy8nKSkgewogICAgICAgIHRyeSB7IHJldHVybiAsKEdldC1Eb3dubG9hZEJ5dGVzICgkcHJlZml4ICsgJHVyaS5BYnNvbHV0ZVVyaSkgJExpbWl0KSB9CiAgICAgICAgY2F0Y2ggW05ldC5XZWJFeGNlcHRpb25dLCBbSU8uSU9FeGNlcHRpb25dIHsKICAgICAgICAgICAgJGRvd25sb2FkRmFpbHVyZXMgKz0gKCd7MH06IHsxfScgLWYgKFt1cmldKCRwcmVmaXggKyAkdXJpLkFic29sdXRlVXJpKSkuSG9zdCwgJF8uRXhjZXB0aW9uLk1lc3NhZ2UpCiAgICAgICAgfQogICAgfQogICAgdGhyb3cgKCdHaXRIdWIgYW5kIGJhY2t1cCBkb3dubG9hZCBzb3VyY2VzIGFyZSB1bmF2YWlsYWJsZS4gVGhlIHVwZGF0ZSB3YXMgbm90IGluc3RhbGxlZC4gVHJ5IGFnYWluIGxhdGVyLiAnICsgKCRkb3dubG9hZEZhaWx1cmVzIC1qb2luICc7ICcpKQp9CgpmdW5jdGlvbiBHZXQtRG93bmxvYWRCeXRlcyhbc3RyaW5nXSRVcmwsIFtpbnRdJExpbWl0KSB7CiAgICAkdXJpID0gW3VyaV0kVXJsCiAgICBbTmV0LlNlcnZpY2VQb2ludE1hbmFnZXJdOjpTZWN1cml0eVByb3RvY29sID0gW05ldC5TZWN1cml0eVByb3RvY29sVHlwZV06OlRsczEyCiAgICAkcmVxdWVzdCA9IFtOZXQuSHR0cFdlYlJlcXVlc3RdOjpDcmVhdGUoJHVyaSkKICAgICRyZXF1ZXN0LlVzZXJBZ2VudCA9ICdXaW5kaGF3ay1Jc2xhbmQtVXBkYXRlci8nICsgJHNjcmlwdDpVcGRhdGVyVmVyc2lvbi5Ub1N0cmluZygzKQogICAgJHJlcXVlc3QuVGltZW91dCA9IDEwMDAwCiAgICAkcmVxdWVzdC5SZWFkV3JpdGVUaW1lb3V0ID0gMTUwMDAKICAgICRyZXF1ZXN0Lk1heGltdW1BdXRvbWF0aWNSZWRpcmVjdGlvbnMgPSA1CiAgICAkcmVxdWVzdC5DYWNoZVBvbGljeSA9IE5ldy1PYmplY3QgTmV0LkNhY2hlLlJlcXVlc3RDYWNoZVBvbGljeShbTmV0LkNhY2hlLlJlcXVlc3RDYWNoZUxldmVsXTo6Tm9DYWNoZU5vU3RvcmUpCiAgICAkcmVzcG9uc2UgPSAkbnVsbAogICAgJGJ1ZmZlciA9IE5ldy1PYmplY3QgYnl0ZVtdIDE2Mzg0CiAgICAkb3V0cHV0ID0gTmV3LU9iamVjdCBJTy5NZW1vcnlTdHJlYW0KICAgICRkZWFkbGluZSA9IFtEYXRlVGltZV06OlV0Y05vdy5BZGRTZWNvbmRzKDYwKQogICAgdHJ5IHsKICAgICAgICAkcmVzcG9uc2UgPSAkcmVxdWVzdC5HZXRSZXNwb25zZSgpCiAgICAgICAgaWYgKCRyZXNwb25zZS5SZXNwb25zZVVyaS5TY2hlbWUgLW5lICdodHRwcycgLW9yICRyZXNwb25zZS5Db250ZW50TGVuZ3RoIC1ndCAkTGltaXQpIHsgdGhyb3cgJ0ludmFsaWQgZG93bmxvYWQgcmVzcG9uc2UuJyB9CiAgICAgICAgaWYgKCRyZXNwb25zZS5Db250ZW50VHlwZSAtbGlrZSAndGV4dC9odG1sKicpIHsgdGhyb3cgW05ldC5XZWJFeGNlcHRpb25dOjpuZXcoJ0Rvd25sb2FkIHNvdXJjZSByZXR1cm5lZCBhbiBIVE1MIHBhZ2UgaW5zdGVhZCBvZiBhIHJlbGVhc2UgYXNzZXQuJykgfQogICAgICAgICRzdHJlYW0gPSAkcmVzcG9uc2UuR2V0UmVzcG9uc2VTdHJlYW0oKQogICAgICAgIHdoaWxlICgoJGNvdW50ID0gJHN0cmVhbS5SZWFkKCRidWZmZXIsIDAsICRidWZmZXIuTGVuZ3RoKSkgLWd0IDApIHsKICAgICAgICAgICAgaWYgKCRvdXRwdXQuTGVuZ3RoICsgJGNvdW50IC1ndCAkTGltaXQgLW9yIFtEYXRlVGltZV06OlV0Y05vdyAtZ3QgJGRlYWRsaW5lKSB7IHRocm93ICdEb3dubG9hZCBzaXplL3RpbWUgbGltaXQgZXhjZWVkZWQuJyB9CiAgICAgICAgICAgICRvdXRwdXQuV3JpdGUoJGJ1ZmZlciwgMCwgJGNvdW50KQogICAgICAgIH0KICAgICAgICBpZiAoJG91dHB1dC5MZW5ndGggLWVxIDAgLW9yICgkcmVzcG9uc2UuQ29udGVudExlbmd0aCAtZ2UgMCAtYW5kICRvdXRwdXQuTGVuZ3RoIC1uZSAkcmVzcG9uc2UuQ29udGVudExlbmd0aCkpIHsKICAgICAgICAgICAgdGhyb3cgW05ldC5XZWJFeGNlcHRpb25dOjpuZXcoJ0Rvd25sb2FkIHJlc3BvbnNlIGlzIGVtcHR5IG9yIGluY29tcGxldGUuJykKICAgICAgICB9CiAgICAgICAgLCRvdXRwdXQuVG9BcnJheSgpCiAgICB9IGZpbmFsbHkgeyBpZiAoJHJlc3BvbnNlKSB7ICRyZXNwb25zZS5DbG9zZSgpIH07ICRvdXRwdXQuRGlzcG9zZSgpIH0KfQoKZnVuY3Rpb24gR2V0LVdpbmRoYXdrRW52aXJvbm1lbnQgewogICAgaWYgKC1ub3QgW0Vudmlyb25tZW50XTo6SXM2NEJpdFByb2Nlc3MgLW9yICRlbnY6UFJPQ0VTU09SX0FSQ0hJVEVDVFVSRSAtbmUgJ0FNRDY0JykgeyB0aHJvdyAnVXNlIDY0LWJpdCBXaW5kb3dzIFBvd2VyU2hlbGwgb24geDY0IFdpbmRvd3MuJyB9CiAgICAkcm9vdCA9IEpvaW4tUGF0aCAkZW52OlByb2dyYW1GaWxlcyAnV2luZGhhd2snCiAgICAkaW5pID0gSm9pbi1QYXRoICRyb290ICd3aW5kaGF3ay5pbmknCiAgICBpZiAoLW5vdCAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkaW5pKSkgeyB0aHJvdyAnV2luZGhhd2sgaW5zdGFsbGF0aW9uIG5vdCBmb3VuZC4nIH0KICAgICRjZmcgPSBAe30KICAgIGZvcmVhY2ggKCRsaW5lIGluIFtJTy5GaWxlXTo6UmVhZEFsbExpbmVzKCRpbmkpKSB7CiAgICAgICAgaWYgKCRsaW5lIC1tYXRjaCAnXihbQS1aYS16XSspPSguKikkJykgeyAkY2ZnWyRtYXRjaGVzWzFdXSA9IFtFbnZpcm9ubWVudF06OkV4cGFuZEVudmlyb25tZW50VmFyaWFibGVzKCRtYXRjaGVzWzJdLlRyaW0oKSkgfQogICAgfQogICAgaWYgKCRjZmcuUG9ydGFibGUgLW5lICcwJyAtb3IgJGNmZy5FbmdpbmVQYXRoIC1uZSAnRW5naW5lXDEuNy4zJyAtb3IgJGNmZy5SZWdpc3RyeUtleSAtbmUgJ0hLTE1cU09GVFdBUkVcV2luZGhhd2snKSB7IHRocm93ICdUaGlzIHVwZGF0ZXIgY3VycmVudGx5IHN1cHBvcnRzIFdpbmRoYXdrIDEuNy4zIGluc3RhbGxlZCBtb2RlIG9ubHkuJyB9CiAgICAkY29tcGlsZXIgPSBKb2luLVBhdGggJHJvb3QgJGNmZy5Db21waWxlclBhdGgKICAgICRlbmdpbmUgPSBKb2luLVBhdGggJHJvb3QgJGNmZy5FbmdpbmVQYXRoCiAgICBmb3JlYWNoICgkZmlsZSBpbiBAKChKb2luLVBhdGggJGNvbXBpbGVyICdiaW5cY2xhbmcrKy5leGUnKSwgKEpvaW4tUGF0aCAkZW5naW5lICc2NFx3aW5kaGF3ay5saWInKSwgKEpvaW4tUGF0aCAkZW5naW5lICczMlx3aW5kaGF3ay5saWInKSkpIHsKICAgICAgICBpZiAoLW5vdCAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkZmlsZSkpIHsgdGhyb3cgIldpbmRoYXdrIGNvbXBvbmVudCBtaXNzaW5nOiAkZmlsZSIgfQogICAgfQogICAgW3BzY3VzdG9tb2JqZWN0XUB7CiAgICAgICAgUm9vdD0kcm9vdDsgQ29tcGlsZXI9JGNvbXBpbGVyOyBFbmdpbmU9JGVuZ2luZTsgRGF0YT0kY2ZnLkFwcERhdGFQYXRoCiAgICAgICAgS2V5PSJIS0xNOlxTT0ZUV0FSRVxXaW5kaGF3a1xFbmdpbmVcTW9kc1wkc2NyaXB0Ok1vZElkIgogICAgICAgIFN0b3JhZ2U9IkhLTE06XFNPRlRXQVJFXFdpbmRoYXdrXEVuZ2luZVxNb2RzV3JpdGFibGVcJHNjcmlwdDpNb2RJZFxMb2NhbFN0b3JhZ2UiCiAgICAgICAgU291cmNlPShKb2luLVBhdGggJGNmZy5BcHBEYXRhUGF0aCAiTW9kc1NvdXJjZVwkc2NyaXB0Ok1vZElkLndoLmNwcCIpCiAgICB9Cn0KCmZ1bmN0aW9uIEdldC1Nb2RTbmFwc2hvdCgkSG9zdEVudikgewogICAgaWYgKC1ub3QgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJEhvc3RFbnYuS2V5KSkgeyByZXR1cm4gJG51bGwgfQogICAgJGtleSA9IEdldC1JdGVtIC1MaXRlcmFsUGF0aCAkSG9zdEVudi5LZXkKICAgICR2YWx1ZXMgPSBAKCkKICAgIGZvcmVhY2ggKCRuYW1lIGluICRrZXkuR2V0VmFsdWVOYW1lcygpKSB7CiAgICAgICAgJHZhbHVlcyArPSBbcHNjdXN0b21vYmplY3RdQHsgTmFtZT0kbmFtZTsgS2luZD0ka2V5LkdldFZhbHVlS2luZCgkbmFtZSkuVG9TdHJpbmcoKTsgVmFsdWU9JGtleS5HZXRWYWx1ZSgkbmFtZSkgfQogICAgfQogICAgW3BzY3VzdG9tb2JqZWN0XUB7IFZhbHVlcz0kdmFsdWVzOyBWZXJzaW9uPSRrZXkuR2V0VmFsdWUoJ1ZlcnNpb24nLCcnKTsgRGlzYWJsZWQ9W2ludF0ka2V5LkdldFZhbHVlKCdEaXNhYmxlZCcsMCk7IExpYnJhcnk9JGtleS5HZXRWYWx1ZSgnTGlicmFyeUZpbGVOYW1lJywnJykgfQp9CgpmdW5jdGlvbiBTZXQtTW9kRGlzYWJsZWQoJEhvc3RFbnYsIFtpbnRdJFZhbHVlKSB7CiAgICBOZXctSXRlbVByb3BlcnR5IC1MaXRlcmFsUGF0aCAkSG9zdEVudi5LZXkgLU5hbWUgRGlzYWJsZWQgLVByb3BlcnR5VHlwZSBEV29yZCAtVmFsdWUgJFZhbHVlIC1Gb3JjZSB8IE91dC1OdWxsCn0KCmZ1bmN0aW9uIEdldC1Nb2RQcm9jZXNzZXMgewogICAgQChHZXQtQ2ltSW5zdGFuY2UgV2luMzJfUHJvY2VzcyAtRmlsdGVyICJOYW1lPSd3aW5kaGF3ay5leGUnIiB8IFdoZXJlLU9iamVjdCB7ICRfLkNvbW1hbmRMaW5lIC1tYXRjaCAoJy10b29sLW1vZFxzKyI/JyArIFtyZWdleF06OkVzY2FwZSgkc2NyaXB0Ok1vZElkKSArICciPyg/OlxzfCQpJykgfSkKfQoKZnVuY3Rpb24gV2FpdC1Nb2RTdG9wcGVkIHsKICAgIGZvciAoJGk9MDsgJGkgLWx0IDUwOyAkaSsrKSB7IGlmIChAKEdldC1Nb2RQcm9jZXNzZXMpLkNvdW50IC1lcSAwKSB7IHJldHVybiB9OyBTdGFydC1TbGVlcCAtTWlsbGlzZWNvbmRzIDIwMCB9CiAgICB0aHJvdyAnSXNsYW5kIGRpZCBub3Qgc3RvcDsgbm8gcHJvY2VzcyB3YXMgZm9yY2libHkgdGVybWluYXRlZC4nCn0KCmZ1bmN0aW9uIFNldC1VcGRhdGVSZXF1ZXN0KCRIb3N0RW52LCBbaW50XSRWYWx1ZSkgewogICAgaWYgKC1ub3QgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJEhvc3RFbnYuU3RvcmFnZSkpIHsgTmV3LUl0ZW0gLVBhdGggJEhvc3RFbnYuU3RvcmFnZSAtRm9yY2UgfCBPdXQtTnVsbCB9CiAgICBOZXctSXRlbVByb3BlcnR5IC1MaXRlcmFsUGF0aCAkSG9zdEVudi5TdG9yYWdlIC1OYW1lIFVwZGF0ZVJlcXVlc3RlZCAtUHJvcGVydHlUeXBlIERXb3JkIC1WYWx1ZSAkVmFsdWUgLUZvcmNlIHwgT3V0LU51bGwKfQoKZnVuY3Rpb24gU2V0LVVwZGF0ZUF2YWlsYWJsZSgkSG9zdEVudiwgW2ludF0kVmFsdWUpIHsKICAgIGlmICgtbm90IChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRIb3N0RW52LlN0b3JhZ2UpKSB7IE5ldy1JdGVtIC1QYXRoICRIb3N0RW52LlN0b3JhZ2UgLUZvcmNlIHwgT3V0LU51bGwgfQogICAgTmV3LUl0ZW1Qcm9wZXJ0eSAtTGl0ZXJhbFBhdGggJEhvc3RFbnYuU3RvcmFnZSAtTmFtZSBVcGRhdGVBdmFpbGFibGUgLVByb3BlcnR5VHlwZSBEV29yZCAtVmFsdWUgJFZhbHVlIC1Gb3JjZSB8IE91dC1OdWxsCn0KCmZ1bmN0aW9uIEdldC1Nb2RTdG9yYWdlKCRIb3N0RW52KSB7CiAgICBpZiAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkSG9zdEVudi5TdG9yYWdlKSB7IEdldC1JdGVtUHJvcGVydHkgLUxpdGVyYWxQYXRoICRIb3N0RW52LlN0b3JhZ2UgfQp9CgpmdW5jdGlvbiBUZXN0LUhhbmRvZmYoJEhvc3RFbnYsIFtzdHJpbmddJFZlcnNpb24pIHsKICAgICRzdG9yYWdlID0gR2V0LU1vZFN0b3JhZ2UgJEhvc3RFbnYKICAgICRwcm9jZXNzZXMgPSBAKEdldC1Nb2RQcm9jZXNzZXMpCiAgICBpZiAoLW5vdCAkc3RvcmFnZSAtb3IgLW5vdCAkc3RvcmFnZS5QU09iamVjdC5Qcm9wZXJ0aWVzWydVcGRhdGVIZWFydGJlYXQnXSkgeyByZXR1cm4gJGZhbHNlIH0KICAgICR1cHRpbWUgPSAoR2V0LUNpbUluc3RhbmNlIFdpbjMyX1BlcmZGb3JtYXR0ZWREYXRhX1BlcmZPU19TeXN0ZW0pLlN5c3RlbVVwVGltZQogICAgJGRpZmZlcmVuY2UgPSBbbG9uZ10kdXB0aW1lIC0gW2xvbmddJHN0b3JhZ2UuVXBkYXRlSGVhcnRiZWF0CiAgICAkcHJvY2Vzc01hdGNoZXMgPSBAKCRwcm9jZXNzZXMgfCBXaGVyZS1PYmplY3QgeyAkXy5Qcm9jZXNzSWQgLWVxICRzdG9yYWdlLlVwZGF0ZVBpZCB9KS5Db3VudCAtZXEgMQogICAgKCRzdG9yYWdlLlVwZGF0ZVZlcnNpb24gLWNlcSAkVmVyc2lvbiAtYW5kICRwcm9jZXNzTWF0Y2hlcyAtYW5kICRkaWZmZXJlbmNlIC1nZSAtMiAtYW5kICRkaWZmZXJlbmNlIC1sdCA4IC1hbmQgJHN0b3JhZ2UuVXBkYXRlUmVhZHkgLWVxIDEgLWFuZCAkc3RvcmFnZS5VcGRhdGVCdXN5IC1lcSAwKQp9CgpmdW5jdGlvbiBSZXF1ZXN0LU1vZEhhbmRvZmYoJEhvc3RFbnYsICRPbGQpIHsKICAgIGlmICgkT2xkLkRpc2FibGVkIC1lcSAxIC1vciBAKEdldC1Nb2RQcm9jZXNzZXMpLkNvdW50IC1lcSAwKSB7IHJldHVybiAkdHJ1ZSB9CiAgICBTZXQtVXBkYXRlUmVxdWVzdCAkSG9zdEVudiAxCiAgICBmb3IgKCRpPTA7ICRpIC1sdCA0OyAkaSsrKSB7IFN0YXJ0LVNsZWVwIC1TZWNvbmRzIDE7IGlmIChUZXN0LUhhbmRvZmYgJEhvc3RFbnYgJE9sZC5WZXJzaW9uKSB7IHJldHVybiAkdHJ1ZSB9IH0KICAgIFNldC1VcGRhdGVSZXF1ZXN0ICRIb3N0RW52IDAKICAgICRmYWxzZQp9CgpmdW5jdGlvbiBDb21waWxlLUlzbGFuZCgkSG9zdEVudiwgW3N0cmluZ10kU291cmNlLCBbc3RyaW5nXSRWZXJzaW9uLCBbc3RyaW5nXSRTdGFnZSkgewogICAgJGNsYW5nID0gSm9pbi1QYXRoICRIb3N0RW52LkNvbXBpbGVyICdiaW5cY2xhbmcrKy5leGUnCiAgICAkbGlicmFyaWVzID0gJ29sZTMyIG9sZWF1dDMyIHNoY29yZSBkMmQxIGR3cml0ZSBkd21hcGkgZ2RpMzIgdXNlcjMyIHNoZWxsMzIgcnVudGltZW9iamVjdCB3aW5kb3dzY29kZWNzIGF2cnQgc2V0dXBhcGkgd2luaHR0cCBwZGggd2lubW0gZDNkMTEgZHhnaSBkY29tcCBkM2Rjb21waWxlciBkeGd1aWQgY29tY3RsMzInLlNwbGl0KCcgJykKICAgIGZvcmVhY2ggKCRiaXRzIGluIEAoJzY0JywnMzInKSkgewogICAgICAgICR0YXJnZXQgPSBpZiAoJGJpdHMgLWVxICc2NCcpIHsgJ3g4Nl82NC13NjQtbWluZ3czMicgfSBlbHNlIHsgJ2k2ODYtdzY0LW1pbmd3MzInIH0KICAgICAgICAkb3V0cHV0ID0gSm9pbi1QYXRoICRTdGFnZSAiJGJpdHMuZGxsIgogICAgICAgICRhcmd1bWVudHMgPSBAKCctc3RkPWMrKzIzJywnLU8yJywnLXNoYXJlZCcsJy1EVU5JQ09ERScsJy1EX1VOSUNPREUnLCctRFdIX01PRCcsCiAgICAgICAgICAgICctRFdJTlZFUj0weDBBMDAnLCctRF9XSU4zMl9XSU5OVD0weDBBMDAnLCctRF9XSU4zMl9JRT0weDBBMDAnLCctRE5URERJX1ZFUlNJT049MHgwQTAwMDAwOCcsJy1EX19VU0VfTUlOR1dfQU5TSV9TVERJTz0wJywKICAgICAgICAgICAgKCctRFdIX01PRF9JRD1MXCInICsgJHNjcmlwdDpNb2RJZCArICdcIicpLCAoJy1EV0hfTU9EX1ZFUlNJT049TFwiJyArICRWZXJzaW9uICsgJ1wiJyksCiAgICAgICAgICAgIChKb2luLVBhdGggJEhvc3RFbnYuRW5naW5lICIkYml0c1x3aW5kaGF3ay5saWIiKSwgJy14JywnYysrJywkU291cmNlLCctaW5jbHVkZScsJ3dpbmRoYXdrX2FwaS5oJywnLXRhcmdldCcsJHRhcmdldCwKICAgICAgICAgICAgJy1XbCwtLWV4cG9ydC1hbGwtc3ltYm9scycsJy1vJywkb3V0cHV0KSArIEAoJGxpYnJhcmllcyB8IEZvckVhY2gtT2JqZWN0IHsgJy1sJyArICRfIH0pCiAgICAgICAgUHVzaC1Mb2NhdGlvbiAkSG9zdEVudi5Db21waWxlcgogICAgICAgIHRyeSB7CiAgICAgICAgICAgICYgJGNsYW5nIEBhcmd1bWVudHMgMj4mMSB8IE91dC1GaWxlIC1MaXRlcmFsUGF0aCAoSm9pbi1QYXRoICRTdGFnZSAiY29tcGlsZS0kYml0cy5sb2ciKSAtRW5jb2RpbmcgdXRmOAogICAgICAgICAgICBpZiAoJExBU1RFWElUQ09ERSAtbmUgMCAtb3IgLW5vdCAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkb3V0cHV0KSkgeyB0aHJvdyAiQ29tcGlsZSBmYWlsZWQgKCRiaXRzLWJpdCkuIFNlZSBjb21waWxlLSRiaXRzLmxvZy4iIH0KICAgICAgICB9IGZpbmFsbHkgeyBQb3AtTG9jYXRpb24gfQogICAgfQp9CgpmdW5jdGlvbiBBZGQtTWlzc2luZ1NldHRpbmdzKCRIb3N0RW52LCAkU2V0dGluZ3MpIHsKICAgICRwYXRoID0gSm9pbi1QYXRoICRIb3N0RW52LktleSAnU2V0dGluZ3MnCiAgICBpZiAoLW5vdCAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkcGF0aCkpIHsgTmV3LUl0ZW0gLVBhdGggJHBhdGggfCBPdXQtTnVsbCB9CiAgICAka2V5ID0gR2V0LUl0ZW0gLUxpdGVyYWxQYXRoICRwYXRoCiAgICBmb3JlYWNoICgkcyBpbiAkU2V0dGluZ3MpIHsKICAgICAgICBpZiAoJHMubmFtZSAtbm90aW4gJGtleS5HZXRWYWx1ZU5hbWVzKCkpIHsgTmV3LUl0ZW1Qcm9wZXJ0eSAtTGl0ZXJhbFBhdGggJHBhdGggLU5hbWUgJHMubmFtZSAtVmFsdWUgJHMudmFsdWUgLVByb3BlcnR5VHlwZSAkcy5raW5kIHwgT3V0LU51bGwgfQogICAgfQp9CgpmdW5jdGlvbiBTZXQtTmV3TW9kKCRIb3N0RW52LCAkTWFuaWZlc3QsIFtzdHJpbmddJExpYnJhcnkpIHsKICAgIGlmICgtbm90IChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRIb3N0RW52LktleSkpIHsgTmV3LUl0ZW0gLVBhdGggJEhvc3RFbnYuS2V5IC1Gb3JjZSB8IE91dC1OdWxsIH0KICAgIFNldC1Nb2REaXNhYmxlZCAkSG9zdEVudiAxCiAgICBmb3JlYWNoICgkcGFpciBpbiBAKEAoJ0xpYnJhcnlGaWxlTmFtZScsJExpYnJhcnkpLCBAKCdWZXJzaW9uJywkTWFuaWZlc3QudmVyc2lvbiksIEAoJ0luY2x1ZGUnLCd3aW5kaGF3ay5leGUnKSwgQCgnRXhjbHVkZScsJycpLCBAKCdBcmNoaXRlY3R1cmUnLCcnKSkpIHsKICAgICAgICBOZXctSXRlbVByb3BlcnR5IC1MaXRlcmFsUGF0aCAkSG9zdEVudi5LZXkgLU5hbWUgJHBhaXJbMF0gLVZhbHVlICRwYWlyWzFdIC1Qcm9wZXJ0eVR5cGUgU3RyaW5nIC1Gb3JjZSB8IE91dC1OdWxsCiAgICB9CiAgICBBZGQtTWlzc2luZ1NldHRpbmdzICRIb3N0RW52ICRNYW5pZmVzdC5zZXR0aW5ncwp9CgpmdW5jdGlvbiBSZXN0b3JlLU1vZFNuYXBzaG90KCRIb3N0RW52LCAkT2xkLCBbc3RyaW5nXSRCYWNrdXApIHsKICAgIGlmICgkbnVsbCAtZXEgJE9sZCkgewogICAgICAgIGlmIChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRIb3N0RW52LktleSkgeyBSZW1vdmUtSXRlbSAtTGl0ZXJhbFBhdGggJEhvc3RFbnYuS2V5IC1SZWN1cnNlIC1Gb3JjZSB9CiAgICAgICAgaWYgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJEhvc3RFbnYuU291cmNlKSB7IFJlbW92ZS1JdGVtIC1MaXRlcmFsUGF0aCAkSG9zdEVudi5Tb3VyY2UgLUZvcmNlIH0KICAgICAgICByZXR1cm4KICAgIH0KICAgIGZvcmVhY2ggKCR2IGluICRPbGQuVmFsdWVzKSB7CiAgICAgICAgaWYgKCR2Lk5hbWUgLW5lICdEaXNhYmxlZCcpIHsgTmV3LUl0ZW1Qcm9wZXJ0eSAtTGl0ZXJhbFBhdGggJEhvc3RFbnYuS2V5IC1OYW1lICR2Lk5hbWUgLVZhbHVlICR2LlZhbHVlIC1Qcm9wZXJ0eVR5cGUgJHYuS2luZCAtRm9yY2UgfCBPdXQtTnVsbCB9CiAgICB9CiAgICBDb3B5LUl0ZW0gLUxpdGVyYWxQYXRoIChKb2luLVBhdGggJEJhY2t1cCAncHJldmlvdXMud2guY3BwJykgLURlc3RpbmF0aW9uICRIb3N0RW52LlNvdXJjZSAtRm9yY2UKICAgIFNldC1Nb2REaXNhYmxlZCAkSG9zdEVudiAkT2xkLkRpc2FibGVkCn0KCmZ1bmN0aW9uIFdhaXQtTW9kSGVhbHRoeSgkSG9zdEVudiwgW3N0cmluZ10kVmVyc2lvbikgewogICAgJGV4cGVjdGVkUGlkID0gMAogICAgJG9ic2VydmF0aW9uID0gJG51bGwKICAgIGZvciAoJGk9MDsgJGkgLWx0IDQwOyAkaSsrKSB7CiAgICAgICAgU3RhcnQtU2xlZXAgLVNlY29uZHMgMQogICAgICAgICRzdG9yYWdlID0gR2V0LU1vZFN0b3JhZ2UgJEhvc3RFbnYKICAgICAgICAkcHJvY2Vzc2VzID0gQChHZXQtTW9kUHJvY2Vzc2VzKQogICAgICAgIGlmICgkc3RvcmFnZSAtYW5kICRzdG9yYWdlLlBTT2JqZWN0LlByb3BlcnRpZXNbJ1VwZGF0ZVZlcnNpb24nXSAtYW5kICRzdG9yYWdlLlVwZGF0ZVZlcnNpb24gLWNlcSAkVmVyc2lvbiAtYW5kCiAgICAgICAgICAgICRzdG9yYWdlLlBTT2JqZWN0LlByb3BlcnRpZXNbJ1VwZGF0ZVJlcXVpcmVzR2xhc3MnXSAtYW5kCiAgICAgICAgICAgICgkc3RvcmFnZS5VcGRhdGVSZXF1aXJlc0dsYXNzIC1lcSAwIC1vciAoJHN0b3JhZ2UuUFNPYmplY3QuUHJvcGVydGllc1snTmF0aXZlR2xhc3NSZWFkeSddIC1hbmQgJHN0b3JhZ2UuTmF0aXZlR2xhc3NSZWFkeSAtZXEgMSkpIC1hbmQKICAgICAgICAgICAgQCgkcHJvY2Vzc2VzIHwgV2hlcmUtT2JqZWN0IHsgJF8uUHJvY2Vzc0lkIC1lcSAkc3RvcmFnZS5VcGRhdGVQaWQgfSkuQ291bnQgLWVxIDEpIHsKICAgICAgICAgICAgaWYgKCRleHBlY3RlZFBpZCAtZXEgMCkgeyAkZXhwZWN0ZWRQaWQgPSBbaW50XSRzdG9yYWdlLlVwZGF0ZVBpZDsgJG9ic2VydmF0aW9uPVtEaWFnbm9zdGljcy5TdG9wd2F0Y2hdOjpTdGFydE5ldygpIH0KICAgICAgICAgICAgaWYgKCRleHBlY3RlZFBpZCAtbmUgJHN0b3JhZ2UuVXBkYXRlUGlkKSB7IHRocm93ICdJc2xhbmQgcmVzdGFydGVkIGR1cmluZyBzdGFydHVwIG9ic2VydmF0aW9uLicgfQogICAgICAgICAgICAkdXB0aW1lID0gKEdldC1DaW1JbnN0YW5jZSBXaW4zMl9QZXJmRm9ybWF0dGVkRGF0YV9QZXJmT1NfU3lzdGVtKS5TeXN0ZW1VcFRpbWUKICAgICAgICAgICAgJGFnZT1bbG9uZ10kdXB0aW1lIC0gW2xvbmddJHN0b3JhZ2UuVXBkYXRlSGVhcnRiZWF0CiAgICAgICAgICAgIGlmICgkYWdlIC1nZSAtMiAtYW5kICRhZ2UgLWx0IDggLWFuZCAkb2JzZXJ2YXRpb24uRWxhcHNlZC5Ub3RhbFNlY29uZHMgLWdlIDMwKSB7IHJldHVybiB9CiAgICAgICAgfSBlbHNlaWYgKCRleHBlY3RlZFBpZCAtbmUgMCkgeyB0aHJvdyAnSXNsYW5kIGZhaWxlZCBkdXJpbmcgc3RhcnR1cCBvYnNlcnZhdGlvbi4nIH0KICAgIH0KICAgIHRocm93ICdOZXcgaXNsYW5kIHN0YXJ0dXAgZGlkIG5vdCBwYXNzIHRoZSAzMC1zZWNvbmQgaGVhbHRoIGNoZWNrLicKfQoKZnVuY3Rpb24gR2V0LU1hbmFnZWREbGxQYXRoKCRIb3N0RW52LCBbc3RyaW5nXSRCaXRzLCBbc3RyaW5nXSRMaWJyYXJ5KSB7CiAgICBpZiAoJEJpdHMgLW5vdGluIEAoJzMyJywnNjQnKSAtb3IgJExpYnJhcnkgLWNub3RtYXRjaCAnXmxvY2FsQGR5bmFtaWMtaXNsYW5kLWxpcXVpZC1nbGFzc19bMC05Ll0rX1thLWYwLTldezEyfVwuZGxsJCcpIHsgdGhyb3cgJ0ludmFsaWQgbWFuYWdlZCBETEwgbmFtZS4nIH0KICAgIEpvaW4tUGF0aCAkSG9zdEVudi5EYXRhICJFbmdpbmVcTW9kc1wkQml0c1wkTGlicmFyeSIKfQoKZnVuY3Rpb24gUmVzdG9yZS1UcmFuc2FjdGlvbigkSG9zdEVudiwgW3N0cmluZ10kU3RhdGVSb290LCAkSm91cm5hbCkgewogICAgaWYgKCRKb3VybmFsLnNjaGVtYSAtbmUgMSAtb3IgJEpvdXJuYWwuc3RhZ2UgLWNub3RtYXRjaCAnXlthLWYwLTldezMyfSQnKSB7IHRocm93ICdJbnZhbGlkIHRyYW5zYWN0aW9uIGpvdXJuYWwuJyB9CiAgICAkYmFja3VwID0gSm9pbi1QYXRoICRTdGF0ZVJvb3QgJEpvdXJuYWwuc3RhZ2UKICAgIGlmIChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRIb3N0RW52LktleSkgeyBTZXQtTW9kRGlzYWJsZWQgJEhvc3RFbnYgMTsgV2FpdC1Nb2RTdG9wcGVkIH0KICAgIFJlc3RvcmUtTW9kU25hcHNob3QgJEhvc3RFbnYgJEpvdXJuYWwub2xkICRiYWNrdXAKICAgIFNldC1VcGRhdGVSZXF1ZXN0ICRIb3N0RW52IDAKICAgIGlmICgkSm91cm5hbC5vbGQgLWFuZCAkSm91cm5hbC5vbGQuRGlzYWJsZWQgLWVxIDApIHsKICAgICAgICAjIHNob3J0Y3V0OiBvbGQgcHJlLXVwZGF0ZXIgcmVsZWFzZXMgaGF2ZSBubyBoZWFydGJlYXQ7IHZlcmlmeSB0aGVpciB0b29sIHByb2Nlc3Mgc3RhcnRzLgogICAgICAgIGZvciAoJGk9MDsgJGkgLWx0IDUwOyAkaSsrKSB7IGlmIChAKEdldC1Nb2RQcm9jZXNzZXMpLkNvdW50IC1ndCAwKSB7IGJyZWFrIH07IFN0YXJ0LVNsZWVwIC1NaWxsaXNlY29uZHMgMjAwIH0KICAgICAgICBpZiAoQChHZXQtTW9kUHJvY2Vzc2VzKS5Db3VudCAtZXEgMCkgeyB0aHJvdyAnUm9sbGJhY2sgY29uZmlndXJhdGlvbiByZXN0b3JlZCwgYnV0IHRoZSBvbGQgaXNsYW5kIGRpZCBub3Qgc3RhcnQuJyB9CiAgICB9Cn0KCmZ1bmN0aW9uIEludm9rZS1Jc2xhbmRJbnN0YWxsKCRIb3N0RW52LCBbc3RyaW5nXSRTdGF0ZVJvb3QsICRNYW5pZmVzdCwgW3N0cmluZ10kU291cmNlLCAkU3RhdGUpIHsKICAgICRvbGQgPSBHZXQtTW9kU25hcHNob3QgJEhvc3RFbnYKICAgIGlmICgkb2xkKSB7CiAgICAgICAgaWYgKC1ub3QgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJEhvc3RFbnYuU291cmNlKSkgeyB0aHJvdyAnRXhpc3Rpbmcgc291cmNlIG1pc3Npbmc7IHByZXNlcnZpbmcgaW5zdGFsbGVkIG1vZC4nIH0KICAgICAgICBpZiAoJFN0YXRlLnNvdXJjZVNoYTI1NiAtYW5kIChHZXQtRmlsZURpZ2VzdCAkSG9zdEVudi5Tb3VyY2UpIC1jbmUgJFN0YXRlLnNvdXJjZVNoYTI1NikgeyB0aHJvdyAnTG9jYWwgc291cmNlIHdhcyBlZGl0ZWQ7IHJlZnVzaW5nIHRvIG92ZXJ3cml0ZSBpdC4nIH0KICAgICAgICBpZiAoLW5vdCAkU3RhdGUuc291cmNlU2hhMjU2KSB7IHRocm93ICdFeGlzdGluZyBtb2QgaXMgbm90IG1hbmFnZWQgYnkgdGhpcyB1cGRhdGVyLiBCYWNrIGl0IHVwIGFuZCBtaWdyYXRlIGV4cGxpY2l0bHkuJyB9CiAgICAgICAgaWYgKChHZXQtUmVsZWFzZVZlcnNpb24gJG9sZC5WZXJzaW9uKSAtZ2UgKEdldC1SZWxlYXNlVmVyc2lvbiAkTWFuaWZlc3QudmVyc2lvbikpIHsgcmV0dXJuICdBbHJlYWR5IGN1cnJlbnQuJyB9CiAgICB9CiAgICAkc3RhZ2VJZCA9IFtndWlkXTo6TmV3R3VpZCgpLlRvU3RyaW5nKCdOJykKICAgICRzdGFnZSA9IEpvaW4tUGF0aCAkU3RhdGVSb290ICRzdGFnZUlkCiAgICBOZXctSXRlbSAtSXRlbVR5cGUgRGlyZWN0b3J5IC1QYXRoICRzdGFnZSB8IE91dC1OdWxsCiAgICBDb3B5LUl0ZW0gLUxpdGVyYWxQYXRoICRTb3VyY2UgLURlc3RpbmF0aW9uIChKb2luLVBhdGggJHN0YWdlICdzb3VyY2Uud2guY3BwJykKICAgIHRyeSB7IENvbXBpbGUtSXNsYW5kICRIb3N0RW52IChKb2luLVBhdGggJHN0YWdlICdzb3VyY2Uud2guY3BwJykgJE1hbmlmZXN0LnZlcnNpb24gJHN0YWdlIH0KICAgIGNhdGNoIHsgJFN0YXRlLmZhaWxlZFZlcnNpb249JE1hbmlmZXN0LnZlcnNpb247IFdyaXRlLUpzb25GaWxlIChKb2luLVBhdGggJFN0YXRlUm9vdCAnc3RhdGUuanNvbicpICRTdGF0ZTsgdGhyb3cgfQogICAgJGpvdXJuYWxQYXRoID0gSm9pbi1QYXRoICRTdGF0ZVJvb3QgJ3RyYW5zYWN0aW9uLmpzb24nCiAgICB0cnkgewogICAgICAgIGlmICgkb2xkIC1hbmQgLW5vdCAoUmVxdWVzdC1Nb2RIYW5kb2ZmICRIb3N0RW52ICRvbGQpKSB7IHJldHVybiAnSXNsYW5kIGlzIGJ1c3k7IGNoZWNrIGFnYWluIGFmdGVyIGZpbmlzaGluZyB0aGUgdGltZXIvZGlhbG9nLicgfQogICAgICAgICRqb3VybmFsID0gW3BzY3VzdG9tb2JqZWN0XUB7IHNjaGVtYT0xOyBzdGFnZT0kc3RhZ2VJZDsgdmVyc2lvbj0kTWFuaWZlc3QudmVyc2lvbjsgb2xkPSRvbGQ7IG9sZFN0YXRlPSRTdGF0ZS5QU09iamVjdC5Db3B5KCkgfQogICAgICAgIGlmICgkb2xkKSB7IENvcHktSXRlbSAtTGl0ZXJhbFBhdGggJEhvc3RFbnYuU291cmNlIC1EZXN0aW5hdGlvbiAoSm9pbi1QYXRoICRzdGFnZSAncHJldmlvdXMud2guY3BwJykgfQogICAgICAgIFdyaXRlLUpzb25GaWxlICRqb3VybmFsUGF0aCAkam91cm5hbAogICAgfSBjYXRjaCB7IFNldC1VcGRhdGVSZXF1ZXN0ICRIb3N0RW52IDA7IHRocm93IH0KICAgIHRyeSB7CiAgICAgICAgaWYgKCRvbGQpIHsgU2V0LU1vZERpc2FibGVkICRIb3N0RW52IDE7IFdhaXQtTW9kU3RvcHBlZCB9CiAgICAgICAgZm9yZWFjaCAoJGRpciBpbiBAKChKb2luLVBhdGggJEhvc3RFbnYuRGF0YSAnRW5naW5lXE1vZHNcNjQnKSwoSm9pbi1QYXRoICRIb3N0RW52LkRhdGEgJ0VuZ2luZVxNb2RzXDMyJyksKFNwbGl0LVBhdGggJEhvc3RFbnYuU291cmNlIC1QYXJlbnQpKSkgewogICAgICAgICAgICBpZiAoLW5vdCAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkZGlyKSkgeyBOZXctSXRlbSAtSXRlbVR5cGUgRGlyZWN0b3J5IC1QYXRoICRkaXIgLUZvcmNlIHwgT3V0LU51bGwgfQogICAgICAgIH0KICAgICAgICAkbGlicmFyeSA9ICIkc2NyaXB0Ok1vZElkYF8kKCRNYW5pZmVzdC52ZXJzaW9uKV8kKCRzdGFnZUlkLlN1YnN0cmluZygwLDEyKSkuZGxsIgogICAgICAgIGZvcmVhY2ggKCRiaXRzIGluIEAoJzY0JywnMzInKSkgeyBDb3B5LUl0ZW0gLUxpdGVyYWxQYXRoIChKb2luLVBhdGggJHN0YWdlICIkYml0cy5kbGwiKSAtRGVzdGluYXRpb24gKEdldC1NYW5hZ2VkRGxsUGF0aCAkSG9zdEVudiAkYml0cyAkbGlicmFyeSkgfQogICAgICAgIENvcHktSXRlbSAtTGl0ZXJhbFBhdGggKEpvaW4tUGF0aCAkc3RhZ2UgJ3NvdXJjZS53aC5jcHAnKSAtRGVzdGluYXRpb24gJEhvc3RFbnYuU291cmNlIC1Gb3JjZQogICAgICAgIFNldC1OZXdNb2QgJEhvc3RFbnYgJE1hbmlmZXN0ICRsaWJyYXJ5CiAgICAgICAgU2V0LVVwZGF0ZVJlcXVlc3QgJEhvc3RFbnYgMAogICAgICAgIE5ldy1JdGVtUHJvcGVydHkgLUxpdGVyYWxQYXRoICRIb3N0RW52LlN0b3JhZ2UgLU5hbWUgTmF0aXZlR2xhc3NSZWFkeSAtVmFsdWUgMCAtUHJvcGVydHlUeXBlIERXb3JkIC1Gb3JjZSB8IE91dC1OdWxsCiAgICAgICAgJGRpc2FibGVkID0gaWYgKCRvbGQpIHsgJG9sZC5EaXNhYmxlZCB9IGVsc2UgeyAwIH0KICAgICAgICBTZXQtTW9kRGlzYWJsZWQgJEhvc3RFbnYgJGRpc2FibGVkCiAgICAgICAgaWYgKCRkaXNhYmxlZCAtZXEgMCkgeyBXYWl0LU1vZEhlYWx0aHkgJEhvc3RFbnYgJE1hbmlmZXN0LnZlcnNpb24gfQogICAgICAgICRTdGF0ZS52ZXJzaW9uPSRNYW5pZmVzdC52ZXJzaW9uCiAgICAgICAgJFN0YXRlLnNvdXJjZVNoYTI1Nj0kTWFuaWZlc3Quc291cmNlU2hhMjU2CiAgICAgICAgJFN0YXRlLmZhaWxlZFZlcnNpb249JycKICAgICAgICBTZXQtVXBkYXRlQXZhaWxhYmxlICRIb3N0RW52IDAKICAgICAgICBXcml0ZS1Kc29uRmlsZSAoSm9pbi1QYXRoICRTdGF0ZVJvb3QgJ3N0YXRlLmpzb24nKSAkU3RhdGUKICAgICAgICBXcml0ZS1Kc29uRmlsZSAoSm9pbi1QYXRoICRTdGF0ZVJvb3QgJ3ByZXZpb3VzLmpzb24nKSAkam91cm5hbAogICAgICAgIFJlbW92ZS1JdGVtIC1MaXRlcmFsUGF0aCAkam91cm5hbFBhdGggLUZvcmNlCiAgICAgICAgJ1VwZGF0ZWQgdG8gJyArICRNYW5pZmVzdC52ZXJzaW9uCiAgICB9IGNhdGNoIHsKICAgICAgICAkZmFpbHVyZSA9ICRfCiAgICAgICAgUmVzdG9yZS1UcmFuc2FjdGlvbiAkSG9zdEVudiAkU3RhdGVSb290ICRqb3VybmFsCiAgICAgICAgJG9sZFN0YXRlID0gJGpvdXJuYWwub2xkU3RhdGUKICAgICAgICAkb2xkU3RhdGUuZmFpbGVkVmVyc2lvbj0kTWFuaWZlc3QudmVyc2lvbgogICAgICAgIFdyaXRlLUpzb25GaWxlIChKb2luLVBhdGggJFN0YXRlUm9vdCAnc3RhdGUuanNvbicpICRvbGRTdGF0ZQogICAgICAgIFJlbW92ZS1JdGVtIC1MaXRlcmFsUGF0aCAkam91cm5hbFBhdGggLUZvcmNlCiAgICAgICAgdGhyb3cgJGZhaWx1cmUKICAgIH0gZmluYWxseSB7IFNldC1VcGRhdGVSZXF1ZXN0ICRIb3N0RW52IDAgfQp9CgpmdW5jdGlvbiBHZXQtVXBkYXRlclN0YXRlKFtzdHJpbmddJFJvb3QpIHsKICAgICRwYXRoID0gSm9pbi1QYXRoICRSb290ICdzdGF0ZS5qc29uJwogICAgaWYgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJHBhdGgpIHsgcmV0dXJuIFJlYWQtSnNvbkZpbGUgJHBhdGggfQogICAgW3BzY3VzdG9tb2JqZWN0XUB7IHZlcnNpb249JzAuMC4wJzsgc291cmNlU2hhMjU2PScnOyBmYWlsZWRWZXJzaW9uPScnOyBsYXN0QXV0b0NoZWNrPTAgfQp9CgpmdW5jdGlvbiBDbGVhci1PbGRTdGFnZXMoW3N0cmluZ10kUm9vdCwgW3N0cmluZ1tdXSRLZWVwKSB7CiAgICAkcHJlZml4PVtJTy5QYXRoXTo6R2V0RnVsbFBhdGgoJFJvb3QpK1tJTy5QYXRoXTo6RGlyZWN0b3J5U2VwYXJhdG9yQ2hhcgogICAgZm9yZWFjaCAoJGRpciBpbiBHZXQtQ2hpbGRJdGVtIC1MaXRlcmFsUGF0aCAkUm9vdCAtRGlyZWN0b3J5KSB7CiAgICAgICAgaWYgKCRkaXIuTmFtZSAtY25vdG1hdGNoICdeW2EtZjAtOV17MzJ9JCcgLW9yICRkaXIuTmFtZSAtaW4gJEtlZXApIHsgY29udGludWUgfQogICAgICAgICR0YXJnZXQ9W0lPLlBhdGhdOjpHZXRGdWxsUGF0aCgkZGlyLkZ1bGxOYW1lKQogICAgICAgIGlmICgtbm90ICR0YXJnZXQuU3RhcnRzV2l0aCgkcHJlZml4LFtTdHJpbmdDb21wYXJpc29uXTo6T3JkaW5hbElnbm9yZUNhc2UpKSB7IHRocm93ICdVbnNhZmUgc3RhZ2UgY2xlYW51cCBwYXRoLicgfQogICAgICAgICRjb250ZW50cz1AKCRkaXIpK0AoR2V0LUNoaWxkSXRlbSAtTGl0ZXJhbFBhdGggJHRhcmdldCAtUmVjdXJzZSAtRm9yY2UpCiAgICAgICAgaWYgKEAoJGNvbnRlbnRzIHwgV2hlcmUtT2JqZWN0IHsgJF8uQXR0cmlidXRlcyAtYmFuZCBbSU8uRmlsZUF0dHJpYnV0ZXNdOjpSZXBhcnNlUG9pbnQgfSkuQ291bnQpIHsgdGhyb3cgJ1N0YWdlIGNvbnRhaW5zIGEgbGluazsgY2xlYW51cCByZWZ1c2VkLicgfQogICAgICAgIFJlbW92ZS1JdGVtIC1MaXRlcmFsUGF0aCAkdGFyZ2V0IC1SZWN1cnNlIC1Gb3JjZQogICAgfQp9CgpmdW5jdGlvbiBJbnZva2UtSXNsYW5kVXBkYXRlKCRIb3N0RW52LCBbc3RyaW5nXSRTdGF0ZVJvb3QsICRDb25maWcsIFtzdHJpbmddJFB1YmxpY0tleSwgW3N0cmluZ10kTW9kZSkgewogICAgQXNzZXJ0LVJlcG9zaXRvcnkgJENvbmZpZy5yZXBvc2l0b3J5CiAgICAkc3RhdGUgPSBHZXQtVXBkYXRlclN0YXRlICRTdGF0ZVJvb3QKICAgICRqb3VybmFsUGF0aCA9IEpvaW4tUGF0aCAkU3RhdGVSb290ICd0cmFuc2FjdGlvbi5qc29uJwogICAgaWYgKCRNb2RlIC1lcSAnQXV0bycpIHsKICAgICAgICBpZiAoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkam91cm5hbFBhdGgpIHsgcmV0dXJuICdJbnRlcnJ1cHRlZCB1cGRhdGUgcGVuZGluZzsgdXNlIHRoZSBtYW51YWwgdXBkYXRlIGNvbW1hbmQgdG8gcmVjb3Zlci4nIH0KICAgICAgICAkbm93ID0gW0RhdGVUaW1lT2Zmc2V0XTo6VXRjTm93LlRvVW5peFRpbWVTZWNvbmRzKCkKICAgICAgICAkbGFzdCA9IDBMCiAgICAgICAgaWYgKCRzdGF0ZS5QU09iamVjdC5Qcm9wZXJ0aWVzWydsYXN0QXV0b0NoZWNrJ10gLWFuZAogICAgICAgICAgICBbbG9uZ106OlRyeVBhcnNlKFtzdHJpbmddJHN0YXRlLmxhc3RBdXRvQ2hlY2ssIFtyZWZdJGxhc3QpIC1hbmQKICAgICAgICAgICAgJG5vdyAtZ2UgJGxhc3QgLWFuZCAkbm93IC0gJGxhc3QgLWx0IDg2NDAwKSB7IHJldHVybiAnQWxyZWFkeSBjaGVja2VkIHdpdGhpbiAyNCBob3Vycy4nIH0KICAgICAgICAkc3RhdGUgfCBBZGQtTWVtYmVyIC1Ob3RlUHJvcGVydHlOYW1lIGxhc3RBdXRvQ2hlY2sgLU5vdGVQcm9wZXJ0eVZhbHVlICRub3cgLUZvcmNlCiAgICAgICAgV3JpdGUtSnNvbkZpbGUgKEpvaW4tUGF0aCAkU3RhdGVSb290ICdzdGF0ZS5qc29uJykgJHN0YXRlCiAgICB9IGVsc2UgewogICAgICAgIGlmIChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRqb3VybmFsUGF0aCkgewogICAgICAgICAgICAkam91cm5hbCA9IFJlYWQtSnNvbkZpbGUgJGpvdXJuYWxQYXRoCiAgICAgICAgICAgIFJlc3RvcmUtVHJhbnNhY3Rpb24gJEhvc3RFbnYgJFN0YXRlUm9vdCAkam91cm5hbAogICAgICAgICAgICAkc3RhdGUgPSAkam91cm5hbC5vbGRTdGF0ZQogICAgICAgICAgICAkc3RhdGUuZmFpbGVkVmVyc2lvbj0kam91cm5hbC52ZXJzaW9uCiAgICAgICAgICAgIFdyaXRlLUpzb25GaWxlIChKb2luLVBhdGggJFN0YXRlUm9vdCAnc3RhdGUuanNvbicpICRzdGF0ZQogICAgICAgICAgICBSZW1vdmUtSXRlbSAtTGl0ZXJhbFBhdGggJGpvdXJuYWxQYXRoIC1Gb3JjZQogICAgICAgIH0KICAgICAgICAka2VlcD1AKCkKICAgICAgICAkcHJldmlvdXNQYXRoPUpvaW4tUGF0aCAkU3RhdGVSb290ICdwcmV2aW91cy5qc29uJwogICAgICAgIGlmIChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRwcmV2aW91c1BhdGgpIHsgJGtlZXArPSAoUmVhZC1Kc29uRmlsZSAkcHJldmlvdXNQYXRoKS5zdGFnZSB9CiAgICAgICAgJGxhdGVzdFN0YWdlPUAoR2V0LUNoaWxkSXRlbSAtTGl0ZXJhbFBhdGggJFN0YXRlUm9vdCAtRGlyZWN0b3J5IHwgV2hlcmUtT2JqZWN0IHsgJF8uTmFtZSAtY21hdGNoICdeW2EtZjAtOV17MzJ9JCcgfSB8IFNvcnQtT2JqZWN0IExhc3RXcml0ZVRpbWUgLURlc2NlbmRpbmcgfCBTZWxlY3QtT2JqZWN0IC1GaXJzdCAxKQogICAgICAgIGlmICgkbGF0ZXN0U3RhZ2UuQ291bnQpIHsgJGtlZXArPSRsYXRlc3RTdGFnZVswXS5OYW1lIH0KICAgICAgICBDbGVhci1PbGRTdGFnZXMgJFN0YXRlUm9vdCAka2VlcAogICAgICAgIFNldC1VcGRhdGVSZXF1ZXN0ICRIb3N0RW52IDAKICAgIH0KICAgICRiYXNlID0gJ2h0dHBzOi8vZ2l0aHViLmNvbS8nICsgJENvbmZpZy5yZXBvc2l0b3J5ICsgJy9yZWxlYXNlcy8nCiAgICAkYnl0ZXMgPSBHZXQtUmVtb3RlQnl0ZXMgKCRiYXNlICsgJ2xhdGVzdC9kb3dubG9hZC91cGRhdGUuanNvbicpIDI2MjE0NAogICAgJHNpZ25hdHVyZSA9IEdldC1SZW1vdGVCeXRlcyAoJGJhc2UgKyAnbGF0ZXN0L2Rvd25sb2FkL3VwZGF0ZS5zaWcnKSAxMDI0CiAgICAkbWFuaWZlc3QgPSBHZXQtVmVyaWZpZWRNYW5pZmVzdCAkYnl0ZXMgJHNpZ25hdHVyZSAkUHVibGljS2V5CiAgICBpZiAoKEdldC1SZWxlYXNlVmVyc2lvbiAkbWFuaWZlc3QudmVyc2lvbikgLWxlIChHZXQtUmVsZWFzZVZlcnNpb24gJHN0YXRlLnZlcnNpb24pKSB7CiAgICAgICAgU2V0LVVwZGF0ZUF2YWlsYWJsZSAkSG9zdEVudiAwCiAgICAgICAgcmV0dXJuICdBbHJlYWR5IGN1cnJlbnQuJwogICAgfQogICAgU2V0LVVwZGF0ZUF2YWlsYWJsZSAkSG9zdEVudiAxCiAgICBpZiAoJE1vZGUgLWVxICdBdXRvJykgeyByZXR1cm4gJ1VwZGF0ZSBhdmFpbGFibGU6ICcgKyAkbWFuaWZlc3QudmVyc2lvbiB9CiAgICBpZiAoJHN0YXRlLmZhaWxlZFZlcnNpb24gLWNlcSAkbWFuaWZlc3QudmVyc2lvbikgeyB0aHJvdyAnVGhpcyB2ZXJzaW9uIHByZXZpb3VzbHkgZmFpbGVkLiBXYWl0aW5nIGZvciBhIG5ld2VyIHJlbGVhc2UuJyB9CiAgICAkc291cmNlID0gR2V0LVJlbW90ZUJ5dGVzICgkYmFzZSArICdkb3dubG9hZC8nICsgJG1hbmlmZXN0LnRhZyArICcvJyArICRtYW5pZmVzdC5zb3VyY2VBc3NldCkgODM4ODYwOAogICAgJGRvd25sb2FkID0gSm9pbi1QYXRoICRTdGF0ZVJvb3QgJ2Rvd25sb2FkLndoLmNwcCcKICAgIFtJTy5GaWxlXTo6V3JpdGVBbGxCeXRlcygkZG93bmxvYWQsICRzb3VyY2UpCiAgICBBc3NlcnQtU291cmNlICRkb3dubG9hZCAkbWFuaWZlc3QKICAgICRjb3JlQ2hhbmdlZD1JbnN0YWxsLVVwZGF0ZXJDb3JlICRkb3dubG9hZCAkUFNTY3JpcHRSb290CiAgICB0cnkgeyBJbnZva2UtSXNsYW5kSW5zdGFsbCAkSG9zdEVudiAkU3RhdGVSb290ICRtYW5pZmVzdCAkZG93bmxvYWQgJHN0YXRlIH0KICAgIGNhdGNoIHsKICAgICAgICBpZiAoJGNvcmVDaGFuZ2VkKSB7IFtJTy5GaWxlXTo6UmVwbGFjZSgoSm9pbi1QYXRoICRQU1NjcmlwdFJvb3QgJ2NvcmUucHMxLnByZXZpb3VzJyksKEpvaW4tUGF0aCAkUFNTY3JpcHRSb290ICdjb3JlLnBzMScpLCRudWxsKSB9CiAgICAgICAgdGhyb3cKICAgIH0KfQoKZnVuY3Rpb24gQXNzZXJ0LUFkbWluaXN0cmF0b3IgewogICAgJHByaW5jaXBhbCA9IE5ldy1PYmplY3QgU2VjdXJpdHkuUHJpbmNpcGFsLldpbmRvd3NQcmluY2lwYWwoW1NlY3VyaXR5LlByaW5jaXBhbC5XaW5kb3dzSWRlbnRpdHldOjpHZXRDdXJyZW50KCkpCiAgICBpZiAoLW5vdCAkcHJpbmNpcGFsLklzSW5Sb2xlKFtTZWN1cml0eS5QcmluY2lwYWwuV2luZG93c0J1aWx0SW5Sb2xlXTo6QWRtaW5pc3RyYXRvcikpIHsgdGhyb3cgJ0FkbWluaXN0cmF0b3IgcGVybWlzc2lvbiBpcyByZXF1aXJlZCBmb3Igc2V0dXAvdXBkYXRlLicgfQp9CgpmdW5jdGlvbiBQcm90ZWN0LVVwZGF0ZXJEaXJlY3RvcnkoW3N0cmluZ10kUGF0aCkgewogICAgaWYgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJFBhdGgpIHsKICAgICAgICBpZiAoKEdldC1JdGVtIC1MaXRlcmFsUGF0aCAkUGF0aCkuQXR0cmlidXRlcyAtYmFuZCBbSU8uRmlsZUF0dHJpYnV0ZXNdOjpSZXBhcnNlUG9pbnQpIHsgdGhyb3cgJ1VwZGF0ZXIgZGlyZWN0b3J5IG11c3Qgbm90IGJlIGEgbGluay4nIH0KICAgIH0gZWxzZSB7IE5ldy1JdGVtIC1JdGVtVHlwZSBEaXJlY3RvcnkgLVBhdGggJFBhdGggfCBPdXQtTnVsbCB9CiAgICAkYWNsID0gTmV3LU9iamVjdCBTZWN1cml0eS5BY2Nlc3NDb250cm9sLkRpcmVjdG9yeVNlY3VyaXR5CiAgICAkYWNsLlNldEFjY2Vzc1J1bGVQcm90ZWN0aW9uKCR0cnVlLCRmYWxzZSkKICAgICRhZG1pbnMgPSBOZXctT2JqZWN0IFNlY3VyaXR5LlByaW5jaXBhbC5TZWN1cml0eUlkZW50aWZpZXIoJ1MtMS01LTMyLTU0NCcpCiAgICAkYWNsLlNldE93bmVyKCRhZG1pbnMpCiAgICBmb3JlYWNoICgkc2lkIGluIEAoJ1MtMS01LTMyLTU0NCcsJ1MtMS01LTE4JykpIHsKICAgICAgICAkaWRlbnRpdHkgPSBOZXctT2JqZWN0IFNlY3VyaXR5LlByaW5jaXBhbC5TZWN1cml0eUlkZW50aWZpZXIoJHNpZCkKICAgICAgICAkcnVsZSA9IE5ldy1PYmplY3QgU2VjdXJpdHkuQWNjZXNzQ29udHJvbC5GaWxlU3lzdGVtQWNjZXNzUnVsZSgkaWRlbnRpdHksJ0Z1bGxDb250cm9sJywnQ29udGFpbmVySW5oZXJpdCxPYmplY3RJbmhlcml0JywnTm9uZScsJ0FsbG93JykKICAgICAgICAkYWNsLkFkZEFjY2Vzc1J1bGUoJHJ1bGUpCiAgICB9CiAgICAkdXNlcnMgPSBOZXctT2JqZWN0IFNlY3VyaXR5LlByaW5jaXBhbC5TZWN1cml0eUlkZW50aWZpZXIoJ1MtMS01LTMyLTU0NScpCiAgICAkYWNsLkFkZEFjY2Vzc1J1bGUoKE5ldy1PYmplY3QgU2VjdXJpdHkuQWNjZXNzQ29udHJvbC5GaWxlU3lzdGVtQWNjZXNzUnVsZSgkdXNlcnMsJ1JlYWRBbmRFeGVjdXRlJywnQ29udGFpbmVySW5oZXJpdCxPYmplY3RJbmhlcml0JywnTm9uZScsJ0FsbG93JykpKQogICAgU2V0LUFjbCAtTGl0ZXJhbFBhdGggJFBhdGggLUFjbE9iamVjdCAkYWNsCiAgICAkZW50cmllcz1AKEdldC1DaGlsZEl0ZW0gLUxpdGVyYWxQYXRoICRQYXRoIC1Gb3JjZSAtUmVjdXJzZSkKICAgIGZvcmVhY2ggKCRlbnRyeSBpbiAkZW50cmllcykgewogICAgICAgIGlmICgkZW50cnkuQXR0cmlidXRlcyAtYmFuZCBbSU8uRmlsZUF0dHJpYnV0ZXNdOjpSZXBhcnNlUG9pbnQpIHsgdGhyb3cgJ1VwZGF0ZXIgY29udGVudHMgbXVzdCBub3QgY29udGFpbiBsaW5rcy4nIH0KICAgIH0KICAgIGZvcmVhY2ggKCRlbnRyeSBpbiAkZW50cmllcykgewogICAgICAgIGlmICgkZW50cnkuUFNJc0NvbnRhaW5lcikgeyAkY2hpbGRBY2w9TmV3LU9iamVjdCBTZWN1cml0eS5BY2Nlc3NDb250cm9sLkRpcmVjdG9yeVNlY3VyaXR5IH0KICAgICAgICBlbHNlIHsgJGNoaWxkQWNsPU5ldy1PYmplY3QgU2VjdXJpdHkuQWNjZXNzQ29udHJvbC5GaWxlU2VjdXJpdHkgfQogICAgICAgICRjaGlsZEFjbC5TZXRPd25lcigkYWRtaW5zKQogICAgICAgICRjaGlsZEFjbC5TZXRBY2Nlc3NSdWxlUHJvdGVjdGlvbigkdHJ1ZSwkZmFsc2UpCiAgICAgICAgZm9yZWFjaCAoJHBhaXIgaW4gQChAKCdTLTEtNS0zMi01NDQnLCdGdWxsQ29udHJvbCcpLEAoJ1MtMS01LTE4JywnRnVsbENvbnRyb2wnKSxAKCdTLTEtNS0zMi01NDUnLCdSZWFkQW5kRXhlY3V0ZScpKSkgewogICAgICAgICAgICAkaWRlbnRpdHk9TmV3LU9iamVjdCBTZWN1cml0eS5QcmluY2lwYWwuU2VjdXJpdHlJZGVudGlmaWVyKCRwYWlyWzBdKQogICAgICAgICAgICBpZiAoJGVudHJ5LlBTSXNDb250YWluZXIpIHsgJHJ1bGU9TmV3LU9iamVjdCBTZWN1cml0eS5BY2Nlc3NDb250cm9sLkZpbGVTeXN0ZW1BY2Nlc3NSdWxlKCRpZGVudGl0eSwkcGFpclsxXSwnQ29udGFpbmVySW5oZXJpdCxPYmplY3RJbmhlcml0JywnTm9uZScsJ0FsbG93JykgfQogICAgICAgICAgICBlbHNlIHsgJHJ1bGU9TmV3LU9iamVjdCBTZWN1cml0eS5BY2Nlc3NDb250cm9sLkZpbGVTeXN0ZW1BY2Nlc3NSdWxlKCRpZGVudGl0eSwkcGFpclsxXSwnQWxsb3cnKSB9CiAgICAgICAgICAgICRjaGlsZEFjbC5BZGRBY2Nlc3NSdWxlKCRydWxlKQogICAgICAgIH0KICAgICAgICBTZXQtQWNsIC1MaXRlcmFsUGF0aCAkZW50cnkuRnVsbE5hbWUgLUFjbE9iamVjdCAkY2hpbGRBY2wKICAgIH0KfQo=
 UPDATER_CORE_END */

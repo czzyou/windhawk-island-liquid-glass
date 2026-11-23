@@ -88,6 +88,8 @@ private:
         bool lumaStagingDirty = false;  // staging holds an unsampled blur result (set after each render)
         ULONGLONG lastLumaTick = 0;
         ULONGLONG lastAnchorTick = 0;
+        ULONGLONG lastWeatherDrawTick = 0;
+        int lastRenderedWeatherMode = 0;
     };
 
     void EnsureThread();
