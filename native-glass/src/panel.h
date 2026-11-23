@@ -5,6 +5,7 @@
 // All methods must be called on the worker thread (the window belongs to the
 // message queue of its creating thread).
 #pragma once
+#include <atomic>
 #include <d3d11.h>
 #include <dcomp.h>
 #include <dxgi1_2.h>
@@ -12,6 +13,33 @@
 #include <wrl/client.h>
 
 using Microsoft::WRL::ComPtr;
+
+// Weather glass shader effect modes & live tuning parameters:
+// Override: -1 = Off, 0 = Follow live weather, 1 = Rain, 2 = Storm, 3 = Snow,
+//            4 = Cloudy/Fog, 5 = Clear Day (Sun Glow), 6 = Clear Night (Starry)
+// Scope:     0 = Everywhere (always), 1 = Expanded only, 2 = Weather tab only
+inline std::atomic<int> g_weatherFxOverride{0};
+inline std::atomic<int> g_weatherFxLiveMode{0};
+inline std::atomic<int> g_weatherFxScope{0};
+inline std::atomic<bool> g_weatherFxScopeAllowed{true};
+inline std::atomic<bool> g_weatherFxIsExpanded{false};
+inline std::atomic<bool> g_weatherFxTuningOpen{false};
+inline std::atomic<int> g_weatherFxIntensityPct{100};  // 0..150
+inline std::atomic<int> g_weatherFxSpeedPct{100};      // 20..250
+inline std::atomic<int> g_weatherFxScalePct{100};      // 50..200
+inline std::atomic<int> g_weatherFxFogPct{75};         // 0..100
+inline std::atomic<int> g_weatherFxRefractPct{100};    // 0..200
+
+inline int ResolveActiveWeatherFxMode() {
+    if (!g_weatherFxTuningOpen.load(std::memory_order_relaxed) &&
+        !g_weatherFxScopeAllowed.load(std::memory_order_relaxed)) {
+        return 0;
+    }
+    const int ov = g_weatherFxOverride.load(std::memory_order_relaxed);
+    if (ov < 0) return 0;
+    if (ov > 0) return ov;
+    return g_weatherFxLiveMode.load(std::memory_order_relaxed);
+}
 
 // Microsoft-documented WCA_EXCLUDED_FROM_DDA; regular screenshots remain available.
 bool ExcludeGlassFromDesktopDuplication(HWND hwnd, bool exclude);

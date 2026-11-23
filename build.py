@@ -435,6 +435,8 @@ from localization_patch import apply_localization
 src = apply_localization(src)
 from glass_menu_patch import apply_glass_menu
 src = apply_glass_menu(src)
+from weather_glass_fx_patch import apply_weather_glass_fx
+src = apply_weather_glass_fx(src)
 settings_yaml = src.split('// ==WindhawkModSettings==', 1)[1].split('/*', 1)[1].split('*/', 1)[0]
 assert isinstance(yaml.safe_load(settings_yaml), list)
 print('Windhawk settings YAML parsed successfully', flush=True)
@@ -499,9 +501,11 @@ subprocess.run([str(root/'language-checks.exe')],check=True)
 print('Language checks passed: Windows display language and Chinese/English text',flush=True)
 
 menu_test = '''#include <windows.h>
+#include <commctrl.h>
 #include <dwmapi.h>
 #include <oleacc.h>
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -517,7 +521,7 @@ Setter Resolve() { return nullptr; }
 }
 ''' + (root/'glass-menu.h').read_text(encoding='utf-8') + (root/'glass-menu-checks.inc').read_text(encoding='utf-8')
 (root/'glass-menu-checks.cpp').write_text(menu_test, encoding='utf-8')
-subprocess.run([str(clang),'-std=c++23','-static','-DWINVER=0x0A00','-D_WIN32_WINNT=0x0A00','-DNTDDI_VERSION=0x0A000008',str(root/'glass-menu-checks.cpp'),'-ldwmapi','-lgdi32','-o',str(root/'glass-menu-checks.exe')],cwd=compiler,check=True)
+subprocess.run([str(clang),'-std=c++23','-static','-DWINVER=0x0A00','-D_WIN32_WINNT=0x0A00','-DNTDDI_VERSION=0x0A000008',str(root/'glass-menu-checks.cpp'),'-ldwmapi','-lgdi32','-lcomctl32','-o',str(root/'glass-menu-checks.exe')],cwd=compiler,check=True)
 subprocess.run([str(root/'glass-menu-checks.exe')],check=True)
 print('Glass menu checks passed: items, submenus, accessibility names, states and drawing',flush=True)
 
@@ -731,10 +735,14 @@ timer_test = r"""#include <string>
 enum class IslandKind {Clipboard,CapsLock,Device,Bluetooth,DoNotDisturb,Volume,BatteryLow,Progress,Timer,NBAScore,HourlyClock,TomorrowBrief,Media,Lookup,Idle};
 struct Alert { bool active=false, justFinished=false, available=false; double expiresAt=0, finishedExpiresAt=0; };
 struct SharedState { Alert clipboard,capsLock,device,bluetoothDevice,doNotDisturb,volume,battery,progress,timer,nba,media,hourlyClock,tomorrowBrief,lookup; };
-struct Settings { bool capsLock=true,bluetoothIndicator=true,doNotDisturbIndicator=true,volume=true,battery=true,progress=true,timerEnabled=true,nbaScores=true,media=true,quickLookup=true; };
+struct Settings { bool capsLock=true,bluetoothIndicator=true,doNotDisturbIndicator=true,volume=true,battery=true,progress=true,timerEnabled=true,nbaScores=true,media=true,quickLookup=true,gameOverlay=false; };
 std::atomic<bool> g_timerDashboardExpanded=false, g_isFullscreen=false, g_manuallyHidden=false;
-int pin=0, nbaClock=0;
-int Wh_GetIntValue(const wchar_t* key,int) { return std::wstring(key)==L"NBAShowClock" ? nbaClock : pin; }
+int pin=0, nbaClock=0, gameOverlayPin=0;
+int Wh_GetIntValue(const wchar_t* key,int) {
+ if (std::wstring(key)==L"NBAShowClock") return nbaClock;
+ if (std::wstring(key)==L"GameOverlayPinned") return gameOverlayPin;
+ return pin;
+}
 """
 timer_test += 'std::atomic<bool> g_volumeDragging{false};\n'
 timer_test += src[src.index('std::vector<IslandKind> ChooseActivities(const SharedState& state, const Settings& settings, double now) {'):src.index('bool VolumeIsPrimary(')]
@@ -793,6 +801,12 @@ timer_test += r"""int main() {
  assert(ChooseActivities(state,settings,12)[0]==IslandKind::Volume);
  g_volumeDragging=false;
  assert(ChooseActivities(state,settings,12)[0]!=IslandKind::Volume);
+ state.volume.active=false; state.timer.active=true; state.timer.justFinished=false;
+ pin=1; gameOverlayPin=1;
+ assert(ChooseActivities(state,settings,12)[0]==IslandKind::Timer);
+ gameOverlayPin=0; settings.gameOverlay=true;
+ assert(ChooseActivities(state,settings,12)[0]==IslandKind::Timer);
+ settings.gameOverlay=false; pin=0;
 
 }"""
 (root/'timer-checks.cpp').write_text(timer_test,encoding='utf-8')
