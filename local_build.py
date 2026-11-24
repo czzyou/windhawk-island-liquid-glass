@@ -6,7 +6,6 @@ import json
 def fingerprint(root, version):
     paths = {root / 'dynamic-island-liquid-glass.wh.cpp',
              root / f'local@dynamic-island-liquid-glass_{version}.dll',
-             root / '32' / f'local@dynamic-island-liquid-glass_{version}.dll',
              root / 'requirements.txt'}
     for pattern in ('*.py', '*.h', '*.inc', 'updater/*.ps1', 'updater/*.py'):
         paths.update(root.glob(pattern))

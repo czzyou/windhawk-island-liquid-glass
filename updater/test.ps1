@@ -78,7 +78,7 @@ try {
     Assert ($publisher -notmatch 'Assert-ActionsBuild|gh run list') 'Cloud checks do not gate publication'
     Assert ($publisher.Contains('--target $publishCommit')) 'Release targets the verified commit'
     $minimum=[regex]::Match($publisher,"minUpdaterVersion='([^']+)'").Groups[1].Value
-    Assert ((Get-ReleaseVersion $minimum) -eq [version]'1.0.0') 'Publication remains compatible with existing updaters'
+    Assert ((Get-ReleaseVersion $minimum) -eq [version]'1.0.6') 'x64-only releases require an x64-only updater'
     $m=[ordered]@{schema=1;version=$version;tag=('v'+$version);modId=$script:PublicId;sourceAsset='dynamic-island-liquid-glass.wh.cpp';sourceSha256=(Get-FileDigest $sourcePath);sourceBytes=$sourceBytes.Length;minUpdaterVersion=$minimum;settings=@([pscustomobject]@{name='Appearance.OffsetX';kind='DWord';value=0})}
     $bytes=$script:Utf8.GetBytes(($m | ConvertTo-Json -Depth 10))
     $sig=$rsa.SignData($bytes,'SHA256')
@@ -86,9 +86,10 @@ try {
     $manifest=Get-VerifiedManifest $bytes $sig $public
     Assert-Source $sourcePath $manifest
     $coreTest=Join-Path $testRoot 'core.ps1'
-    [IO.File]::WriteAllText($coreTest,([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'core.ps1'),$script:Utf8).Replace("[version]'1.0.5'","[version]'1.0.4'")),$script:Utf8)
+    [IO.File]::WriteAllText($coreTest,([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'core.ps1'),$script:Utf8).Replace("[version]'$script:UpdaterVersion'","[version]'1.0.5'")),$script:Utf8)
     Assert (Install-UpdaterCore $sourcePath $testRoot) 'Signed source upgrades updater core'
-    Assert ((Get-FileDigest $coreTest) -ceq (Get-FileDigest (Join-Path $PSScriptRoot 'core.ps1'))) 'Installed updater core matches packaged source'
+    $expectedCore=([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'core.ps1'),$script:Utf8) -replace '\r\n',"`n")
+    Assert ([IO.File]::ReadAllText($coreTest,$script:Utf8) -ceq $expectedCore) 'Installed updater core matches packaged source'
     Assert (-not (Install-UpdaterCore $sourcePath $testRoot)) 'Same updater version is not rewritten'
     $badCore=Join-Path $testRoot 'bad-source.wh.cpp'
     [IO.File]::WriteAllText($badCore,'/* UPDATER_CORE_BEGIN' + "`n" + 'bad' + "`n" + 'UPDATER_CORE_END */',$script:Utf8)
@@ -97,10 +98,8 @@ try {
     $script:checks++
     $currentUpdater=$script:UpdaterVersion
     try {
-        foreach ($legacyVersion in @('1.0.0','1.0.1','1.0.2')) {
-            $script:UpdaterVersion=[version]$legacyVersion
-            Assert ((Get-VerifiedManifest $bytes $sig $public).version -ceq $version) ('Release accepted by updater '+$legacyVersion)
-        }
+        $script:UpdaterVersion=[version]'1.0.5'
+        Must-Fail { Get-VerifiedManifest $bytes $sig $public } 'Old updater must not start the x64-only install'
     } finally { $script:UpdaterVersion=$currentUpdater }
     $corrupt=$bytes.Clone(); $corrupt[0]=0
     Must-Fail { Get-VerifiedManifest $corrupt $sig $public } 'Tampered manifest rejected'
@@ -140,17 +139,18 @@ try {
     if ($Compile) {
         $actual=Get-WindhawkEnvironment
         Compile-Island $actual $sourcePath $version $testRoot
-        foreach ($bits in @('32','64')) { Assert ((Get-Item -LiteralPath (Join-Path $testRoot "$bits.dll")).Length -gt 100000) ('Real compiler '+$bits) }
+        Assert ((Get-Item -LiteralPath (Join-Path $testRoot '64.dll')).Length -gt 100000 -and
+            -not (Test-Path -LiteralPath (Join-Path $testRoot '32.dll'))) 'Real compiler produces only the x64 DLL'
     }
 
     # Actual registry and file operations run only in the isolated HKCU fixture.
     $data=Join-Path $testRoot 'data'
-    foreach ($dir in @('Engine\Mods\32','Engine\Mods\64','ModsSource')) { New-Item -ItemType Directory -Path (Join-Path $data $dir) -Force | Out-Null }
+    foreach ($dir in @('Engine\Mods\64','ModsSource')) { New-Item -ItemType Directory -Path (Join-Path $data $dir) -Force | Out-Null }
     $fixture=[pscustomobject]@{Key=($testKey+'\Mod');Storage=($testKey+'\Storage');Source=(Join-Path $data 'ModsSource\test.wh.cpp');Data=$data}
     $script:compileFails=$false; $script:healthFails=$false; $script:busy=$false
     function Compile-Island($HostEnv,$Source,$Version,$Stage) {
         if ($script:compileFails) { throw 'Simulated compiler failure' }
-        foreach ($bits in @('32','64')) { [IO.File]::WriteAllText((Join-Path $Stage "$bits.dll"),'fixture DLL') }
+        [IO.File]::WriteAllText((Join-Path $Stage '64.dll'),'fixture DLL')
     }
     function Get-ModProcesses {
         if ((Test-Path -LiteralPath $fixture.Key) -and (Get-Item -LiteralPath $fixture.Key).GetValue('Disabled',0) -eq 0) { [pscustomobject]@{ProcessId=123} }
@@ -163,6 +163,11 @@ try {
     $result=Invoke-IslandInstall $fixture $testRoot $manifest $sourcePath $state
     Assert ($result -eq ('Updated to '+$version)) 'First install succeeds'
     Assert ((Get-ModSnapshot $fixture).Version -eq $version) 'Installed registry version'
+    Assert ((Get-Item -LiteralPath $fixture.Key).GetValue('Architecture') -ceq 'amd64') 'Installed mod targets AMD64 only'
+    Assert ((Get-Item -LiteralPath $fixture.Key).GetValue('Include') -ceq 'explorer.exe') 'Installed mod targets the x64 Explorer host'
+    $installedLibrary=(Get-ModSnapshot $fixture).Library
+    Assert ((Test-Path -LiteralPath (Join-Path $data "Engine\Mods\64\$installedLibrary")) -and
+        -not (Test-Path -LiteralPath (Join-Path $data "Engine\Mods\32\$installedLibrary"))) 'Install copies only the x64 DLL'
     $settings=Join-Path $fixture.Key 'Settings'
     Set-ItemProperty -LiteralPath $settings -Name 'Appearance.OffsetX' -Value 88
     New-ItemProperty -LiteralPath $fixture.Storage -Name ImportantDays -Value 'user-data' -PropertyType String | Out-Null

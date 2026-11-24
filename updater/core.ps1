@@ -2,7 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:ModId = 'local@dynamic-island-liquid-glass'
 $script:PublicId = 'dynamic-island-liquid-glass'
-$script:UpdaterVersion = [version]'1.0.5'
+$script:UpdaterVersion = [version]'1.0.6'
 $script:Utf8 = New-Object System.Text.UTF8Encoding($false, $true)
 
 function Read-JsonFile([string]$Path) {
@@ -69,7 +69,7 @@ function Assert-Source([string]$Path, $Manifest) {
     $source = [IO.File]::ReadAllText($Path, $script:Utf8)
     $meta = [regex]::Match($source, '(?s)\A\s*// ==WindhawkMod==\r?\n(.*?)// ==/WindhawkMod==')
     if (-not $meta.Success) { throw 'Source metadata missing.' }
-    foreach ($entry in @(@('id', $script:PublicId), @('version', $Manifest.version), @('include', 'windhawk.exe'))) {
+    foreach ($entry in @(@('id', $script:PublicId), @('version', $Manifest.version), @('include', 'explorer.exe'), @('architecture', 'amd64'))) {
         $matches = [regex]::Matches($meta.Groups[1].Value, '(?m)^// @' + $entry[0] + '\s+([^\r\n]+)\r?$')
         if ($matches.Count -ne 1 -or $matches[0].Groups[1].Value.Trim() -cne $entry[1]) { throw "Source $($entry[0]) mismatch." }
     }
@@ -156,7 +156,7 @@ function Get-WindhawkEnvironment {
     if ($cfg.Portable -ne '0' -or $cfg.EnginePath -ne 'Engine\1.7.3' -or $cfg.RegistryKey -ne 'HKLM\SOFTWARE\Windhawk') { throw 'This updater currently supports Windhawk 1.7.3 installed mode only.' }
     $compiler = Join-Path $root $cfg.CompilerPath
     $engine = Join-Path $root $cfg.EnginePath
-    foreach ($file in @((Join-Path $compiler 'bin\clang++.exe'), (Join-Path $engine '64\windhawk.lib'), (Join-Path $engine '32\windhawk.lib'))) {
+    foreach ($file in @((Join-Path $compiler 'bin\clang++.exe'), (Join-Path $engine '64\windhawk.lib'))) {
         if (-not (Test-Path -LiteralPath $file)) { throw "Windhawk component missing: $file" }
     }
     [pscustomobject]@{
@@ -182,7 +182,7 @@ function Set-ModDisabled($HostEnv, [int]$Value) {
 }
 
 function Get-ModProcesses {
-    @(Get-CimInstance Win32_Process -Filter "Name='windhawk.exe'" | Where-Object { $_.CommandLine -match ('-tool-mod\s+"?' + [regex]::Escape($script:ModId) + '"?(?:\s|$)') })
+    @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe' OR Name='windhawk.exe'" | Where-Object { $_.CommandLine -match ('-tool-mod\s+"?' + [regex]::Escape($script:ModId) + '"?(?:\s|$)') })
 }
 
 function Wait-ModStopped {
@@ -225,20 +225,17 @@ function Request-ModHandoff($HostEnv, $Old) {
 function Compile-Island($HostEnv, [string]$Source, [string]$Version, [string]$Stage) {
     $clang = Join-Path $HostEnv.Compiler 'bin\clang++.exe'
     $libraries = 'ole32 oleaut32 shcore d2d1 dwrite dwmapi gdi32 user32 shell32 runtimeobject windowscodecs avrt setupapi winhttp pdh winmm d3d11 dxgi dcomp d3dcompiler dxguid comctl32'.Split(' ')
-    foreach ($bits in @('64','32')) {
-        $target = if ($bits -eq '64') { 'x86_64-w64-mingw32' } else { 'i686-w64-mingw32' }
-        $output = Join-Path $Stage "$bits.dll"
-        $arguments = @('-std=c++23','-O2','-shared','-DUNICODE','-D_UNICODE','-DWH_MOD',
-            '-DWINVER=0x0A00','-D_WIN32_WINNT=0x0A00','-D_WIN32_IE=0x0A00','-DNTDDI_VERSION=0x0A000008','-D__USE_MINGW_ANSI_STDIO=0',
-            ('-DWH_MOD_ID=L\"' + $script:ModId + '\"'), ('-DWH_MOD_VERSION=L\"' + $Version + '\"'),
-            (Join-Path $HostEnv.Engine "$bits\windhawk.lib"), '-x','c++',$Source,'-include','windhawk_api.h','-target',$target,
-            '-Wl,--export-all-symbols','-o',$output) + @($libraries | ForEach-Object { '-l' + $_ })
-        Push-Location $HostEnv.Compiler
-        try {
-            & $clang @arguments 2>&1 | Out-File -LiteralPath (Join-Path $Stage "compile-$bits.log") -Encoding utf8
-            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) { throw "Compile failed ($bits-bit). See compile-$bits.log." }
-        } finally { Pop-Location }
-    }
+    $output = Join-Path $Stage '64.dll'
+    $arguments = @('-std=c++23','-O2','-shared','-DUNICODE','-D_UNICODE','-DWH_MOD',
+        '-DWINVER=0x0A00','-D_WIN32_WINNT=0x0A00','-D_WIN32_IE=0x0A00','-DNTDDI_VERSION=0x0A000008','-D__USE_MINGW_ANSI_STDIO=0',
+        ('-DWH_MOD_ID=L\"' + $script:ModId + '\"'), ('-DWH_MOD_VERSION=L\"' + $Version + '\"'),
+        (Join-Path $HostEnv.Engine '64\windhawk.lib'), '-x','c++',$Source,'-include','windhawk_api.h','-target','x86_64-w64-mingw32',
+        '-Wl,--export-all-symbols','-o',$output) + @($libraries | ForEach-Object { '-l' + $_ })
+    Push-Location $HostEnv.Compiler
+    try {
+        & $clang @arguments 2>&1 | Out-File -LiteralPath (Join-Path $Stage 'compile-64.log') -Encoding utf8
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) { throw 'Compile failed (x64). See compile-64.log.' }
+    } finally { Pop-Location }
 }
 
 function Add-MissingSettings($HostEnv, $Settings) {
@@ -253,7 +250,7 @@ function Add-MissingSettings($HostEnv, $Settings) {
 function Set-NewMod($HostEnv, $Manifest, [string]$Library) {
     if (-not (Test-Path -LiteralPath $HostEnv.Key)) { New-Item -Path $HostEnv.Key -Force | Out-Null }
     Set-ModDisabled $HostEnv 1
-    foreach ($pair in @(@('LibraryFileName',$Library), @('Version',$Manifest.version), @('Include','windhawk.exe'), @('Exclude',''), @('Architecture',''))) {
+    foreach ($pair in @(@('LibraryFileName',$Library), @('Version',$Manifest.version), @('Include','explorer.exe'), @('Exclude',''), @('Architecture','amd64'))) {
         New-ItemProperty -LiteralPath $HostEnv.Key -Name $pair[0] -Value $pair[1] -PropertyType String -Force | Out-Null
     }
     Add-MissingSettings $HostEnv $Manifest.settings
@@ -293,9 +290,9 @@ function Wait-ModHealthy($HostEnv, [string]$Version) {
     throw 'New island startup did not pass the 30-second health check.'
 }
 
-function Get-ManagedDllPath($HostEnv, [string]$Bits, [string]$Library) {
-    if ($Bits -notin @('32','64') -or $Library -cnotmatch '^local@dynamic-island-liquid-glass_[0-9.]+_[a-f0-9]{12}\.dll$') { throw 'Invalid managed DLL name.' }
-    Join-Path $HostEnv.Data "Engine\Mods\$Bits\$Library"
+function Get-ManagedDllPath($HostEnv, [string]$Library) {
+    if ($Library -cnotmatch '^local@dynamic-island-liquid-glass_[0-9.]+_[a-f0-9]{12}\.dll$') { throw 'Invalid managed DLL name.' }
+    Join-Path $HostEnv.Data "Engine\Mods\64\$Library"
 }
 
 function Restore-Transaction($HostEnv, [string]$StateRoot, $Journal) {
@@ -334,11 +331,11 @@ function Invoke-IslandInstall($HostEnv, [string]$StateRoot, $Manifest, [string]$
     } catch { Set-UpdateRequest $HostEnv 0; throw }
     try {
         if ($old) { Set-ModDisabled $HostEnv 1; Wait-ModStopped }
-        foreach ($dir in @((Join-Path $HostEnv.Data 'Engine\Mods\64'),(Join-Path $HostEnv.Data 'Engine\Mods\32'),(Split-Path $HostEnv.Source -Parent))) {
+        foreach ($dir in @((Join-Path $HostEnv.Data 'Engine\Mods\64'),(Split-Path $HostEnv.Source -Parent))) {
             if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         }
         $library = "$script:ModId`_$($Manifest.version)_$($stageId.Substring(0,12)).dll"
-        foreach ($bits in @('64','32')) { Copy-Item -LiteralPath (Join-Path $stage "$bits.dll") -Destination (Get-ManagedDllPath $HostEnv $bits $library) }
+        Copy-Item -LiteralPath (Join-Path $stage '64.dll') -Destination (Get-ManagedDllPath $HostEnv $library)
         Copy-Item -LiteralPath (Join-Path $stage 'source.wh.cpp') -Destination $HostEnv.Source -Force
         Set-NewMod $HostEnv $Manifest $library
         Set-UpdateRequest $HostEnv 0

@@ -58,8 +58,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Extracting defaults failed.' }
 $manifest=[ordered]@{
     schema=1; version=$release.version; tag=$tag; modId=$script:PublicId
     sourceAsset='dynamic-island-liquid-glass.wh.cpp'; sourceSha256=(Get-FileDigest $asset)
-    # Backup downloads do not change the manifest/install format used since 1.0.0.
-    sourceBytes=(Get-Item -LiteralPath $asset).Length; minUpdaterVersion='1.0.0'
+    # Older updaters still compile x86 during the same run that upgrades their core.
+    sourceBytes=(Get-Item -LiteralPath $asset).Length; minUpdaterVersion='1.0.6'
     settings=@(Read-JsonFile $defaultsPath)
 }
 $manifestPath=Join-Path $output 'update.json'

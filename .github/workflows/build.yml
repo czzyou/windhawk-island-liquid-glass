@@ -38,11 +38,11 @@ jobs:
           $toolchain = Join-Path $env:RUNNER_TEMP 'windhawk'
           $process = Start-Process $installer -ArgumentList '/S', '/PORTABLE', "/D=$toolchain" -WindowStyle Hidden -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw 'Windhawk extraction failed.' }
-          foreach ($file in @('Compiler/bin/clang++.exe', 'Engine/1.7.3/64/windhawk.lib', 'Engine/1.7.3/32/windhawk.lib')) {
+          foreach ($file in @('Compiler/bin/clang++.exe', 'Engine/1.7.3/64/windhawk.lib')) {
             if (-not (Test-Path (Join-Path $toolchain $file))) { throw "Missing toolchain file: $file" }
           }
           "WINDHAWK_PATH=$toolchain" >> $env:GITHUB_ENV
-      - name: Build x64 and x86 and run regression checks
+      - name: Build x64 and run regression checks
         run: python build.py --release
       - name: Package build for first-user testing
         shell: pwsh
@@ -51,7 +51,6 @@ jobs:
           New-Item -ItemType Directory -Path build-artifact | Out-Null
           Copy-Item dynamic-island-liquid-glass.wh.cpp build-artifact/
           Copy-Item "local@dynamic-island-liquid-glass_$version.dll" build-artifact/64.dll
-          Copy-Item "32/local@dynamic-island-liquid-glass_$version.dll" build-artifact/32.dll
           git diff --exit-code -- dynamic-island-liquid-glass.wh.cpp
           if ($LASTEXITCODE -ne 0) { throw 'Generated release source differs from the committed source.' }
       - uses: actions/upload-artifact@v7

@@ -448,7 +448,9 @@ for removed in ('NotificationThreadProc', 'CaptureShellNotification', 'IslandKin
                 'NotificationRespectDnD', 'OpenNotificationSource', 'RegisterShellHookWindow',
                 'NotificationSnapshot', 'g_state.notification', 'DrawNotification', 'g_inbox'):
     assert removed not in src, removed
-core = (root/'updater/core.ps1').read_bytes()
+core = (root/'updater/core.ps1').read_text(encoding='utf-8').encode('utf-8')
+# Windhawk 1.7.3's windhawk.exe is 32-bit even on x64 Windows.
+replace('// @include         windhawk.exe\n', '// @include         explorer.exe\n// @architecture    amd64\n')
 src += '\n/* UPDATER_CORE_BEGIN\n' + base64.b64encode(core).decode('ascii') + '\nUPDATER_CORE_END */\n'
 out.write_text(src, encoding='utf-8')
 if '--source-only' in sys.argv:
@@ -1388,16 +1390,11 @@ args=[str(clang),'-std=c++23','-O2','-shared','-DUNICODE','-D_UNICODE',
  '-Wl,--export-all-symbols','-o',str(root/f'local@{build_id}_{build_version}.dll')]
 args += ['-l'+x for x in 'ole32 oleaut32 shcore d2d1 dwrite dwmapi gdi32 user32 shell32 runtimeobject windowscodecs avrt setupapi winhttp pdh winmm d3d11 dxgi dcomp d3dcompiler dxguid comctl32'.split()]
 subprocess.run(args,cwd=compiler,check=True)
-args32 = [a.replace('\\64\\windhawk.lib', '\\32\\windhawk.lib')
-          .replace('x86_64-w64-mingw32', 'i686-w64-mingw32') for a in args]
-(root/'32').mkdir(exist_ok=True)
-args32[args32.index('-o')+1] = str(root/'32'/f'local@{build_id}_{build_version}.dll')
-subprocess.run(args32,cwd=compiler,check=True)
 if '--release' in sys.argv:
     subprocess.run([sys.executable, str(root/'release-checks.py')], cwd=root, check=True)
     # Python inherits PS7 module paths; let Windows PowerShell construct its own.
     powershell_env = {key: value for key, value in os.environ.items() if key.upper() != 'PSMODULEPATH'}
     subprocess.run(['powershell', '-NoProfile', '-File', str(root/'updater/test.ps1')], cwd=root, env=powershell_env, check=True)
     local_build.record(root, build_version)
-    print('Local release build recorded: source, x64/x86 DLLs and checks passed', flush=True)
+    print('Local release build recorded: source, x64 DLL and checks passed', flush=True)
 print('YASB integration compiled')

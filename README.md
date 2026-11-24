@@ -6,7 +6,7 @@
 
 ## 安装
 
-支持 Windows x64、本机管理员账号和 Windhawk **1.7.3 安装版**。需要先安装并运行 Windhawk；本项目无需提交或通过 Windhawk 官方模组库安装。
+仅支持 Windows x64（AMD64），需要本机管理员账号和 Windhawk **1.7.3 安装版**。需要先安装并运行 Windhawk；本项目无需提交或通过 Windhawk 官方模组库安装。首次更新到仅支持 x64 的版本前，已有用户需运行新版安装包，把更新器升级到 1.0.6 或更高版本。
 
 1. 从 [Releases](https://github.com/czzyou/windhawk-island-liquid-glass/releases/latest) 下载 `island-setup.zip`。
 2. 解压，关闭其他已启用的灵动岛模组，再双击 `install.cmd`，接受首次管理员授权。
@@ -42,7 +42,7 @@
 
 参与开发请先阅读 [贡献指南](CONTRIBUTING.md)，其中说明了源码修改、Actions 检查和 PR 提交方式。
 
-GitHub Actions 在推送代码、提交 PR 或手动触发时自动运行两项检查：`Source check` 验证补丁合成、版本格式和设置 YAML；`Windows build` 使用固定 Windhawk 1.7.3 工具链编译 x64/x86、运行回归及发布检查，并生成保留 30 天的 `island-build-提交号` 试用包。发布不等待这两项结果；Actions 不签名、不自动发布。
+GitHub Actions 在推送代码、提交 PR 或手动触发时自动运行两项检查：`Source check` 验证补丁合成、版本格式和设置 YAML；`Windows build` 使用固定 Windhawk 1.7.3 工具链编译 x64、运行回归及发布检查，并生成保留 30 天的 `island-build-提交号` 试用包。发布不等待这两项结果；Actions 不签名、不自动发布。
 
 固定操作见 [发布流程](发布流程.md)：本地编译、检查并试用，用户确认后再推送源码；Actions 仅作后台复核，明确授权发布后直接依据本地成功构建签名并发布正式 Release，无需等待云端结果。本机试用不需要等待 Actions；只 push 代码不会让使用者收到更新。
 
